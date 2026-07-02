@@ -46,21 +46,63 @@ What makes it technically interesting: keeping edit state consistent across mult
 ---
 
 ## Architecture
+*Diagram coming soon.*
 
-Browser (Next.js + Monaco/CodeMirror)
-│
-├── Yjs CRDT document (local state)
-│       │
-│       ▼
-│   WebSocket Server (Node.js)
-│       │
-│       ├── Redis (pub/sub — syncs rooms across server instances)
-│       └── Postgres (persists rooms/documents)
-│
-└── "Run Code" button
-│
-▼
-Piston API (sandboxed execution)
-│
-▼
-Output streamed back to browser
+**Why editing sync and code execution are separate systems:**
+Editing sync needs to be low-latency and always-on — every keystroke matters. Execution is bursty, resource-heavy, and needs strict isolation from untrusted input. Coupling them would mean a slow or crashed execution request could degrade the live-editing experience for every user in the room. Keeping them decoupled lets each scale, fail, and recover independently.
+
+---
+
+## Key Technical Challenges
+
+- [ ] **CRDT conflict resolution** — Ensuring multiple users editing the same line simultaneously converge to the same final state without manual merge logic. Approach: use Yjs's built-in CRDT algorithm rather than implementing operational transform manually; document the tradeoff in a dedicated write-up below.
+- [ ] **WebSocket scaling** — A single Node.js WebSocket server can't hold every connection once traffic grows. Approach: use Redis pub/sub so multiple server instances share room state, with clients able to connect to any instance.
+- [ ] **Sandboxed execution security** — Running arbitrary user-submitted code without letting it harm the host system or other users. Approach: route all execution through Piston's isolated sandboxes rather than local `eval()` or unrestricted containers, with per-request CPU/memory/time limits.
+
+---
+
+## CRDT vs Operational Transform
+
+*Full write-up to be added once implementation decisions are finalized — this will compare Yjs's CRDT approach against Operational Transform (used by Google Docs), explaining why CRDTs were chosen for this project (no central server required for conflict resolution, simpler offline/reconnect handling) and the tradeoffs involved (larger metadata overhead per edit).*
+
+---
+
+## Local Setup / Installation
+
+```bash
+git clone [repo-url]
+cd real-time-collaborative-code-editor
+npm install
+
+# Environment setup
+cp .env.example .env
+# Fill in: DATABASE_URL, REDIS_URL, PISTON_API_URL
+
+# Run the frontend
+npm run dev
+
+# Run the WebSocket server (separate process)
+npm run ws-server
+```
+
+*Full setup instructions will be expanded as each service (Postgres, Redis, WS server) comes online.*
+
+---
+
+## Roadmap / What's Next
+
+- [ ] Basic single-user code editor UI (Monaco/CodeMirror)
+- [ ] Code execution via Piston integration
+- [ ] Real-time multi-cursor sync (Yjs + WebSocket server)
+- [ ] Presence indicators and live cursor labels
+- [ ] Room persistence with Postgres
+- [ ] Reconnect/resync handling
+- [ ] Execution resource limits + worker queue
+- [ ] Redis pub/sub for horizontal scaling
+- [ ] Deploy live demo (Vercel + Railway/Render)
+
+---
+
+## License
+
+MIT License. See `LICENSE` file for details.
