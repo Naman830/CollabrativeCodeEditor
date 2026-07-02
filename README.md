@@ -47,23 +47,20 @@ What makes it technically interesting: keeping edit state consistent across mult
 
 ## Architecture
 
-Browser (Next.js)
-   │
-   ├── Yjs CRDT doc (local state)
-   │       │
-   │       ▼
-   │   WebSocket Server (Node.js, separate from Next.js)
-   │       │
-   │       ├── Redis (pub/sub — syncs rooms across multiple WS server instances)
-   │       └── Postgres (persists room/document state)
-   │
-   └── "Run Code" button
-           │
-           ▼
-       Execution Queue (worker pool)
-           │
-           ▼
-       Docker container (isolated, resource-capped)
-           │
-           ▼
-       Output streamed back to browser
+Browser (Next.js + Monaco/CodeMirror)
+│
+├── Yjs CRDT document (local state)
+│       │
+│       ▼
+│   WebSocket Server (Node.js)
+│       │
+│       ├── Redis (pub/sub — syncs rooms across server instances)
+│       └── Postgres (persists rooms/documents)
+│
+└── "Run Code" button
+│
+▼
+Piston API (sandboxed execution)
+│
+▼
+Output streamed back to browser
