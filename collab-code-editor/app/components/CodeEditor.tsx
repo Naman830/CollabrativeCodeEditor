@@ -13,18 +13,70 @@ const LANGUAGES = [
 
 const DEFAULT_CODE = `console.log("Hello, world!");\n`;
 
+type ExecuteSuccess = {
+  success: true;
+  stdout: string;
+  stderr: string;
+  exitCode: number | null;
+  compile: { stdout: string; stderr: string; exitCode: number | null } | null;
+};
+
+type ExecuteFailure = {
+  success: false;
+  error: string;
+};
+
+type RunState =
+  | { status: "idle" }
+  | { status: "loading" }
+  | { status: "success"; result: ExecuteSuccess }
+  | { status: "error"; message: string };
+
 export default function CodeEditor() {
   const [language, setLanguage] = useState<string>("javascript");
   const [code, setCode] = useState<string>(DEFAULT_CODE);
-  const [output] = useState<string>("");
+  const [runState, setRunState] = useState<RunState>({ status: "idle" });
 
   const handleEditorChange: OnChange = (value) => {
     setCode(value ?? "");
   };
 
-  const handleRun = () => {
-    // Execution will be wired up in the next phase.
+  const handleRun = async () => {
+    setRunState({ status: "loading" });
+
+    try {
+      const res = await fetch("/api/execute", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ language, code }),
+      });
+
+      const data: ExecuteSuccess | ExecuteFailure = await res.json();
+
+      if (!res.ok || !data.success) {
+        setRunState({
+          status: "error",
+          message: !data.success ? data.error : "Execution failed.",
+        });
+        return;
+      }
+
+      setRunState({ status: "success", result: data });
+    } catch {
+      setRunState({
+        status: "error",
+        message: "Could not reach the execution service. Please try again.",
+      });
+    }
   };
+
+  const isLoading = runState.status === "loading";
+
+  const hasRuntimeFailure =
+    runState.status === "success" &&
+    ((runState.result.compile && runState.result.compile.exitCode !== 0) ||
+      runState.result.exitCode !== 0 ||
+      runState.result.stderr.length > 0);
 
   return (
     <div className="flex h-full flex-col bg-[#1e1e1e] text-zinc-200">
@@ -66,19 +118,70 @@ export default function CodeEditor() {
         <button
           type="button"
           onClick={handleRun}
-          className="rounded bg-green-600 px-4 py-1.5 text-sm font-medium text-white transition-colors hover:bg-green-500"
+          disabled={isLoading}
+          className="flex items-center gap-2 rounded bg-green-600 px-4 py-1.5 text-sm font-medium text-white transition-colors hover:bg-green-500 disabled:cursor-not-allowed disabled:bg-green-800 disabled:text-zinc-300"
         >
-          Run
+          {isLoading && (
+            <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white/40 border-t-white" />
+          )}
+          {isLoading ? "Running..." : "Run"}
         </button>
-        <span className="text-xs text-zinc-500">Execution not wired up yet</span>
+        {runState.status === "success" && (
+          <span className="text-xs text-zinc-500">
+            Exit code: {runState.result.exitCode ?? "—"}
+          </span>
+        )}
       </div>
 
-      <div className="h-48 overflow-auto border-t border-zinc-800 bg-black px-4 py-3">
-        <pre className="whitespace-pre-wrap font-mono text-sm text-zinc-300">
-          {output || (
-            <span className="text-zinc-600">Output will appear here...</span>
-          )}
-        </pre>
+      <div
+        className={`h-48 overflow-auto border-t px-4 py-3 transition-colors ${
+          runState.status === "error" || hasRuntimeFailure
+            ? "border-red-900 bg-[#2a1414]"
+            : "border-zinc-800 bg-black"
+        }`}
+      >
+        {runState.status === "idle" && (
+          <pre className="whitespace-pre-wrap font-mono text-sm text-zinc-600">
+            Output will appear here...
+          </pre>
+        )}
+
+        {runState.status === "loading" && (
+          <pre className="whitespace-pre-wrap font-mono text-sm text-zinc-500">
+            Running your code...
+          </pre>
+        )}
+
+        {runState.status === "error" && (
+          <pre className="whitespace-pre-wrap font-mono text-sm text-red-400">
+            {runState.message}
+          </pre>
+        )}
+
+        {runState.status === "success" && (
+          <>
+            {runState.result.compile && runState.result.compile.exitCode !== 0 && (
+              <pre className="whitespace-pre-wrap font-mono text-sm text-red-400">
+                {runState.result.compile.stderr}
+              </pre>
+            )}
+            {runState.result.stdout && (
+              <pre className="whitespace-pre-wrap font-mono text-sm text-zinc-300">
+                {runState.result.stdout}
+              </pre>
+            )}
+            {runState.result.stderr && (
+              <pre className="whitespace-pre-wrap font-mono text-sm text-red-400">
+                {runState.result.stderr}
+              </pre>
+            )}
+            {!runState.result.stdout && !runState.result.stderr && (
+              <pre className="whitespace-pre-wrap font-mono text-sm text-zinc-600">
+                (no output)
+              </pre>
+            )}
+          </>
+        )}
       </div>
     </div>
   );
