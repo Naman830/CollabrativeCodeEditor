@@ -2,7 +2,7 @@
 
 A collaborative code editor with real-time multi-cursor sync (CRDT-based) and secure sandboxed code execution — built to explore distributed state management and execution isolation at scale.
 
-🚧 Status: In Progress — early development
+🚧 Status: In Progress — single-user editor with sandboxed execution is working locally; real-time collaboration (Yjs, WebSocket server, Redis, Postgres) is not built yet.
 
 ---
 
@@ -26,7 +26,7 @@ What makes it technically interesting: keeping edit state consistent across mult
 
 - [ ] Real-time multi-cursor editing
 - [ ] Presence indicators (who's online, where they're looking)
-- [ ] Sandboxed code execution
+- [x] Sandboxed code execution (JavaScript, TypeScript, Python, Java, C++ via a self-hosted Piston instance)
 - [ ] Room persistence (reload without losing state)
 
 ---
@@ -71,28 +71,28 @@ Editing sync needs to be low-latency and always-on — every keystroke matters. 
 
 ```bash
 git clone [repo-url]
-cd real-time-collaborative-code-editor
+cd collab-code-editor
 npm install
 
-# Environment setup
-cp .env.example .env
-# Fill in: DATABASE_URL, REDIS_URL, PISTON_API_URL
+# Start the self-hosted Piston sandbox (code execution engine)
+docker compose up -d
 
 # Run the frontend
 npm run dev
-
-# Run the WebSocket server (separate process)
-npm run ws-server
 ```
 
-*Full setup instructions will be expanded as each service (Postgres, Redis, WS server) comes online.*
+Open [http://localhost:3000](http://localhost:3000), write some code in the editor, pick a language, and hit **Run** — it's forwarded to `/api/execute`, which relays it to the local Piston container and streams back stdout/stderr/exit code.
+
+By default the app talks to Piston at `http://localhost:2000`. Override with a `PISTON_API_URL` env var if you're running Piston elsewhere.
+
+*Postgres, Redis, and the WebSocket server aren't wired up yet — setup instructions for those will be added as each comes online.*
 
 ---
 
 ## Roadmap / What's Next
 
-- [ ] Basic single-user code editor UI (Monaco/CodeMirror)
-- [ ] Code execution via Piston integration
+- [x] Basic single-user code editor UI (Monaco)
+- [x] Code execution via Piston integration (self-hosted via Docker)
 - [ ] Real-time multi-cursor sync (Yjs + WebSocket server)
 - [ ] Presence indicators and live cursor labels
 - [ ] Room persistence with Postgres
