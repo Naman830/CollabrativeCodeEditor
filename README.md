@@ -48,6 +48,8 @@ What makes it technically interesting: keeping edit state consistent across mult
 ## Architecture
 *Diagram coming soon.*
 
+**WebSocket server:** deployed on Railway, URL: `collabrativecodeeditor-production.up.railway.app`
+
 **Why editing sync and code execution are separate systems:**
 Editing sync needs to be low-latency and always-on — every keystroke matters. Execution is bursty, resource-heavy, and needs strict isolation from untrusted input. Coupling them would mean a slow or crashed execution request could degrade the live-editing experience for every user in the room. Keeping them decoupled lets each scale, fail, and recover independently.
 
