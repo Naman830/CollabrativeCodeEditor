@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 
-const PISTON_EXECUTE_URL = "https://emkc.org/api/v2/piston/execute";
+const PISTON_EXECUTE_URL = `${process.env.PISTON_API_URL ?? "http://localhost:2000"}/api/v2/execute`;
 
 // Pinned against Piston's /runtimes output for the languages in the editor's
 // language switcher. Update these if Piston drops support for a version.
