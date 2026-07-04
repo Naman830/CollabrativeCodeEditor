@@ -2,7 +2,7 @@
 
 A collaborative code editor with real-time multi-cursor sync (CRDT-based) and secure sandboxed code execution — built to explore distributed state management and execution isolation at scale.
 
-🚧 Status: In Progress — single-user editor with sandboxed execution is working locally; Yjs is now bound to the Monaco editor locally (single-tab, no networking yet); WebSocket server, Redis, and Postgres are not wired up yet.
+🚧 Status: In Progress — single-user editor with sandboxed execution is working locally; real-time multi-tab sync is now live via Yjs + y-websocket + the standalone WebSocket server; Redis and Postgres are not wired up yet.
 
 ---
 
@@ -24,7 +24,8 @@ What makes it technically interesting: keeping edit state consistent across mult
 
 ## Features
 
-- [ ] Real-time multi-cursor editing
+- [x] Real-time multi-tab sync (Yjs CRDT over `y-websocket`, hardcoded single room)
+- [ ] Real-time multi-cursor editing / room routing
 - [ ] Presence indicators (who's online, where they're looking)
 - [x] Sandboxed code execution (JavaScript, TypeScript, Python, Java, C++ via a self-hosted Piston instance)
 - [ ] Room persistence (reload without losing state)
@@ -46,7 +47,9 @@ What makes it technically interesting: keeping edit state consistent across mult
 ---
 
 ## Architecture
-*Diagram coming soon.*
+*Diagram image coming soon — described in text below in the meantime.*
+
+The Next.js frontend holds a `Y.Doc` per editor session, bound to the Monaco editor via `y-monaco`. A `WebsocketProvider` (from `y-websocket`) connects that same `Y.Doc` to the standalone Node.js WebSocket server in `server/`, which speaks the Yjs sync protocol (via `y-websocket`'s server-side `setupWSConnection` utility) instead of a custom message format. Every browser tab that opens the editor joins the same hardcoded room (`"test-room"`) and gets its edits merged and rebroadcast by the server, so two tabs editing concurrently converge to the same CRDT state in real time. Room routing, presence, and persistence are not built yet — today there's exactly one shared room and nothing survives a server restart.
 
 **WebSocket server:** deployed on Railway, URL: `collabrativecodeeditor-production.up.railway.app`
 
@@ -71,12 +74,13 @@ Editing sync needs to be low-latency and always-on — every keystroke matters. 
 
 ## Real-Time Sync
 
-Yjs is integrated with the Monaco editor in `collab-code-editor/app/components/CodeEditor.tsx`, but **only locally** — there is no provider or network transport wired up yet.
+Yjs is integrated with the Monaco editor in `collab-code-editor/app/components/CodeEditor.tsx`, and is now synced across tabs/clients over the network.
 
 - A `Y.Doc` and `Y.Text` are created per editor session and bound to the Monaco model via `y-monaco`'s `MonacoBinding`, so keystrokes flow into the CRDT.
-- This is single-user, single-tab: edits update the local `Y.Doc`, but nothing is broadcast anywhere.
-- A temporary debug panel (`YjsDebugPanel.tsx`) logs each `Y.Doc` update as a base64-encoded string and shows a running update count, just to make the CRDT's update events visible during development. It's safe to delete once real sync lands.
-- Next step: connect this binding to the standalone WebSocket server in `server/` via `y-websocket` (or an equivalent custom provider) to get actual multi-client sync.
+- A `WebsocketProvider` (from `y-websocket`) connects that same `Y.Doc` to the standalone WebSocket server in `server/`, so edits are broadcast to every other client in the same room and merged via Yjs's CRDT — open the editor in two tabs and typing in one shows up in the other.
+- The room/document name is hardcoded to `"test-room"` for now; real room routing (per-URL or per-session rooms) is a later step.
+- The env var `NEXT_PUBLIC_WS_URL` (see `collab-code-editor/.env.example`) controls which server the provider connects to — defaults to `ws://localhost:8080` locally, and should point at the deployed Railway/Render URL in production.
+- A small connected/connecting/disconnected status dot in the editor toolbar reflects the provider's live connection state (replaces the old temporary debug panel, which has been removed now that real sync is in place).
 
 ---
 
@@ -98,9 +102,9 @@ Open [http://localhost:3000](http://localhost:3000), write some code in the edit
 
 By default the app talks to Piston at `http://localhost:2000`. Override with a `PISTON_API_URL` env var if you're running Piston elsewhere.
 
-### WebSocket server (standalone, not yet wired to the frontend)
+### WebSocket server (Yjs sync)
 
-A plain `ws`-based WebSocket server now lives in `server/`, sibling to `collab-code-editor/`. It currently just accepts connections, replies with a `{ type: "welcome", id }` message, and echoes back whatever it receives — no Yjs, rooms, or broadcasting yet. To run it locally:
+A standalone WebSocket server lives in `server/`, sibling to `collab-code-editor/`. It now speaks the **Yjs sync protocol** — via `y-websocket`'s server-side `setupWSConnection` utility (`server/yjsConnection.js`) — instead of the plain echo logic from the earlier scaffold. To run it locally:
 
 ```bash
 cd server
@@ -109,7 +113,7 @@ cp .env.example .env
 npm run dev
 ```
 
-It listens on `PORT` from `.env` (default `8080`). The Next.js frontend doesn't talk to it yet — that integration comes with the Yjs sync work.
+It listens on `PORT` from `.env` (default `8080`). Run it alongside the frontend (`npm run dev` in `collab-code-editor/`, pointed at it via `NEXT_PUBLIC_WS_URL`) to see edits sync live between browser tabs.
 
 *Postgres and Redis aren't wired up yet — setup instructions for those will be added as each comes online.*
 
@@ -119,7 +123,8 @@ It listens on `PORT` from `.env` (default `8080`). The Next.js frontend doesn't 
 
 - [x] Basic single-user code editor UI (Monaco)
 - [x] Code execution via Piston integration (self-hosted via Docker)
-- [ ] Real-time multi-cursor sync (Yjs + WebSocket server)
+- [x] Real-time multi-tab sync (Yjs + `y-websocket` + WebSocket server, single hardcoded room)
+- [ ] Real room routing (per-session/per-URL rooms)
 - [ ] Presence indicators and live cursor labels
 - [ ] Room persistence with Postgres
 - [ ] Reconnect/resync handling

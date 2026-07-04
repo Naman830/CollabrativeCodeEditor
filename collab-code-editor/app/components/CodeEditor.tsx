@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import Editor, { OnChange, OnMount } from "@monaco-editor/react";
 import * as Y from "yjs";
 import type { MonacoBinding } from "y-monaco";
-import YjsDebugPanel from "./YjsDebugPanel";
+import type { WebsocketProvider } from "y-websocket";
 
 const LANGUAGES = [
   { label: "JavaScript", value: "javascript" },
@@ -15,6 +15,12 @@ const LANGUAGES = [
 ] as const;
 
 const DEFAULT_CODE = `console.log("Hello, world!");\n`;
+
+// Room routing doesn't exist yet — every tab joins the same hardcoded room.
+const ROOM_NAME = "test-room";
+const WS_URL = process.env.NEXT_PUBLIC_WS_URL ?? "ws://localhost:8080";
+
+type SyncStatus = "connecting" | "connected" | "disconnected";
 
 type ExecuteSuccess = {
   success: true;
@@ -40,13 +46,29 @@ export default function CodeEditor() {
   const [code, setCode] = useState<string>(DEFAULT_CODE);
   const [runState, setRunState] = useState<RunState>({ status: "idle" });
 
-  // Local-only Yjs doc backing the editor. No provider/network yet — this
-  // just proves the Monaco <-> Yjs binding works within a single tab.
   const [yDoc] = useState(() => new Y.Doc());
   const bindingRef = useRef<MonacoBinding | null>(null);
+  const [syncStatus, setSyncStatus] = useState<SyncStatus>("connecting");
 
   useEffect(() => {
+    let provider: WebsocketProvider | null = null;
+    let cancelled = false;
+
+    (async () => {
+      // y-websocket reads the `WebSocket` global at construction time — load
+      // it client-side only, same as the y-monaco import in handleEditorMount.
+      const { WebsocketProvider } = await import("y-websocket");
+      if (cancelled) return;
+
+      provider = new WebsocketProvider(WS_URL, ROOM_NAME, yDoc);
+      provider.on("status", ({ status }: { status: SyncStatus }) => {
+        setSyncStatus(status);
+      });
+    })();
+
     return () => {
+      cancelled = true;
+      provider?.destroy();
       bindingRef.current?.destroy();
       yDoc.destroy();
     };
@@ -126,6 +148,23 @@ export default function CodeEditor() {
             </option>
           ))}
         </select>
+
+        <div className="ml-auto flex items-center gap-2 text-xs text-zinc-400">
+          <span
+            className={`h-2 w-2 rounded-full ${
+              syncStatus === "connected"
+                ? "bg-green-500"
+                : syncStatus === "connecting"
+                  ? "bg-amber-500"
+                  : "bg-red-500"
+            }`}
+          />
+          {syncStatus === "connected"
+            ? "Synced"
+            : syncStatus === "connecting"
+              ? "Connecting…"
+              : "Disconnected"}
+        </div>
       </div>
 
       <div className="flex-1 min-h-0">
@@ -214,9 +253,6 @@ export default function CodeEditor() {
           </>
         )}
       </div>
-
-      {/* Temporary debug panel — remove once y-websocket sync lands. */}
-      <YjsDebugPanel doc={yDoc} />
     </div>
   );
 }
