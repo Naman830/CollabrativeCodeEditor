@@ -5,6 +5,7 @@ import Editor, { OnChange, OnMount } from "@monaco-editor/react";
 import * as Y from "yjs";
 import type { MonacoBinding } from "y-monaco";
 import type { WebsocketProvider } from "y-websocket";
+import type { Awareness } from "y-protocols/awareness";
 
 const LANGUAGES = [
   { label: "JavaScript", value: "javascript" },
@@ -17,6 +18,73 @@ const LANGUAGES = [
 const DEFAULT_CODE = `console.log("Hello, world!");\n`;
 
 const WS_URL = process.env.NEXT_PUBLIC_WS_URL ?? "ws://localhost:8080";
+
+// Fixed palette so remote cursor colors stay legible on the vs-dark theme.
+const CURSOR_COLORS = [
+  "#e57373",
+  "#64b5f6",
+  "#81c784",
+  "#ffb74d",
+  "#ba68c8",
+  "#4dd0e1",
+  "#f06292",
+  "#a1887f",
+];
+
+function randomUser() {
+  const id = Math.floor(Math.random() * 9000) + 1000;
+  const color = CURSOR_COLORS[Math.floor(Math.random() * CURSOR_COLORS.length)];
+  return { name: `User ${id}`, color };
+}
+
+// Rebuilds the remote-cursor <style> tag from current awareness state, keyed
+// by clientID. Regenerating the whole block (rather than patching it) means
+// rules for clients who've left are simply dropped instead of lingering.
+const AWARENESS_STYLE_ID = "yjs-remote-cursor-styles";
+
+function renderAwarenessStyles(awareness: Awareness, localClientID: number) {
+  let styleEl = document.getElementById(AWARENESS_STYLE_ID) as HTMLStyleElement | null;
+  if (!styleEl) {
+    styleEl = document.createElement("style");
+    styleEl.id = AWARENESS_STYLE_ID;
+    document.head.appendChild(styleEl);
+  }
+
+  const rules: string[] = [];
+  awareness.getStates().forEach((state, clientID) => {
+    if (clientID === localClientID) return;
+    const user = (state as { user?: { name: string; color: string } }).user;
+    if (!user) return;
+
+    const { name, color } = user;
+    rules.push(`
+      .yRemoteSelection-${clientID} {
+        background-color: ${color}55;
+      }
+      .yRemoteSelectionHead-${clientID} {
+        position: relative;
+        border-left: 2px solid ${color};
+      }
+      .yRemoteSelectionHead-${clientID}::after {
+        content: "${name.replace(/"/g, "'")}";
+        position: absolute;
+        top: -1.1em;
+        left: -2px;
+        white-space: nowrap;
+        font-size: 11px;
+        font-family: sans-serif;
+        padding: 1px 4px;
+        border-radius: 2px;
+        color: #1e1e1e;
+        background-color: ${color};
+        pointer-events: none;
+        z-index: 10;
+      }
+    `);
+  });
+
+  styleEl.textContent = rules.join("\n");
+}
 
 type SyncStatus = "connecting" | "connected" | "disconnected";
 
@@ -50,29 +118,53 @@ export default function CodeEditor({ roomId }: CodeEditorProps) {
 
   const [yDoc] = useState(() => new Y.Doc());
   const bindingRef = useRef<MonacoBinding | null>(null);
+  // handleEditorMount races the provider's dynamic import — await this
+  // instead of a plain ref so the binding always picks up awareness even if
+  // the editor finishes mounting first.
+  const providerReadyRef = useRef<Promise<WebsocketProvider | null>>(Promise.resolve(null));
   const [syncStatus, setSyncStatus] = useState<SyncStatus>("connecting");
 
   useEffect(() => {
-    let provider: WebsocketProvider | null = null;
     let cancelled = false;
+    let provider: WebsocketProvider | null = null;
+    let awarenessChangeHandler: (() => void) | null = null;
 
-    (async () => {
+    const providerReady = (async () => {
       // y-websocket reads the `WebSocket` global at construction time — load
       // it client-side only, same as the y-monaco import in handleEditorMount.
       const { WebsocketProvider } = await import("y-websocket");
-      if (cancelled) return;
+      if (cancelled) return null;
 
       provider = new WebsocketProvider(WS_URL, roomId, yDoc);
       provider.on("status", ({ status }: { status: SyncStatus }) => {
         setSyncStatus(status);
       });
+
+      // Reuse the awareness instance the provider already creates — assign
+      // this client a random name/color pair as its local presence state.
+      const { awareness } = provider;
+      awareness.setLocalStateField("user", randomUser());
+
+      awarenessChangeHandler = () => renderAwarenessStyles(awareness, yDoc.clientID);
+      awareness.on("change", awarenessChangeHandler);
+      renderAwarenessStyles(awareness, yDoc.clientID);
+
+      return provider;
     })();
+    providerReadyRef.current = providerReady;
 
     return () => {
       cancelled = true;
+      if (provider && awarenessChangeHandler) {
+        provider.awareness.off("change", awarenessChangeHandler);
+        // Clear local presence immediately so peers drop this cursor right
+        // away instead of waiting on the server to notice the socket close.
+        provider.awareness.setLocalState(null);
+      }
       provider?.destroy();
       bindingRef.current?.destroy();
       yDoc.destroy();
+      document.getElementById(AWARENESS_STYLE_ID)?.remove();
     };
   }, [yDoc, roomId]);
 
@@ -86,8 +178,16 @@ export default function CodeEditor({ roomId }: CodeEditorProps) {
     if (model) {
       // y-monaco pulls in raw monaco-editor, which touches `window` at
       // import time — load it client-side only, after the editor mounts.
-      const { MonacoBinding } = await import("y-monaco");
-      bindingRef.current = new MonacoBinding(yText, model, new Set([editor]));
+      const [{ MonacoBinding }, provider] = await Promise.all([
+        import("y-monaco"),
+        providerReadyRef.current,
+      ]);
+      bindingRef.current = new MonacoBinding(
+        yText,
+        model,
+        new Set([editor]),
+        provider?.awareness,
+      );
     }
   };
 
