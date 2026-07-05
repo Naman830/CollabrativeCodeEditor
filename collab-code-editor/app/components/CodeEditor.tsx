@@ -16,8 +16,6 @@ const LANGUAGES = [
 
 const DEFAULT_CODE = `console.log("Hello, world!");\n`;
 
-// Room routing doesn't exist yet — every tab joins the same hardcoded room.
-const ROOM_NAME = "test-room";
 const WS_URL = process.env.NEXT_PUBLIC_WS_URL ?? "ws://localhost:8080";
 
 type SyncStatus = "connecting" | "connected" | "disconnected";
@@ -41,7 +39,11 @@ type RunState =
   | { status: "success"; result: ExecuteSuccess }
   | { status: "error"; message: string };
 
-export default function CodeEditor() {
+type CodeEditorProps = {
+  roomId: string;
+};
+
+export default function CodeEditor({ roomId }: CodeEditorProps) {
   const [language, setLanguage] = useState<string>("javascript");
   const [code, setCode] = useState<string>(DEFAULT_CODE);
   const [runState, setRunState] = useState<RunState>({ status: "idle" });
@@ -60,7 +62,7 @@ export default function CodeEditor() {
       const { WebsocketProvider } = await import("y-websocket");
       if (cancelled) return;
 
-      provider = new WebsocketProvider(WS_URL, ROOM_NAME, yDoc);
+      provider = new WebsocketProvider(WS_URL, roomId, yDoc);
       provider.on("status", ({ status }: { status: SyncStatus }) => {
         setSyncStatus(status);
       });
@@ -72,7 +74,7 @@ export default function CodeEditor() {
       bindingRef.current?.destroy();
       yDoc.destroy();
     };
-  }, [yDoc]);
+  }, [yDoc, roomId]);
 
   const handleEditorMount: OnMount = async (editor) => {
     const yText = yDoc.getText("monaco");
@@ -148,6 +150,10 @@ export default function CodeEditor() {
             </option>
           ))}
         </select>
+
+        <span className="text-xs text-zinc-500">
+          Room: <span className="font-mono text-zinc-300">{roomId}</span>
+        </span>
 
         <div className="ml-auto flex items-center gap-2 text-xs text-zinc-400">
           <span
