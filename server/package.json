@@ -10,6 +10,7 @@
   "scripts": {
     "dev": "node index.js",
     "start": "node index.js",
+    "postinstall": "prisma generate",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:studio": "prisma studio",
