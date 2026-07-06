@@ -254,26 +254,33 @@ export default function CodeEditor({ roomId }: CodeEditorProps) {
         <span className="text-xs text-zinc-500">
           Room: <span className="font-mono text-zinc-300">{roomId}</span>
         </span>
+      </div>
 
-        <div className="ml-auto flex items-center gap-2 text-xs text-zinc-400">
+      <div className="relative flex-1 min-h-0">
+        <div
+          className={`pointer-events-none absolute right-2 top-2 z-10 flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] backdrop-blur-sm ${
+            syncStatus === "connected"
+              ? "border-green-900/60 bg-green-950/60 text-green-400"
+              : syncStatus === "connecting"
+                ? "border-amber-900/60 bg-amber-950/60 text-amber-400"
+                : "border-red-900/60 bg-red-950/60 text-red-400"
+          }`}
+        >
           <span
-            className={`h-2 w-2 rounded-full ${
+            className={`h-1.5 w-1.5 rounded-full ${
               syncStatus === "connected"
                 ? "bg-green-500"
                 : syncStatus === "connecting"
-                  ? "bg-amber-500"
+                  ? "animate-pulse bg-amber-500"
                   : "bg-red-500"
             }`}
           />
           {syncStatus === "connected"
-            ? "Synced"
+            ? "Connected"
             : syncStatus === "connecting"
-              ? "Connecting…"
+              ? "Reconnecting"
               : "Disconnected"}
         </div>
-      </div>
-
-      <div className="flex-1 min-h-0">
         <Editor
           height="100%"
           language={language}
