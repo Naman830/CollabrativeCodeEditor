@@ -88,8 +88,23 @@ function renderAwarenessStyles(awareness: Awareness, localClientID: number) {
 
 type SyncStatus = "connecting" | "connected" | "disconnected";
 
+// Mirrors exec-server's classifyResult() STATUS enum (see
+// exec-server/piston/classifyResult.js) — distinguishes a timeout /
+// memory-limit kill / signal kill from a plain non-zero exit.
+type ExecuteStatus =
+  | "success"
+  | "timeout"
+  | "memory_limit_exceeded"
+  | "killed"
+  | "output_limit_exceeded"
+  | "runtime_error"
+  | "internal_error";
+
 type ExecuteSuccess = {
   success: true;
+  status: ExecuteStatus;
+  stage: "compile" | "run" | null;
+  detail: string | null;
   stdout: string;
   stderr: string;
   exitCode: number | null;
@@ -98,14 +113,104 @@ type ExecuteSuccess = {
 
 type ExecuteFailure = {
   success: false;
+  kind?: "rejected" | "error";
   error: string;
 };
 
+// "queued"/"running" are both in-flight — exec-server holds the HTTP request
+// open for a job's whole lifecycle (see exec-server/README.md's "Queue
+// design"), so there's no server push to tell the client when a queued job
+// actually starts running; see the heuristic timer in handleRun() below.
+// "timeout"/"memory_limit_exceeded" get their own terminal states (rather
+// than folding into "completed") because they're sandbox-imposed outcomes,
+// not the user's program actually finishing. "rejected" is the queue-full/
+// server-busy case (429) — the job was never run at all.
 type RunState =
   | { status: "idle" }
-  | { status: "loading" }
-  | { status: "success"; result: ExecuteSuccess }
+  | { status: "queued" }
+  | { status: "running" }
+  | { status: "completed"; result: ExecuteSuccess }
+  | { status: "timeout"; result: ExecuteSuccess }
+  | { status: "memory_limit_exceeded"; result: ExecuteSuccess }
+  | { status: "rejected"; message: string }
   | { status: "error"; message: string };
+
+type StatusKind =
+  | "queued"
+  | "running"
+  | "success"
+  | "runtime_error"
+  | "timeout"
+  | "memory_limit_exceeded"
+  | "rejected"
+  | "error";
+
+// Same visual language as the sync-status pill above: low-opacity tinted
+// border/background, bright text, small colored dot.
+const STATUS_STYLES: Record<
+  StatusKind,
+  { label: string; pill: string; dot: string; panel: string }
+> = {
+  queued: {
+    label: "Queued",
+    pill: "border-slate-700/60 bg-slate-800/60 text-slate-300",
+    dot: "animate-pulse bg-slate-400",
+    panel: "border-zinc-800 bg-black",
+  },
+  running: {
+    label: "Running",
+    pill: "border-blue-900/60 bg-blue-950/60 text-blue-400",
+    dot: "animate-pulse bg-blue-500",
+    panel: "border-zinc-800 bg-black",
+  },
+  success: {
+    label: "Completed",
+    pill: "border-green-900/60 bg-green-950/60 text-green-400",
+    dot: "bg-green-500",
+    panel: "border-zinc-800 bg-black",
+  },
+  runtime_error: {
+    label: "Exited with error",
+    pill: "border-amber-900/60 bg-amber-950/60 text-amber-400",
+    dot: "bg-amber-500",
+    panel: "border-amber-900 bg-[#2a2114]",
+  },
+  timeout: {
+    label: "Timed out",
+    pill: "border-orange-900/60 bg-orange-950/60 text-orange-400",
+    dot: "bg-orange-500",
+    panel: "border-orange-900 bg-[#2a1c14]",
+  },
+  memory_limit_exceeded: {
+    label: "Memory limit exceeded",
+    pill: "border-purple-900/60 bg-purple-950/60 text-purple-400",
+    dot: "bg-purple-500",
+    panel: "border-purple-900 bg-[#241a2a]",
+  },
+  rejected: {
+    label: "Server busy",
+    pill: "border-pink-900/60 bg-pink-950/60 text-pink-400",
+    dot: "bg-pink-500",
+    panel: "border-pink-900 bg-[#2a1420]",
+  },
+  error: {
+    label: "Error",
+    pill: "border-red-900/60 bg-red-950/60 text-red-400",
+    dot: "bg-red-500",
+    panel: "border-red-900 bg-[#2a1414]",
+  },
+};
+
+function getStatusKind(runState: RunState, hasRuntimeFailure: boolean): StatusKind | null {
+  switch (runState.status) {
+    case "idle":
+      return null;
+    case "completed":
+      return hasRuntimeFailure ? "runtime_error" : "success";
+    default:
+      return runState.status;
+  }
+}
 
 type CodeEditorProps = {
   roomId: string;
@@ -196,7 +301,16 @@ export default function CodeEditor({ roomId }: CodeEditorProps) {
   };
 
   const handleRun = async () => {
-    setRunState({ status: "loading" });
+    setRunState({ status: "queued" });
+
+    // No server push distinguishes "waiting behind other jobs" from "a
+    // worker picked this up" (see the RunState comment above) — this timer
+    // is a client-side approximation so the button doesn't sit on
+    // "Queued..." for what's usually a sub-second wait. It's a no-op (and
+    // gets cleared) once the real response arrives.
+    const runningTimer = setTimeout(() => {
+      setRunState((prev) => (prev.status === "queued" ? { status: "running" } : prev));
+    }, 350);
 
     try {
       const res = await fetch("/api/execute", {
@@ -207,30 +321,47 @@ export default function CodeEditor({ roomId }: CodeEditorProps) {
 
       const data: ExecuteSuccess | ExecuteFailure = await res.json();
 
-      if (!res.ok || !data.success) {
-        setRunState({
-          status: "error",
-          message: !data.success ? data.error : "Execution failed.",
-        });
+      if (!data.success) {
+        if (res.status === 429 || data.kind === "rejected") {
+          setRunState({ status: "rejected", message: data.error });
+        } else {
+          setRunState({ status: "error", message: data.error });
+        }
         return;
       }
 
-      setRunState({ status: "success", result: data });
+      if (!res.ok) {
+        setRunState({ status: "error", message: "Execution failed." });
+        return;
+      }
+
+      if (data.status === "timeout") {
+        setRunState({ status: "timeout", result: data });
+      } else if (data.status === "memory_limit_exceeded") {
+        setRunState({ status: "memory_limit_exceeded", result: data });
+      } else {
+        setRunState({ status: "completed", result: data });
+      }
     } catch {
       setRunState({
         status: "error",
         message: "Could not reach the execution service. Please try again.",
       });
+    } finally {
+      clearTimeout(runningTimer);
     }
   };
 
-  const isLoading = runState.status === "loading";
+  const isInFlight = runState.status === "queued" || runState.status === "running";
 
   const hasRuntimeFailure =
-    runState.status === "success" &&
+    runState.status === "completed" &&
     ((runState.result.compile && runState.result.compile.exitCode !== 0) ||
       runState.result.exitCode !== 0 ||
       runState.result.stderr.length > 0);
+
+  const statusKind = getStatusKind(runState, hasRuntimeFailure);
+  const panelClass = statusKind ? STATUS_STYLES[statusKind].panel : "border-zinc-800 bg-black";
 
   return (
     <div className="flex h-full flex-col bg-[#1e1e1e] text-zinc-200">
@@ -301,37 +432,58 @@ export default function CodeEditor({ roomId }: CodeEditorProps) {
         <button
           type="button"
           onClick={handleRun}
-          disabled={isLoading}
+          disabled={isInFlight}
           className="flex items-center gap-2 rounded bg-green-600 px-4 py-1.5 text-sm font-medium text-white transition-colors hover:bg-green-500 disabled:cursor-not-allowed disabled:bg-green-800 disabled:text-zinc-300"
         >
-          {isLoading && (
+          {runState.status === "running" && (
             <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white/40 border-t-white" />
           )}
-          {isLoading ? "Running..." : "Run"}
+          {runState.status === "queued" && (
+            <span className="h-2 w-2 animate-pulse rounded-full bg-white/70" />
+          )}
+          {runState.status === "running" ? "Running…" : runState.status === "queued" ? "Queued…" : "Run"}
         </button>
-        {runState.status === "success" && (
+
+        {statusKind && (
+          <span
+            className={`flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] ${STATUS_STYLES[statusKind].pill}`}
+          >
+            <span className={`h-1.5 w-1.5 rounded-full ${STATUS_STYLES[statusKind].dot}`} />
+            {STATUS_STYLES[statusKind].label}
+          </span>
+        )}
+
+        {(runState.status === "completed" ||
+          runState.status === "timeout" ||
+          runState.status === "memory_limit_exceeded") && (
           <span className="text-xs text-zinc-500">
             Exit code: {runState.result.exitCode ?? "—"}
           </span>
         )}
       </div>
 
-      <div
-        className={`h-48 overflow-auto border-t px-4 py-3 transition-colors ${
-          runState.status === "error" || hasRuntimeFailure
-            ? "border-red-900 bg-[#2a1414]"
-            : "border-zinc-800 bg-black"
-        }`}
-      >
+      <div className={`h-48 overflow-auto border-t px-4 py-3 transition-colors ${panelClass}`}>
         {runState.status === "idle" && (
           <pre className="whitespace-pre-wrap font-mono text-sm text-zinc-600">
             Output will appear here...
           </pre>
         )}
 
-        {runState.status === "loading" && (
-          <pre className="whitespace-pre-wrap font-mono text-sm text-zinc-500">
+        {runState.status === "queued" && (
+          <pre className="whitespace-pre-wrap font-mono text-sm text-slate-400">
+            Waiting for a free worker…
+          </pre>
+        )}
+
+        {runState.status === "running" && (
+          <pre className="whitespace-pre-wrap font-mono text-sm text-blue-400">
             Running your code...
+          </pre>
+        )}
+
+        {runState.status === "rejected" && (
+          <pre className="whitespace-pre-wrap font-mono text-sm text-pink-400">
+            {runState.message}
           </pre>
         )}
 
@@ -341,7 +493,23 @@ export default function CodeEditor({ roomId }: CodeEditorProps) {
           </pre>
         )}
 
-        {runState.status === "success" && (
+        {runState.status === "timeout" && (
+          <pre className="whitespace-pre-wrap font-mono text-sm text-orange-400">
+            Execution exceeded its time limit and was terminated
+            {runState.result.stage ? ` during the ${runState.result.stage} stage` : ""}.
+            {runState.result.detail ? `\n${runState.result.detail}` : ""}
+          </pre>
+        )}
+
+        {runState.status === "memory_limit_exceeded" && (
+          <pre className="whitespace-pre-wrap font-mono text-sm text-purple-400">
+            Execution was terminated for exceeding its memory limit
+            {runState.result.stage ? ` during the ${runState.result.stage} stage` : ""}.
+            {runState.result.detail ? `\n${runState.result.detail}` : ""}
+          </pre>
+        )}
+
+        {runState.status === "completed" && (
           <>
             {runState.result.compile && runState.result.compile.exitCode !== 0 && (
               <pre className="whitespace-pre-wrap font-mono text-sm text-red-400">

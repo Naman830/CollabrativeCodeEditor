@@ -174,6 +174,20 @@ A standalone Express server, `exec-server/`, is the new home for code execution 
 
 Both `PORT` and the Piston URL (`PISTON_API_URL`) are env-configurable (see `exec-server/.env.example`), the same pattern `server/` and the Next.js app already use for their own upstream URLs (the Next.js app now points at `exec-server/` via its own `EXEC_SERVER_API_URL` var), so each environment (local Docker Compose Piston vs. a deployed instance) just needs a different `.env`.
 
+### Execution status UI
+
+The editor's Run button and output panel (`collab-code-editor/app/components/CodeEditor.tsx`) surface the distinct outcomes `exec-server` classifies a job into (see `exec-server/piston/classifyResult.js` and its README's "Queue backpressure"/"Distinguishing failure modes" sections), instead of a single generic "Error." Each state gets its own color-coded status pill and output panel tint, matching the existing connection-status indicator's visual style:
+
+- **Queued** (slate) — the job has been submitted and is waiting for a free worker.
+- **Running** (blue) — the job is executing. Since `exec-server` currently holds the HTTP request open for a job's whole lifecycle rather than pushing incremental updates, the queued → running transition in the UI is a short client-side heuristic, not a real server signal — it'll become accurate once `exec-server` exposes real job-status updates.
+- **Completed** (green for a clean exit, amber for a non-zero exit / stderr) — the program ran to completion; stdout/stderr/exit code are shown as before.
+- **Timed out** (orange) — the job hit `exec-server`'s configured `run_timeout`/`compile_timeout` and was terminated.
+- **Memory limit exceeded** (purple) — the job was killed for exceeding its configured memory limit.
+- **Server busy** (pink) — `exec-server` rejected the request with `429` because its job queue is full (`MAX_QUEUE_DEPTH`); the job never ran.
+- **Error** (red) — a fallback for anything else (network failure, an unexpected response shape, etc.).
+
+This is a frontend-only change: `/api/execute` forwards `exec-server`'s classification fields (`status`/`stage`/`detail`) when present, and falls back to deriving a plain success/runtime-error status from the exit code otherwise, so the UI degrades gracefully against today's still-scaffolded `exec-server` (see [Execution Service](#execution-service) above).
+
 ---
 
 ## Local Setup / Installation
