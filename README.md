@@ -188,6 +188,31 @@ The editor's Run button and output panel (`collab-code-editor/app/components/Cod
 
 This is a frontend-only change: `/api/execute` forwards `exec-server`'s classification fields (`status`/`stage`/`detail`) when present, and falls back to deriving a plain success/runtime-error status from the exit code otherwise, so the UI degrades gracefully against today's still-scaffolded `exec-server` (see [Execution Service](#execution-service) above).
 
+### Manual Test Checklist (Execution Queue, v0.5)
+
+No automated tests cover `exec-server`'s queue/worker-pool/timeout/resource-limit behavior yet, so verify it by hand once "Execution request queue + resource limits" (see [Roadmap](#roadmap--whats-next)) is actually implemented — these TODOs are currently stubbed (see [Execution Service](#execution-service) above), so every check below will fail against today's code. Run Piston (`docker compose up -d`), `exec-server/` (`cd exec-server && npm run dev`), and the frontend (`cd collab-code-editor && npm run dev`) locally for all of these.
+
+1. **Concurrent executions beyond the worker pool size are queued, not run in parallel**
+   - [ ] With `WORKER_POOL_SIZE` at its default (4), submit more concurrent executions than that (e.g. 6-8 Run requests fired back-to-back, or via a small script hitting `/api/execute` directly) using code that takes a couple of seconds to finish (e.g. a short sleep/busy-loop).
+   - [ ] Confirm only `WORKER_POOL_SIZE` jobs are actually running against Piston at any one time, and the rest visibly wait their turn (e.g. later jobs' results arrive only after earlier ones free up a worker) rather than all hitting Piston at once.
+
+2. **A job that runs past the configured timeout is reported as "timed out," not a generic error**
+   - [ ] Run code that sleeps/loops longer than `RUN_TIMEOUT_MS` (default 3000ms) or `COMPILE_TIMEOUT_MS` (default 5000ms) for a compiled language.
+   - [ ] Confirm the job is killed at (or shortly after) the configured timeout rather than being left to hang, and the UI shows the **Timed out** (orange) state specifically — not the generic **Error** (red) state.
+
+3. **A job that exceeds the memory limit is reported as "memory limit exceeded," distinct from timeout**
+   - [ ] Run code that allocates well beyond `RUN_MEMORY_LIMIT_MB` (default 128MB) or `COMPILE_MEMORY_LIMIT_MB` (default 256MB) quickly (so it gets OOM-killed rather than timing out first).
+   - [ ] Confirm the UI shows the **Memory limit exceeded** (purple) state, not **Timed out** (orange) or the generic **Error** (red) state — the two failure modes must stay visibly distinct.
+
+4. **Filling the queue past its max depth returns 429 instead of hanging**
+   - [ ] With `MAX_QUEUE_DEPTH` set low for testing (e.g. `MAX_QUEUE_DEPTH=2` in `exec-server/.env`) and a small `WORKER_POOL_SIZE`, submit enough concurrent long-running jobs to exceed both the worker pool and the queue depth.
+   - [ ] Confirm the excess requests come back **immediately** with `429` / `{"error": "server busy, try again"}` rather than hanging indefinitely, and the UI shows the **Server busy** (pink) state for those.
+   - [ ] Confirm jobs already queued (within the depth limit) still complete normally rather than also being rejected.
+
+5. **A normal, well-behaved execution still completes correctly through the full path**
+   - [ ] Run a simple, quick snippet in each supported language (JavaScript, TypeScript, Python, Java, C++) with normal output (e.g. printing a string).
+   - [ ] Confirm each one completes through the full path (Next.js → `exec-server/` → Piston) and the UI shows the **Completed** (green) state with the expected stdout and exit code `0` — confirming the queue/worker-pool/timeout/resource-limit changes above didn't regress the ordinary success path.
+
 ---
 
 ## Local Setup / Installation
