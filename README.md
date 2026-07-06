@@ -2,7 +2,7 @@
 
 A collaborative code editor with real-time multi-cursor sync (CRDT-based) and secure sandboxed code execution — built to explore distributed state management and execution isolation at scale.
 
-🚧 Status: In Progress — single-user editor with sandboxed execution is working locally; real-time multi-tab sync is now live via Yjs + y-websocket + the standalone WebSocket server, with independent per-room documents via URL-based room routing; live multi-cursor presence (via Yjs awareness) is also working; Redis and Postgres are not wired up yet.
+🚧 Status: In Progress — single-user editor with sandboxed execution is working locally; real-time multi-tab sync is now live via Yjs + y-websocket + the standalone WebSocket server, with independent per-room documents via URL-based room routing; live multi-cursor presence (via Yjs awareness) is also working; Postgres (via Prisma + Neon) is connected with the `Room` schema migrated, but it isn't wired into the live sync flow yet; Redis is not wired up yet.
 
 ---
 
@@ -28,7 +28,7 @@ What makes it technically interesting: keeping edit state consistent across mult
 - [x] Real-time multi-cursor editing
 - [x] Presence indicators (who's online, where they're looking) — via Yjs's awareness protocol
 - [x] Sandboxed code execution (JavaScript, TypeScript, Python, Java, C++ via a self-hosted Piston instance)
-- [ ] Room persistence (reload without losing state)
+- [ ] Room persistence (reload without losing state) — `Room` schema + migration in place ([details](#persistence)); not yet wired into the live sync flow
 
 ---
 
@@ -41,7 +41,7 @@ What makes it technically interesting: keeping edit state consistent across mult
 | Sync Engine | Yjs | A CRDT-based library that automatically resolves concurrent edits without conflicts, eliminating the need for custom conflict resolution logic. |
 | Realtime Server | Node.js WebSocket Server (separate from Next.js) | Since Next.js API routes are not designed for long-lived connections, a dedicated WebSocket server provides persistent, low-latency, bidirectional communication. |
 | Caching / Pub-Sub | Redis | Broadcasts room state across multiple server instances, enabling efficient horizontal scaling. |
-| Persistence | PostgreSQL | Provides durable storage, ensuring rooms and documents persist across server restarts. |
+| Persistence | PostgreSQL (Neon) via Prisma | Provides durable storage, ensuring rooms and documents persist across server restarts; Neon gives a managed, serverless Postgres instance with no infra to run, and Prisma gives typed schema/migrations. |
 | Code Execution | Piston (Open-Source Sandboxed Execution Engine) | Enables secure, multi-language code execution without building a custom Docker-based sandbox, allowing development effort to focus on real-time collaboration and scalability instead of execution isolation. |
 
 ---
@@ -98,6 +98,26 @@ Beyond syncing document contents, each client now broadcasts *where it is* — i
 
 ---
 
+## Persistence
+
+Room documents are persisted to Postgres (hosted on [Neon](https://neon.tech)) via [Prisma](https://www.prisma.io/), from within the `server/` WebSocket server.
+
+**Schema** (`server/prisma/schema.prisma`):
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `id` | `String` (`@id`) | The room id from the URL route (`/room/[roomId]`), used directly as the primary key — it's already a stable, unique identifier, so a separate surrogate id would be redundant. |
+| `ydocState` | `Bytes?` | Serialized Yjs document state (`Y.encodeStateAsUpdate`). Nullable until the room's first snapshot is written. |
+| `createdAt` | `DateTime` | Set once, when the row is first created. |
+| `updatedAt` | `DateTime` | Bumped automatically (`@updatedAt`) on every snapshot write. |
+
+Two persistence-related decisions, made ahead of wiring this into the live sync flow:
+
+- **Debounced snapshot + disconnect flush.** Instead of writing to Postgres on every Yjs update (far too frequent — every keystroke would trigger a write), the server will debounce snapshot writes to a short delay after the last edit, and additionally flush a snapshot immediately when the last client disconnects from a room. *Rationale: bounds write volume to roughly one write per pause-in-typing or per session end, while still guaranteeing durable state before a room goes idle.*
+- **Auto-create-on-connect.** A `Room` row is created lazily on first connection to a given room id, rather than requiring rooms to be explicitly provisioned through a separate API call. *Rationale: room ids are freely chosen by users on the landing page (typed or generated) with no pre-registration step, so the WS server is the natural place to guarantee a row exists before state is read or written for that id.*
+
+---
+
 ## Local Setup / Installation
 
 ```bash
@@ -129,7 +149,18 @@ npm run dev
 
 It listens on `PORT` from `.env` (default `8080`). Run it alongside the frontend (`npm run dev` in `collab-code-editor/`, pointed at it via `NEXT_PUBLIC_WS_URL`) to see edits sync live between browser tabs.
 
-*Postgres and Redis aren't wired up yet — setup instructions for those will be added as each comes online.*
+**Database (Prisma + Neon Postgres):** the server also connects to a Neon Postgres database via Prisma (see [Persistence](#persistence) above for the schema). To set it up:
+
+```bash
+cd server
+# Add DATABASE_URL (pooled) and DIRECT_URL (direct) from your Neon project to .env
+npx prisma migrate dev   # applies migrations, using DIRECT_URL
+npx prisma generate      # regenerates the Prisma Client, if needed
+```
+
+`DATABASE_URL` (Neon's pooled/PgBouncer connection) is used by Prisma Client at runtime via the `@prisma/adapter-pg` driver adapter; `DIRECT_URL` (Neon's direct, non-pooled connection) is used only by `prisma migrate`, since PgBouncer's transaction-mode pooling doesn't support the session-level advisory locks Migrate needs.
+
+*Redis isn't wired up yet — setup instructions will be added once it comes online.*
 
 ---
 

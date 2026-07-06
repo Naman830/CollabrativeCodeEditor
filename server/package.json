@@ -6,12 +6,22 @@
   "main": "index.js",
   "scripts": {
     "dev": "node index.js",
-    "start": "node index.js"
+    "start": "node index.js",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate": "prisma migrate dev",
+    "prisma:studio": "prisma studio",
+    "db:test": "node scripts/testDbConnection.js"
   },
   "dependencies": {
+    "@prisma/adapter-pg": "^7.8.0",
+    "@prisma/client": "^7.8.0",
     "dotenv": "^16.4.5",
+    "pg": "^8.22.0",
     "ws": "^8.18.0",
     "y-websocket": "^1.5.4",
     "yjs": "^13.6.31"
+  },
+  "devDependencies": {
+    "prisma": "^7.8.0"
   }
 }
