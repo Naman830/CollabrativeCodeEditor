@@ -4,6 +4,9 @@
   "private": true,
   "description": "Standalone execution service that proxies code-run requests to Piston",
   "main": "index.js",
+  "engines": {
+    "node": ">=22.12.0"
+  },
   "scripts": {
     "dev": "node index.js",
     "start": "node index.js"

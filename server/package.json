@@ -4,6 +4,9 @@
   "private": true,
   "description": "Standalone WebSocket server for the collaborative code editor",
   "main": "index.js",
+  "engines": {
+    "node": ">=22.12.0"
+  },
   "scripts": {
     "dev": "node index.js",
     "start": "node index.js",
