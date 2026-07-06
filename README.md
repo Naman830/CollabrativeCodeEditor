@@ -213,6 +213,10 @@ No automated tests cover `exec-server`'s queue/worker-pool/timeout/resource-limi
    - [ ] Run a simple, quick snippet in each supported language (JavaScript, TypeScript, Python, Java, C++) with normal output (e.g. printing a string).
    - [ ] Confirm each one completes through the full path (Next.js → `exec-server/` → Piston) and the UI shows the **Completed** (green) state with the expected stdout and exit code `0` — confirming the queue/worker-pool/timeout/resource-limit changes above didn't regress the ordinary success path.
 
+### Known issues / fixed
+
+**Silent empty "success" on every run (fixed).** When the job queue/worker pool landed (Step 3/4 of v0.5), `exec-server`'s `POST /execute` response shape changed from a flat Piston passthrough to a wrapped envelope — `{ pistonStatus, data, result }`, where `data` is the raw Piston response and `result` is `exec-server`'s own `{ stage, status, detail }` classification (see `exec-server/worker/workerPool.js`'s `job.resolve(...)` call). `collab-code-editor/app/api/execute/route.ts` was never updated to match: it kept reading `run`/`compile`/`status`/`stage`/`detail` off the top level of that response. Those fields no longer existed there, but every read went through `??`/`?.` fallbacks instead of throwing, so the route silently returned a fake `{ success: true, status: "success", stdout: "", stderr: "", exitCode: null }` on every execution — no thrown error anywhere in the chain, just an empty Run result. Fixed by unwrapping `data`/`result` correctly in `route.ts`, and by adding an `ExecServerResponse` TypeScript type for `exec-server`'s actual envelope shape so a top-level-vs-nested mismatch like this is a type error next time instead of a silent fallback.
+
 ---
 
 ## Local Setup / Installation

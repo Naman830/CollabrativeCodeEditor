@@ -32,19 +32,40 @@ type ExecuteStatus =
   | "runtime_error"
   | "internal_error";
 
+// Raw response body from Piston's own POST /api/v2/execute.
 type PistonResponse = {
   language: string;
   version: string;
   run: PistonStage;
   compile?: PistonStage;
   message?: string;
+};
+
+// exec-server's own classification of a job's outcome (see
+// exec-server/piston/classifyResult.js's STATUS enum).
+type ExecResult = {
+  stage: "compile" | "run";
+  status: ExecuteStatus;
+  detail: string;
+};
+
+// exec-server's actual POST /execute response body.
+//
+// On success (200), exec-server's worker pool wraps the raw Piston response
+// and its own classification in an envelope rather than returning either
+// flat (see exec-server/worker/workerPool.js's `job.resolve({ pistonStatus,
+// data, result })` call and index.js's `res.status(200).json(result)`).
+//
+// On failure (queue full / job timeout / Piston unreachable), exec-server
+// instead sends a flat `{ error }` body with a non-2xx status (see
+// exec-server/index.js's catch block) — `data`/`result` are absent there,
+// which is why every field below is optional on this one merged type.
+type ExecServerResponse = {
   error?: string;
-  // Optional until exec-server's job-result delivery is wired up (see its
-  // README's "Queue design" TODO) — when present, these are forwarded as-is
-  // instead of re-derived from exit codes.
-  status?: ExecuteStatus;
-  stage?: "compile" | "run";
-  detail?: string;
+  message?: string;
+  pistonStatus?: number;
+  data?: PistonResponse;
+  result?: ExecResult;
 };
 
 export async function POST(request: Request) {
@@ -93,9 +114,9 @@ export async function POST(request: Request) {
     );
   }
 
-  let data: PistonResponse;
+  let execBody: ExecServerResponse;
   try {
-    data = await execRes.json();
+    execBody = await execRes.json();
   } catch {
     return NextResponse.json(
       { success: false, kind: "error", error: "Code execution service returned an invalid response." },
@@ -110,36 +131,53 @@ export async function POST(request: Request) {
   // of lumping it in with real execution errors.
   if (execRes.status === 429) {
     return NextResponse.json(
-      { success: false, kind: "rejected", error: data.error ?? data.message ?? "Server is busy. Please try again." },
+      {
+        success: false,
+        kind: "rejected",
+        error: execBody.error ?? execBody.message ?? "Server is busy. Please try again.",
+      },
       { status: 429 }
     );
   }
 
   if (!execRes.ok) {
     return NextResponse.json(
-      { success: false, kind: "error", error: data.error ?? data.message ?? "Code execution service returned an error." },
+      {
+        success: false,
+        kind: "error",
+        error: execBody.error ?? execBody.message ?? "Code execution service returned an error.",
+      },
       { status: 502 }
     );
   }
 
-  const exitCode = data.run?.code ?? null;
-  const compileExitCode = data.compile?.code ?? null;
+  // Unwrap exec-server's success envelope — the raw Piston response lives at
+  // execBody.data, and exec-server's own classification at execBody.result
+  // (see the ExecServerResponse comment above). Reading run/compile/status/
+  // stage/detail directly off the top-level body here was the v0.5
+  // regression: those fields don't exist at that level, so they silently
+  // resolved to undefined via optional chaining and produced a fake
+  // "success" with empty output.
+  const data = execBody.data;
+  const result = execBody.result;
+
+  const exitCode = data?.run?.code ?? null;
+  const compileExitCode = data?.compile?.code ?? null;
 
   // Prefer exec-server's own classification once it forwards one; fall back
-  // to a plain exit-code check so this still works against a bare Piston
-  // passthrough (today's actual behavior).
+  // to a plain exit-code check for safety if it's ever absent.
   const status: ExecuteStatus =
-    data.status ?? ((compileExitCode ?? 0) !== 0 || (exitCode ?? 0) !== 0 ? "runtime_error" : "success");
+    result?.status ?? ((compileExitCode ?? 0) !== 0 || (exitCode ?? 0) !== 0 ? "runtime_error" : "success");
 
   return NextResponse.json({
     success: true,
     status,
-    stage: data.stage ?? null,
-    detail: data.detail ?? null,
-    stdout: data.run?.stdout ?? "",
-    stderr: data.run?.stderr ?? "",
+    stage: result?.stage ?? null,
+    detail: result?.detail ?? null,
+    stdout: data?.run?.stdout ?? "",
+    stderr: data?.run?.stderr ?? "",
     exitCode,
-    compile: data.compile
+    compile: data?.compile
       ? {
           stdout: data.compile.stdout ?? "",
           stderr: data.compile.stderr ?? "",
