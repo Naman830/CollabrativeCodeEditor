@@ -2,9 +2,14 @@
 //
 // This module is a skeleton. The worker pool (see ../worker/workerPool.js)
 // needs a way to enqueue jobs and pull the next one when a worker is free.
-// The actual data structure, concurrency safety (multiple workers pulling
-// at once), and capacity/backpressure behavior are intentionally left
-// unimplemented for you to design.
+// The actual data structure and concurrency safety (multiple workers
+// pulling at once) are intentionally left unimplemented for you to design.
+//
+// Queue backpressure (MAX_QUEUE_DEPTH) is enforced by the caller (see the
+// TODO in index.js's POST /execute handler) using isFull()/size() below,
+// so a full queue is rejected before enqueue() is ever called.
+
+const { MAX_QUEUE_DEPTH } = require("../config");
 
 /**
  * Add a job to the queue.
@@ -51,9 +56,21 @@ function isEmpty() {
   throw new Error("Not implemented");
 }
 
+/**
+ * @returns {boolean} Whether the queue is at MAX_QUEUE_DEPTH capacity.
+ */
+function isFull() {
+  // TODO (queue backpressure — depth check goes here): return whether
+  // size() >= MAX_QUEUE_DEPTH. This is what index.js's POST /execute
+  // handler calls to decide whether to reject a new request with 429
+  // instead of enqueueing it.
+  throw new Error("Not implemented");
+}
+
 module.exports = {
   enqueue,
   dequeue,
   size,
   isEmpty,
+  isFull,
 };

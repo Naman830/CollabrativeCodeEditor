@@ -1,4 +1,4 @@
-const { WORKER_POOL_SIZE, PISTON_API_URL } = require("../config");
+const { WORKER_POOL_SIZE, PISTON_API_URL, JOB_TIMEOUT_MS } = require("../config");
 const queue = require("../queue/jobQueue");
 
 // Fixed-size worker pool that pulls jobs from the in-memory queue and runs
@@ -45,6 +45,15 @@ function startPool() {
  * - Handle job failure (Piston unreachable, invalid JSON, thrown errors)
  *   so a failed job resolves/rejects cleanly instead of wedging the worker
  *   or leaving the original request hanging forever.
+ *
+ * TODO (per-job execution timeout — kill logic goes here): the call to
+ * Piston must be raced against JOB_TIMEOUT_MS. If the timeout elapses
+ * first, the in-flight request needs to be aborted (e.g. AbortController
+ * passed to fetch/axios) and the job resolved/rejected with a timeout
+ * error rather than left to finish on its own. Make sure whichever
+ * finishes second (the late Piston response vs. the timeout) is a no-op —
+ * the job must be settled exactly once, and the worker must be freed to
+ * pick up its next job either way.
  *
  * @param {object} job
  * @returns {Promise<void>}

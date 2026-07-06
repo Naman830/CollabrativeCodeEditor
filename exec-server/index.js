@@ -14,6 +14,15 @@ app.get("/health", (_req, res) => {
 });
 
 app.post("/execute", async (req, res) => {
+  // TODO (queue backpressure — depth check goes here, before enqueueing):
+  // if queue.isFull() (i.e. queue.size() >= MAX_QUEUE_DEPTH), return
+  // immediately without calling enqueue():
+  //
+  //   return res.status(429).json({ error: "server busy, try again" });
+  //
+  // This must run before the job is built/enqueued below, so a full queue
+  // is rejected outright rather than growing unbounded.
+
   // TODO: Build a job object from req.body (e.g. { id: <generate>, request:
   // req.body }) and enqueue it for the worker pool instead of calling
   // Piston directly here.
