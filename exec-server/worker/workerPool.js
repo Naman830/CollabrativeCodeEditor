@@ -1,5 +1,13 @@
-const { WORKER_POOL_SIZE, PISTON_API_URL, JOB_TIMEOUT_MS } = require("../config");
+const {
+  WORKER_POOL_SIZE,
+  PISTON_API_URL,
+  JOB_TIMEOUT_MS,
+  COMPILE_MEMORY_LIMIT_BYTES,
+  RUN_MEMORY_LIMIT_BYTES,
+} = require("../config");
 const queue = require("../queue/jobQueue");
+const { buildExecuteRequest } = require("../piston/buildExecuteRequest");
+const { classifyResult } = require("../piston/classifyResult");
 
 // Fixed-size worker pool that pulls jobs from the in-memory queue and runs
 // them against Piston.
@@ -33,10 +41,13 @@ function startPool() {
  * Process a single job: run it against Piston and deliver its result to
  * whatever is waiting on it.
  *
- * TODO: Implement job lifecycle + result handling:
- * - Call PISTON_API_URL + "/api/v2/execute" with the job's request body
- *   (see the previous passthrough implementation that used to live in
- *   index.js for reference on request/response shape).
+ * The Piston call itself is implemented below: every request has resource
+ * limits injected via buildExecuteRequest() (see piston/buildExecuteRequest.js)
+ * and every response is labeled via classifyResult() (see
+ * piston/classifyResult.js) so a timeout, an OOM-kill, and a clean non-zero
+ * exit are distinguishable instead of being lumped into one generic error.
+ *
+ * TODO: Job lifecycle + result delivery is still open:
  * - Decide how/where the result is delivered back so the original HTTP
  *   request in index.js's POST /execute handler can pick it up. This is
  *   the async response-matching design mentioned there — intentionally
@@ -46,21 +57,50 @@ function startPool() {
  *   so a failed job resolves/rejects cleanly instead of wedging the worker
  *   or leaving the original request hanging forever.
  *
- * TODO (per-job execution timeout — kill logic goes here): the call to
- * Piston must be raced against JOB_TIMEOUT_MS. If the timeout elapses
- * first, the in-flight request needs to be aborted (e.g. AbortController
- * passed to fetch/axios) and the job resolved/rejected with a timeout
- * error rather than left to finish on its own. Make sure whichever
- * finishes second (the late Piston response vs. the timeout) is a no-op —
- * the job must be settled exactly once, and the worker must be freed to
- * pick up its next job either way.
+ * TODO (per-job execution timeout — kill logic goes here): the fetch call
+ * below must be raced against JOB_TIMEOUT_MS (this is exec-server's own
+ * dead-man switch on the whole HTTP call, separate from the compile_timeout/
+ * run_timeout fields Piston enforces internally). If JOB_TIMEOUT_MS elapses
+ * first, the in-flight request needs to be aborted (e.g. an AbortController
+ * passed to fetch) and the job resolved/rejected with a timeout error rather
+ * than left to finish on its own. Make sure whichever finishes second (the
+ * late Piston response vs. the timeout) is a no-op — the job must be settled
+ * exactly once, and the worker must be freed to pick up its next job either
+ * way.
  *
  * @param {object} job
  * @returns {Promise<void>}
  */
 async function processJob(job) {
-  // TODO: Implement.
-  throw new Error("Not implemented");
+  const pistonRequest = buildExecuteRequest(job.request);
+
+  let pistonRes;
+  try {
+    pistonRes = await fetch(`${PISTON_API_URL}/api/v2/execute`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(pistonRequest),
+    });
+  } catch (err) {
+    throw new Error(`Could not reach Piston: ${err.message}`);
+  }
+
+  let data;
+  try {
+    data = await pistonRes.json();
+  } catch (err) {
+    throw new Error(`Piston returned an invalid response: ${err.message}`);
+  }
+
+  const result = classifyResult(data, {
+    compileMemoryLimitBytes: COMPILE_MEMORY_LIMIT_BYTES,
+    runMemoryLimitBytes: RUN_MEMORY_LIMIT_BYTES,
+  });
+
+  // TODO: deliver `{ pistonStatus: pistonRes.status, data, result }` back to
+  // whatever is waiting on this job — see the lifecycle TODO above. Nothing
+  // is listening for a job's result yet, so there's nowhere to send it.
+  throw new Error("Not implemented: job result delivery");
 }
 
 module.exports = {

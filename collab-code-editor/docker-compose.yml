@@ -6,6 +6,15 @@ services:
     privileged: true
     ports:
       - "2000:2000"
+    environment:
+      # Max number of processes/forks a single job's sandbox may have open
+      # at once (enforced via isolate's `--processes` flag on top of the
+      # same cgroups used for compile/run timeouts and memory limits — see
+      # exec-server/README.md's "Resource limits" section). Piston's own
+      # default is 64; 32 is more conservative for small single-file
+      # snippets in a portfolio demo. There is no per-request override for
+      # this — it must be set here, on the Piston server itself.
+      - PISTON_MAX_PROCESS_COUNT=32
     volumes:
       - piston_data:/piston
     tmpfs:
