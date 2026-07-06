@@ -1,11 +1,11 @@
 # Execution Server
 
-A standalone Express server that owns code execution as its own service boundary. `POST /execute` no longer calls Piston directly — it hands the request off to an in-memory job queue, which a fixed-size worker pool drains to run jobs against Piston. The queueing and worker-pool logic is currently scaffolded but not implemented (see "Queue design" below and the `TODO` comments in `queue/jobQueue.js` and `worker/workerPool.js`).
+A standalone Express server that owns code execution as its own service boundary. `POST /execute` no longer calls Piston directly — it hands the request off to an in-memory job queue, which a fixed-size worker pool drains to run jobs against Piston.
 
 ## Endpoints
 
 - `GET /health` — returns `{ "status": "ok" }`, for platform health checks.
-- `POST /execute` — enqueues the request body as a job. Currently returns `501` because the queue isn't implemented yet, and because the async response-handling design (how this handler gets the job's result back once a worker finishes it) hasn't been decided yet either.
+- `POST /execute` — enqueues the request body as a job and holds the HTTP request open until a worker finishes it (or it times out / the queue is full). Returns `200` with `{ pistonStatus, data, result }` on success, `429` if the queue is full, `504` if the job hits `JOB_TIMEOUT_MS`, or `502` if Piston is unreachable or returns an invalid response.
 
 ## Project layout
 
@@ -14,9 +14,9 @@ exec-server/
   config/index.js               # env-derived config (PORT, PISTON_API_URL, WORKER_POOL_SIZE, JOB_TIMEOUT_MS, MAX_QUEUE_DEPTH, resource limits)
   piston/buildExecuteRequest.js # injects compile/run timeout & memory limits into every Piston request
   piston/classifyResult.js      # labels a Piston response as success/timeout/memory_limit_exceeded/killed/runtime_error/internal_error
-  queue/jobQueue.js              # enqueue/dequeue/size/isEmpty/isFull — data structure, concurrency & depth-check TODO
-  worker/workerPool.js           # startPool/processJob — pool concurrency & job-delivery TODO; the Piston call itself is implemented
-  index.js                       # HTTP layer; wires POST /execute to enqueue(), rejects with 429 when the queue is full
+  queue/jobQueue.js              # FIFO array-backed queue; enqueue/dequeue/size/isEmpty/isFull plus waitForJob() for idle workers
+  worker/workerPool.js           # startPool spawns WORKER_POOL_SIZE pull-loop workers; processJob races Piston against JOB_TIMEOUT_MS and settles the job's own resolve/reject
+  index.js                       # HTTP layer; builds a job with resolve/reject, enqueues it, awaits the result, rejects with 429 when the queue is full
 ```
 
 ## Running locally
@@ -34,15 +34,17 @@ Listens on `PORT` from `.env` (defaults to `4000`), proxies to `PISTON_API_URL` 
 
 **Concurrency limit.** The worker pool size is fixed and configured via the `WORKER_POOL_SIZE` environment variable (default: `4`, see `config/index.js`). It's fixed rather than elastic because the pool exists to bound how many concurrent executions this service sends to Piston at once — Piston runs untrusted user code in sandboxes with real CPU/memory cost, so the number of simultaneous jobs needs an explicit ceiling rather than growing with request volume. `4` is a conservative starting default for local/small deployments; it should be tuned based on how many concurrent sandboxed executions the Piston instance(s) behind `PISTON_API_URL` can actually handle.
 
-**Conceptual queue states** (the underlying data structure and concurrency-safe dequeue logic are still TODOs — this describes intended behavior, not what's fully implemented yet):
+**Queue states.** `queue/jobQueue.js` is a plain array used as a FIFO, plus a private `EventEmitter` ("job-added") that lets idle workers block on `waitForJob()` instead of polling:
 
-- **Empty** — no jobs waiting. An idle worker has nothing to dequeue and should wait (poll, subscribe to an event, etc. — left as a TODO) until `enqueue()` adds a job.
-- **Has pending jobs** — one or more jobs are waiting because all `WORKER_POOL_SIZE` workers are currently busy. New jobs from `POST /execute` are appended and wait their turn in order; as workers finish their current job, they dequeue the next one.
+- **Empty** — no jobs waiting. Each worker in `worker/workerPool.js` calls `queue.waitForJob()`, which resolves immediately if a job is already there, or waits for the next `enqueue()` otherwise.
+- **Has pending jobs** — one or more jobs are waiting because all `WORKER_POOL_SIZE` workers are currently busy. New jobs from `POST /execute` are appended and wait their turn in order; as workers finish their current job, they loop back and dequeue the next one. Since Node is single-threaded, multiple workers waking on the same event and racing `dequeue()` is safe — at most one gets each job.
 - **Full** — the queue has reached `MAX_QUEUE_DEPTH` (see below). New jobs are rejected outright rather than queued.
+
+Each job carries its own `resolve`/`reject` (attached by `index.js` when it enqueues the job), so `processJob()` delivers a result by settling that job's promise directly — no separate id-keyed lookup table needed.
 
 ## Per-job execution timeout
 
-Each job is allowed to run for at most `JOB_TIMEOUT_MS` (env var, default **10000ms / 10s**) before it must be killed and the request failed, rather than left to hang indefinitely if Piston never responds. The enforcement point is scaffolded as a `TODO` in `worker/workerPool.js`'s `processJob()`, where the Piston call needs to be raced against the timeout (e.g. via `AbortController`) — not implemented yet.
+Each job is allowed to run for at most `JOB_TIMEOUT_MS` (env var, default **10000ms / 10s**) before it must be killed and the request failed, rather than left to hang indefinitely if Piston never responds. `worker/workerPool.js`'s `processJob()` races the Piston `fetch` against an `AbortController` armed by a `setTimeout(JOB_TIMEOUT_MS)`; whichever settles first wins, and the timer is cleared as soon as the fetch settles so a late abort is a no-op. A timeout rejects the request with `504` and `{ "error": "Job timed out after <ms>ms" }`.
 
 ## Queue backpressure
 
@@ -51,7 +53,7 @@ Each job is allowed to run for at most `JOB_TIMEOUT_MS` (env var, default **1000
 - **Status:** `429 Too Many Requests`
 - **Body:** `{ "error": "server busy, try again" }`
 
-The depth check is scaffolded as a `TODO` in `index.js`'s `POST /execute` handler (checking `queue.isFull()` before enqueueing) and in `queue/jobQueue.js`'s `isFull()` — not implemented yet.
+The depth check lives in `index.js`'s `POST /execute` handler (`queue.isFull()`, checked before a job is built or enqueued) backed by `queue/jobQueue.js`'s `isFull()` (`size() >= MAX_QUEUE_DEPTH`).
 
 ## Resource limits
 
@@ -82,6 +84,6 @@ A Piston response's exit code alone can't tell a timeout, a memory-limit kill, a
 - `internal_error` — `isolate` itself failed, independent of the user's code.
 - `runtime_error` — the process ran to completion and exited with a non-zero code — a normal program failure, not a sandbox-imposed kill.
 
-`worker/workerPool.js`'s `processJob()` calls this after every Piston response, so once job-result delivery (still a TODO — see "Queue design" above) is wired up, callers get one of these distinct labels instead of a single generic "execution failed."
+`worker/workerPool.js`'s `processJob()` calls this after every Piston response and returns it as `result` in the `POST /execute` response body, so callers get one of these distinct labels instead of a single generic "execution failed."
 
 **Why reject instead of block.** A held-open HTTP connection waiting for queue space still consumes a client connection, a request thread/socket, and (client-side) a hung UI with no feedback — it just moves the unbounded growth from "queue array" to "in-flight open connections," which is not actually bounded. Rejecting immediately with `429` gives the caller a fast, explicit signal it can act on (retry with backoff, surface an error, shed load) instead of an indefinite hang, and it keeps the server's own resource usage (queue memory, open sockets) bounded and predictable under load — which matters here because jobs run untrusted user code against a shared Piston capacity that can already be saturated.
