@@ -2,7 +2,7 @@
 
 A collaborative code editor with real-time multi-cursor sync (CRDT-based) and secure sandboxed code execution — built to explore distributed state management and execution isolation at scale.
 
-🚧 Status: In Progress — single-user editor with sandboxed execution is working locally; real-time multi-tab sync is now live via Yjs + y-websocket + the standalone WebSocket server, with independent per-room documents via URL-based room routing; live multi-cursor presence (via Yjs awareness) is also working; Postgres (via Prisma + Neon) is connected and now wired into the full connection lifecycle — a room's persisted state, if any, loads into the in-memory `Y.Doc` before a new client's initial sync, edits are written back with a per-room debounced snapshot, and a room's last disconnecting client now flushes that snapshot immediately instead of waiting out the debounce window, so state now survives a server restart; Redis is not wired up yet.
+🚧 Status: In Progress — single-user editor with sandboxed execution is working locally; real-time multi-tab sync is now live via Yjs + y-websocket + the standalone WebSocket server, with independent per-room documents via URL-based room routing; live multi-cursor presence (via Yjs awareness) is also working; Postgres (via Prisma + Neon) is connected and now wired into the full connection lifecycle — a room's persisted state, if any, loads into the in-memory `Y.Doc` before a new client's initial sync, edits are written back with a per-room debounced snapshot, and a room's last disconnecting client now flushes that snapshot immediately instead of waiting out the debounce window, so state now survives a server restart; code execution is being carved out of the Next.js app into its own standalone service, `exec-server/` — currently a bare passthrough proxy to Piston with no queue yet; Redis is not wired up yet.
 
 ---
 
@@ -42,6 +42,7 @@ What makes it technically interesting: keeping edit state consistent across mult
 | Realtime Server | Node.js WebSocket Server (separate from Next.js) | Since Next.js API routes are not designed for long-lived connections, a dedicated WebSocket server provides persistent, low-latency, bidirectional communication. |
 | Caching / Pub-Sub | Redis | Broadcasts room state across multiple server instances, enabling efficient horizontal scaling. |
 | Persistence | PostgreSQL (Neon) via Prisma | Provides durable storage, ensuring rooms and documents persist across server restarts; Neon gives a managed, serverless Postgres instance with no infra to run, and Prisma gives typed schema/migrations. |
+| Execution Server | Node.js / Express (separate from both Next.js and the WS server) | Code execution is bursty and resource-heavy; a dedicated service keeps it from sharing a process (and failure domain) with either the always-on editor UI or the low-latency sync server. |
 | Code Execution | Piston (Open-Source Sandboxed Execution Engine) | Enables secure, multi-language code execution without building a custom Docker-based sandbox, allowing development effort to focus on real-time collaboration and scalability instead of execution isolation. |
 
 ---
@@ -53,8 +54,10 @@ The Next.js frontend holds a `Y.Doc` per editor session, bound to the Monaco edi
 
 **WebSocket server:** deployed on Railway, URL: `collabrativecodeeditor-production.up.railway.app`
 
-**Why editing sync and code execution are separate systems:**
-Editing sync needs to be low-latency and always-on — every keystroke matters. Execution is bursty, resource-heavy, and needs strict isolation from untrusted input. Coupling them would mean a slow or crashed execution request could degrade the live-editing experience for every user in the room. Keeping them decoupled lets each scale, fail, and recover independently.
+Code execution is being pulled out of the Next.js app into its own standalone service, `exec-server/` (see [Execution Service](#execution-service) below). For now the Next.js `/api/execute` route and `exec-server/`'s `/execute` both exist side by side; the Next.js route still does the actual language→Piston mapping the editor relies on, while `exec-server/` is a bare proxy establishing the deploy target the queueing logic will land on next.
+
+**Why editing sync and code execution are separate systems, and why execution is now its own service rather than living inside the Next.js app:**
+There are deliberately three separate failure domains now: the Next.js app (editor UI), the WebSocket server (`server/`, editing sync), and the execution service (`exec-server/`, code running). Editing sync needs to be low-latency and always-on — every keystroke matters, and a slow or crashed execution request must never degrade it for every user in the room. Execution is bursty, resource-heavy, and runs untrusted input — it needs strict isolation not just from the sync path but from the app server itself, since it's the piece most likely to need its own scaling, queueing, and resource limits (CPU/memory/time caps) as usage grows. Keeping all three decoupled lets each scale, fail, and recover independently, instead of one noisy neighbor taking the others down with it.
 
 ---
 
@@ -160,6 +163,19 @@ No automated tests cover the WS server yet, so verify persistence by hand after 
 
 ---
 
+## Execution Service
+
+A standalone Express server, `exec-server/`, is the new home for code execution — sibling to `collab-code-editor/` and `server/`. Right now it's deliberately minimal: a bare passthrough.
+
+- `GET /health` — a health check for the deploy platform (Railway/Render).
+- `POST /execute` — forwards the request body straight to Piston's `/api/v2/execute` and relays back whatever Piston returns, status code included. No queue, no retries, no request shaping yet.
+
+**Why this exists as its own step, before any queueing logic:** establishing the service boundary and deploy target first — as a working, deployable proxy — means the request queue (rate limiting, concurrency caps, retry/backoff) can be layered on top of something already running in production, rather than designed in the abstract. It also means the three services (Next.js app, WS sync server, execution server) are now three separate failure domains on purpose: an execution spike or crash can't take down live editing or the app itself, and vice versa.
+
+Both `PORT` and the Piston URL (`PISTON_API_URL`) are env-configurable (see `exec-server/.env.example`), the same pattern `server/` and the Next.js app already use, so each environment (local Docker Compose Piston vs. a deployed instance) just needs a different `.env`.
+
+---
+
 ## Local Setup / Installation
 
 ```bash
@@ -204,6 +220,19 @@ npx prisma generate      # regenerates the Prisma Client, if needed
 
 *Redis isn't wired up yet — setup instructions will be added once it comes online.*
 
+### Execution server
+
+A standalone Express server lives in `exec-server/`, another sibling of `collab-code-editor/` and `server/`. It currently does nothing but proxy `POST /execute` straight through to Piston (see [Execution Service](#execution-service) above). To run it locally:
+
+```bash
+cd exec-server
+npm install
+cp .env.example .env
+npm run dev
+```
+
+It listens on `PORT` from `.env` (default `4000`) and proxies to `PISTON_API_URL` (default `http://localhost:2000`) — point it at the same local Piston container `docker compose up -d` starts above.
+
 ---
 
 ## Roadmap / What's Next
@@ -214,8 +243,9 @@ npx prisma generate      # regenerates the Prisma Client, if needed
 - [x] Room routing (`/room/[roomId]`, joined/created from a landing screen)
 - [x] Presence indicators and live cursor labels (Yjs awareness)
 - [x] Room persistence with Postgres — loading state on connect, debounced snapshot writes, and flush-on-last-disconnect are all done
+- [x] Standalone execution service (`exec-server/`) — bare passthrough proxy to Piston, establishing the service boundary and deploy target
 - [ ] Reconnect/resync handling
-- [ ] Execution resource limits + worker queue
+- [ ] Execution request queue + resource limits, on top of `exec-server/`
 - [ ] Redis pub/sub for horizontal scaling
 - [ ] Deploy live demo (Vercel + Railway/Render)
 
