@@ -104,6 +104,18 @@ async function handleYjsConnection(ws, req) {
   // itself, so it's safe to call on every connection to this room.
   startRoomSync(roomId, ydoc);
 
+  // The subscribe-and-apply half of cross-instance sync — receiving the updates
+  // OTHER instances publish for this room and applying them to this ydoc — is
+  // scaffolded as subscribeRoom(roomId, ydoc) in redis/sync.js, but is NOT
+  // wired in here. It sits between two boundaries that both live in this
+  // function: the snapshot load from Neon (the prisma.room.upsert +
+  // Y.applyUpdate block above) and the client's initial sync (setupWSConnection,
+  // immediately below). Subscribing before vs. after each boundary changes what
+  // a freshly-connected client can observe, so the placement is a correctness
+  // decision, not a stylistic one — hence left open rather than picked here.
+  //
+  // TODO(core-logic): decide exactly where this subscribe call goes relative to snapshot-load-from-Neon and client-sync, and justify the ordering
+
   setupWSConnection(ws, req, { docName: roomId });
 
   // setupWSConnection already registered its own "close" handler, which

@@ -61,14 +61,48 @@ function startRoomSync(roomId, ydoc) {
   roomSyncListeners.set(roomId, onUpdate);
   ydoc.on("update", onUpdate);
 
-  // TODO(core-logic): subscribe-and-apply.
-  // Problem: updates published by other instances arrive on this room's sync
-  // channel and must be integrated into this instance's Y.Doc so its connected
-  // clients see the remote edit. What must be decided/handled: subscribing to
-  // the correct per-room channel exactly once (getYDoc is shared across
-  // connections); decoding the envelope back into a Uint8Array; and applying it
-  // to the Y.Doc in a way that is distinguishable from a local edit so the
-  // publish path above can tell them apart.
+  // The subscribe-and-apply half is scaffolded separately in subscribeRoom()
+  // below, and is deliberately NOT invoked from here. Calling it at this point
+  // would pin the subscribe to startRoomSync's call site in the connection
+  // flow, but WHERE the subscribe belongs relative to the Neon snapshot load
+  // and the client's initial sync is an open ordering-guarantee decision — left
+  // for whoever wires it in (see the TODO in yjsConnection.js).
+}
+
+/**
+ * Scaffold for the subscribe-and-apply half of cross-instance sync: receive the
+ * Yjs updates other instances publish on this room's channel and integrate them
+ * into this instance's Y.Doc, so a client connected here sees an edit made by a
+ * client on a different instance.
+ *
+ * Deliberately NOT called from startRoomSync or the connection flow yet: WHERE
+ * the subscribe happens relative to the Neon snapshot load and the client's
+ * initial sync is an ordering-guarantee decision left open (see the TODO in
+ * yjsConnection.js). Teardown would pair with stopRoomSync.
+ *
+ * @param {string} roomId
+ * @param {import("yjs").Doc} ydoc  The shared per-room Y.Doc from getYDoc().
+ */
+function subscribeRoom(roomId, ydoc) {
+  const channel = syncChannel(roomId);
+
+  // Stub message handler for the subscription. `message` stands in for the
+  // decoded SyncEnvelope ({ roomId, update, originInstanceId } — see
+  // redis/channels.js); decoding the raw Redis payload back into that envelope
+  // is part of the apply logic left unimplemented here.
+  const onMessage = (message) => {
+    // TODO(core-logic): check message.instanceId against local instance ID, skip if self-origin, otherwise Y.applyUpdate
+    void message;
+    void ydoc;
+    void INSTANCE_ID;
+  };
+
+  // TODO(core-logic): subscribe the shared `subscriber` connection to `channel`
+  // and route decoded messages on it to onMessage, exactly once per room
+  // (getYDoc is shared across connections). This is the subscribe MECHANICS; the
+  // subscribe TIMING is the separate open decision in yjsConnection.js.
+  void channel;
+  void onMessage;
   void subscriber;
 }
 
@@ -98,4 +132,4 @@ function stopRoomSync(roomId, ydoc) {
   // TODOs above depend on, so it must be decided alongside them, not after.
 }
 
-module.exports = { startRoomSync, stopRoomSync };
+module.exports = { startRoomSync, subscribeRoom, stopRoomSync };
