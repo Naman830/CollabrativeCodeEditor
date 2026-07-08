@@ -10,3 +10,5 @@ const wss = new WebSocketServer({ port: PORT });
 wss.on("connection", handleYjsConnection);
 
 console.log(`Yjs sync WebSocket server listening on port ${PORT}`);
+
+// sim
