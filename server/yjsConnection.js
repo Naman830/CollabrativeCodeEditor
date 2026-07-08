@@ -6,6 +6,10 @@ const Y = require("yjs");
 const { setupWSConnection, getYDoc } = require("y-websocket/bin/utils");
 const { prisma } = require("./prismaClient");
 const { startRoomSync, stopRoomSync } = require("./redis/sync");
+const {
+  startRoomAwarenessSync,
+  stopRoomAwarenessSync,
+} = require("./redis/awareness");
 
 // 4s of quiet time before a room's doc is flushed to Postgres. See README.md
 // ("Persistence debounce") for the reasoning behind this value.
@@ -104,6 +108,16 @@ async function handleYjsConnection(ws, req) {
   // itself, so it's safe to call on every connection to this room.
   startRoomSync(roomId, ydoc);
 
+  // Presence counterpart to startRoomSync: relays this room's awareness
+  // (multi-cursor) updates to other instances. Attaches its own listener to
+  // ydoc.awareness, guards against duplicate attachment itself, and is
+  // independent of both the persistence and doc-sync listeners above — so it's
+  // likewise safe to call on every connection to this room. Its subscribe-and-
+  // apply half (subscribeRoomAwareness) is scaffolded but, exactly like
+  // subscribeRoom below, deliberately left un-wired pending the same ordering
+  // decision.
+  startRoomAwarenessSync(roomId, ydoc);
+
   // The subscribe-and-apply half of cross-instance sync — receiving the updates
   // OTHER instances publish for this room and applying them to this ydoc — is
   // scaffolded as subscribeRoom(roomId, ydoc) in redis/sync.js, but is NOT
@@ -127,6 +141,7 @@ async function handleYjsConnection(ws, req) {
     if (ydoc.conns.size === 0) {
       flushPersist(roomId, ydoc);
       stopRoomSync(roomId, ydoc);
+      stopRoomAwarenessSync(roomId, ydoc);
     }
   });
 
