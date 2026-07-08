@@ -3,9 +3,18 @@
 import { useEffect, useRef, useState } from "react";
 import Editor, { OnChange, OnMount } from "@monaco-editor/react";
 import * as Y from "yjs";
+import * as decoding from "lib0/decoding";
 import type { MonacoBinding } from "y-monaco";
 import type { WebsocketProvider } from "y-websocket";
 import type { Awareness } from "y-protocols/awareness";
+
+// A one-off handshake message from server/'s yjsConnection.js, sent once right
+// after connect, outside the Yjs sync protocol proper — see the matching
+// MESSAGE_INSTANCE_HELLO constant and comment there. Lets the status pill
+// below show which physical server instance this client landed on, which is
+// otherwise invisible to the client since every instance speaks on the same
+// WS_URL behind a load balancer (or dev:cluster locally).
+const MESSAGE_INSTANCE_HELLO = 42;
 
 const LANGUAGES = [
   { label: "JavaScript", value: "javascript" },
@@ -249,6 +258,11 @@ export default function CodeEditor({ roomId }: CodeEditorProps) {
   // the editor finishes mounting first.
   const providerReadyRef = useRef<Promise<WebsocketProvider | null>>(Promise.resolve(null));
   const [syncStatus, setSyncStatus] = useState<SyncStatus>("connecting");
+  // Which server/ instance sent the last MESSAGE_INSTANCE_HELLO. Cleared
+  // whenever we're not connected (see the status handler below) so a
+  // reconnect can't leave a stale, possibly-wrong instance id on screen —
+  // a reconnect may well land on a different instance entirely.
+  const [serverInstanceId, setServerInstanceId] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -269,7 +283,11 @@ export default function CodeEditor({ roomId }: CodeEditorProps) {
       provider = new WebsocketProvider(resolveWsUrl(), encodeURIComponent(roomId), yDoc);
       provider.on("status", ({ status }: { status: SyncStatus }) => {
         setSyncStatus(status);
+        if (status !== "connected") setServerInstanceId(null);
       });
+      provider.messageHandlers[MESSAGE_INSTANCE_HELLO] = (_encoder, decoder) => {
+        if (!cancelled) setServerInstanceId(decoding.readVarString(decoder));
+      };
 
       // Seed the default snippet only after the initial server sync reports
       // the room is genuinely empty. Seeding at editor mount raced this sync:
@@ -449,6 +467,14 @@ export default function CodeEditor({ roomId }: CodeEditorProps) {
             : syncStatus === "connecting"
               ? "Reconnecting"
               : "Disconnected"}
+          {serverInstanceId && (
+            <>
+              <span className="h-3 w-px bg-current opacity-30" />
+              <span className="font-mono opacity-80">
+                {serverInstanceId.slice(-6)}
+              </span>
+            </>
+          )}
         </div>
         <Editor
           height="100%"

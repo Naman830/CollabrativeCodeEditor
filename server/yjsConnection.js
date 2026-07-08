@@ -3,13 +3,31 @@
 // steps, awareness, per-doc broadcast) is handled by y-websocket itself — this
 // server no longer echoes or interprets messages on its own.
 const Y = require("yjs");
+const encoding = require("lib0/encoding");
 const { setupWSConnection, getYDoc } = require("y-websocket/bin/utils");
 const { prisma } = require("./prismaClient");
+const { INSTANCE_ID } = require("./instanceId");
 const { startRoomSync, stopRoomSync } = require("./redis/sync");
 const {
   startRoomAwarenessSync,
   stopRoomAwarenessSync,
 } = require("./redis/awareness");
+
+// A one-off handshake message, not part of the Yjs sync protocol above: lets a
+// client show which physical server/ instance it landed on (useful while
+// testing the Redis cross-instance relay via `dev:cluster`). Message type 42
+// is deliberately outside y-websocket's own reserved range (sync=0,
+// awareness=1, auth=2, queryAwareness=3) so it round-trips untouched through
+// setupWSConnection's dispatcher — the client registers its own handler for
+// type 42 (see CodeEditor.tsx) instead of this server interpreting anything.
+const MESSAGE_INSTANCE_HELLO = 42;
+
+function sendInstanceHello(ws) {
+  const encoder = encoding.createEncoder();
+  encoding.writeVarUint(encoder, MESSAGE_INSTANCE_HELLO);
+  encoding.writeVarString(encoder, INSTANCE_ID);
+  ws.send(encoding.toUint8Array(encoder));
+}
 
 // 4s of quiet time before a room's doc is flushed to Postgres. See README.md
 // ("Persistence debounce") for the reasoning behind this value.
@@ -67,6 +85,13 @@ async function handleYjsConnection(ws, req) {
   // docName defaults to the URL path (e.g. "/test-room" -> "test-room"),
   // which is exactly how y-websocket's WebsocketProvider builds its URL.
   const roomId = req.url.slice(1).split("?")[0];
+
+  // Fires before the Postgres round-trip below (which can take seconds on a
+  // cold Neon connection) since it depends on nothing but the connection
+  // itself — waiting behind room hydration would leave the client's status
+  // pill showing "Connected" with no instance badge for however long that
+  // round-trip takes.
+  sendInstanceHello(ws);
 
   // setupWSConnection sends sync step 1 (and starts processing incoming
   // messages) synchronously, using whatever is already in the in-memory
