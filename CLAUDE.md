@@ -93,6 +93,68 @@ PgBouncer can't hold Migrate's session advisory locks) and `REDIS_URL` (see gotc
 
 ---
 
+## Deployment
+
+Live as of 2026-07-27. Two of the three services are deployed; execution is not.
+
+| Service | Host | URL |
+|---|---|---|
+| `collab-code-editor/` | Vercel, project `real-time-collabrative-code-editor-with-sandbox-execution` | https://real-time-collabrative-code-editor-two.vercel.app |
+| `server/` | Railway, service `CollabrativeCodeEditor` | `wss://collabrativecodeeditor-production.up.railway.app` |
+| `exec-server/` + Piston | **not deployed** | — |
+
+Both deploy from `main` on push via the GitHub integration.
+
+**Vercel's Root Directory must be `collab-code-editor`.** This repo is not a monorepo and
+has no root `package.json` (see "Repo layout"), so with the default empty root directory
+Vercel finds no framework, builds nothing, and publishes an **empty deployment** — while
+still reporting "Ready" with a green "Deployment successful". Every path then returns a
+bare `x-vercel-error: NOT_FOUND` from the platform edge, *not* Next's own 404 page. The
+distinguishing signal is in the response headers: a real Next deployment sets
+`x-matched-path` and `x-nextjs-prerender`; an empty one sets neither. Root Directory is
+**not settable from `vercel.json`** — it's a project setting (Settings → Build & Deployment
+→ Root Directory, or `PATCH /v9/projects/{id}` with
+`{"rootDirectory":"collab-code-editor","framework":"nextjs"}`). Changing it does **not**
+trigger a rebuild; redeploy manually afterwards.
+
+**Vercel env vars.** Only `NEXT_PUBLIC_WS_URL` is set (production + preview + development),
+and it must use the `wss://` scheme: the fallback at `CodeEditor.tsx:31` is
+`ws://localhost:8080`, which a browser blocks as mixed content on an HTTPS page, so an unset
+var manifests as a permanent silent "connecting" rather than an error. Being `NEXT_PUBLIC_*`
+it is inlined into the client bundle at build time, so changing it needs a redeploy, not a
+restart — grep the deployed chunk to confirm it actually took. `EXEC_SERVER_API_URL` is
+deliberately unset; see below.
+
+**A plain HTTP GET to the Railway URL returning `Upgrade Required` is correct** — that's
+`ws` answering a non-upgrade request, and it means the server is healthy. Don't debug it.
+
+**Execution is not deployed, on purpose.** Self-hosted Piston needs a *privileged* container
+(`isolate` + cgroups), which Railway doesn't allow, so `docker-compose.yml` can't be lifted
+there as-is. With `EXEC_SERVER_API_URL` unset, `/api/execute` fails fast (~0.8s) into the 502
+at `route.ts:120-125` — "Could not reach the code execution service." That is the intended
+degraded state, not a bug. The two ways out are the public Piston API at
+`emkc.org/api/v2/piston` (rate-limited to ~5 req/sec, and you lose control of the runtime
+versions `LANGUAGE_MAP` pins at `route.ts:7`) or hosting Piston on Fly.io / a VPS.
+
+Smoke-testing a deploy without a browser — two headless clients must converge:
+
+```bash
+# from the repo root; prints PASS or FAIL
+NODE_PATH=server/node_modules node -e '
+const Y=require("yjs"),{WebsocketProvider}=require("y-websocket"),WS=require("ws");
+const U="wss://collabrativecodeeditor-production.up.railway.app",R="smoke-"+Date.now();
+const mk=()=>{const d=new Y.Doc();return{p:new WebsocketProvider(U,R,d,{WebSocketPolyfill:WS}),t:d.getText("monaco")}};
+const a=mk(),b=mk();
+a.p.once("sync",()=>a.t.insert(0,"ping"));
+setTimeout(()=>{console.log(b.t.toString()==="ping"?"PASS":"FAIL: "+b.t);process.exit()},8000);'
+```
+
+It logs `Unable to compute message` once per client. That's just instance-hello (type 42)
+reaching a handler the headless client never registered — the browser registers it at
+`CodeEditor.tsx:288` — so it actually confirms the handshake arrived.
+
+---
+
 ## The two data paths
 
 **Editing** — everything below is per-room, keyed on the URL segment of `/room/[roomId]`:
@@ -167,6 +229,9 @@ Languages (5): JavaScript 18.15.0, TypeScript 5.0.3, Python 3.10.0, Java 15.0.2,
 
 ## Gotchas that will cost you real time
 
+- **A Vercel deploy of this repo 404s on every path unless Root Directory is
+  `collab-code-editor`** — and it still reports "Ready". See "Deployment" for the full
+  signature and fix.
 - **`server/` cannot boot without `REDIS_URL`.** `index.js` → `yjsConnection.js` →
   `redis/sync.js` → `redis/client.js:38` **throws at import time** if it's unset — even though
   nothing in the codebase actually uses Redis yet.
@@ -268,5 +333,9 @@ belongs relative to the Neon snapshot load and the client's initial sync — `yj
 A second open question sits in `awareness.js`: how to reap ghost cursors when a remote instance
 dies without a clean disconnect.
 
-Not started: reconnect/resync handling, room eviction/TTL, auth, live deploy, and a
-graceful-shutdown flush.
+Deployed: frontend on Vercel, `server/` on Railway, verified converging end-to-end. Code
+execution is **not** deployed — `exec-server/` and Piston have no host, so the Run button
+returns a clean 502 in production. See "Deployment".
+
+Not started: reconnect/resync handling, room eviction/TTL, auth, and a graceful-shutdown
+flush.
