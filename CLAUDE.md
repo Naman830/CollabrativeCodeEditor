@@ -43,6 +43,19 @@ tooling to test it exists; the relay does not.
 
 ---
 
+## Feature backlog
+
+`FEATURES.md` at the repo root is the master checklist of everything this app is missing —
+auth, save/export/share, graceful shutdown, tests, CI, and the rest — each item carrying a
+`file:line` reference to the evidence.
+
+**When you finish a feature from that list you must (a) tick its checkbox in `FEATURES.md`
+and (b) update this file** — "Actual current state" at minimum, plus "Invariants — do not
+break these" if the change adds a load-bearing constraint, and "Gotchas" if it adds a trap.
+Treat that as part of the task, not a follow-up.
+
+---
+
 ## Repo layout
 
 **This is not a monorepo.** Three independent npm projects side by side — no root
