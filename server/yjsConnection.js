@@ -33,6 +33,47 @@ function sendInstanceHello(ws) {
 // ("Persistence debounce") for the reasoning behind this value.
 const PERSIST_DEBOUNCE_MS = 4000;
 
+// The room id arrives as the WebSocket URL's path segment, which is entirely
+// caller-controlled: only the browser client happens to encodeURIComponent it
+// (CodeEditor.tsx), and any direct `ws` client can send a raw path. Validating
+// here — the single boundary where the id enters this process — is what keeps
+// four otherwise-separate problems closed at once:
+//
+//   1. `roomId` is the Postgres primary key upserted in handleYjsConnection,
+//      so an unbounded charset means unbounded row creation from
+//      unauthenticated traffic (connect to /a1, /a2, /a3 ... forever).
+//   2. It keys y-websocket's `docs` map, which this server never evicts, so
+//      the same loop grows process memory without bound.
+//   3. redis/channels.js builds `room:${roomId}:sync` by raw interpolation
+//      (see its own comments at channels.js:11-13) — an id containing ":"
+//      could address another room's channel once pub/sub is actually wired.
+//   4. It keeps one canonical spelling of the id. Note this pattern is a
+//      subset of encodeURIComponent's unreserved set, so for every id that
+//      passes, encoding is a no-op and the decode below cannot change an
+//      already-persisted key. No migration is needed.
+const ROOM_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+
+// 1008 = "policy violation": the server understood the request and is
+// refusing it on validation grounds.
+const CLOSE_POLICY_VIOLATION = 1008;
+
+// Returns the canonical room id, or null if the path segment isn't one we're
+// willing to accept.
+function parseRoomId(url) {
+  const segment = url.slice(1).split("?")[0];
+
+  let roomId;
+  try {
+    roomId = decodeURIComponent(segment);
+  } catch {
+    // A malformed percent-escape ("%zz") makes decodeURIComponent throw
+    // URIError rather than pass the input through.
+    return null;
+  }
+
+  return ROOM_ID_PATTERN.test(roomId) ? roomId : null;
+}
+
 // Per-room debounce timers, so an idle room doesn't get its save delayed by
 // activity in a different room (and a busy room doesn't write on every
 // keystroke).
@@ -84,7 +125,13 @@ function flushPersist(roomId, ydoc) {
 async function handleYjsConnection(ws, req) {
   // docName defaults to the URL path (e.g. "/test-room" -> "test-room"),
   // which is exactly how y-websocket's WebsocketProvider builds its URL.
-  const roomId = req.url.slice(1).split("?")[0];
+  // Rejected before anything else happens — in particular before the upsert
+  // below can create a row for it. See ROOM_ID_PATTERN for why this matters.
+  const roomId = parseRoomId(req.url);
+  if (roomId === null) {
+    ws.close(CLOSE_POLICY_VIOLATION, "invalid room id");
+    return;
+  }
 
   // Fires before the Postgres round-trip below (which can take seconds on a
   // cold Neon connection) since it depends on nothing but the connection
@@ -102,6 +149,10 @@ async function handleYjsConnection(ws, req) {
 
   const ydoc = getYDoc(roomId);
 
+  // Whether this connection actually got the room's persisted state into the
+  // in-memory doc. Gates every write below — see the comment on the guard.
+  let hydrated = false;
+
   try {
     // Upsert (rather than find-then-create) so two clients racing to open
     // the same brand-new room can't both see "not found" and double-create.
@@ -114,15 +165,31 @@ async function handleYjsConnection(ws, req) {
     if (room.ydocState) {
       Y.applyUpdate(ydoc, new Uint8Array(room.ydocState));
     }
+
+    hydrated = true;
   } catch (err) {
     // Degrade to in-memory-only rather than leaving the client hanging if
-    // Postgres is unreachable.
+    // Postgres is unreachable: collaboration between the clients currently
+    // connected still works, it just isn't durable.
     console.error(`Failed to load room "${roomId}" from Postgres:`, err);
   }
 
   // Attached after the initial load applies above, so restoring persisted
   // state on connect doesn't itself trigger a redundant save.
-  if (!persistedRooms.has(roomId)) {
+  //
+  // The `hydrated` gate is load-bearing and NOT a stylistic guard. Without it
+  // a failed load was silently destructive: the catch above leaves `ydoc`
+  // empty, the listener would attach anyway, and the client's first keystroke
+  // schedules a persist that writes Y.encodeStateAsUpdate(<empty doc>) over a
+  // perfectly good ydocState column. One transient Neon blip on the first
+  // connection to a room permanently erased it, and there is no backup.
+  //
+  // Gating on hydration rather than poisoning the room outright is what makes
+  // this recoverable: `persistedRooms` membership means "this doc is known to
+  // reflect what's in Postgres", so a later connection that loads
+  // successfully applies the snapshot on top (a CRDT merge with whatever was
+  // typed in the meantime — no edits lost) and attaches the listener then.
+  if (hydrated && !persistedRooms.has(roomId)) {
     persistedRooms.add(roomId);
     ydoc.on("update", () => schedulePersist(roomId, ydoc));
   }
@@ -164,7 +231,14 @@ async function handleYjsConnection(ws, req) {
   // the room's last client.
   ws.on("close", () => {
     if (ydoc.conns.size === 0) {
-      flushPersist(roomId, ydoc);
+      // Same invariant as the persist listener above: only flush a doc that
+      // is known to reflect Postgres. Flushing an unhydrated doc here would
+      // reintroduce the exact overwrite the `hydrated` gate exists to
+      // prevent — and worse, on the close path there's no client left to
+      // notice the room went blank.
+      if (persistedRooms.has(roomId)) {
+        flushPersist(roomId, ydoc);
+      }
       stopRoomSync(roomId, ydoc);
       stopRoomAwarenessSync(roomId, ydoc);
     }

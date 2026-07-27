@@ -72,6 +72,30 @@ function randomUser() {
 // rules for clients who've left are simply dropped instead of lingering.
 const AWARENESS_STYLE_ID = "yjs-remote-cursor-styles";
 
+// Awareness state is whatever a peer put there — it arrives over the same
+// socket as the document and nothing on the server validates it. Both fields
+// below get interpolated into a stylesheet, so both are treated as hostile:
+// `color` lands inside declarations and `name` inside a content string, which
+// means a peer setting color to `red } body { display: none } .x {` could
+// close the rule early and inject arbitrary CSS into every other
+// participant's page — UI spoofing over the editor, background-image beacons,
+// attribute-selector exfiltration of input values. With no auth on rooms, a
+// "peer" is anyone who knows the room id.
+const HEX_COLOR_PATTERN = /^#[0-9a-fA-F]{6}$/;
+
+const MAX_DISPLAY_NAME_LENGTH = 64;
+
+// Escapes a value for use inside a CSS double-quoted string literal. Control
+// characters are dropped outright rather than escaped: a newline terminates a
+// string literal (which is how you'd break out of the `content` declaration),
+// and no legitimate display name contains one.
+function escapeCssString(value: string): string {
+  return value
+    .slice(0, MAX_DISPLAY_NAME_LENGTH)
+    .replace(/[\u0000-\u001f\u007f]/g, "")
+    .replace(/[\\"]/g, "\\$&");
+}
+
 function renderAwarenessStyles(awareness: Awareness, localClientID: number) {
   let styleEl = document.getElementById(AWARENESS_STYLE_ID) as HTMLStyleElement | null;
   if (!styleEl) {
@@ -83,10 +107,21 @@ function renderAwarenessStyles(awareness: Awareness, localClientID: number) {
   const rules: string[] = [];
   awareness.getStates().forEach((state, clientID) => {
     if (clientID === localClientID) return;
-    const user = (state as { user?: { name: string; color: string } }).user;
-    if (!user) return;
+    // `unknown`, not a structural cast: the previous annotation asserted that
+    // name/color were strings, which nothing guarantees. A peer sending
+    // `user: {}` made name.replace(...) throw right here, inside the
+    // awareness "change" handler, on every subsequent change.
+    const user = (state as { user?: unknown }).user;
+    if (!user || typeof user !== "object") return;
 
-    const { name, color } = user;
+    const { name, color } = user as { name?: unknown; color?: unknown };
+    if (typeof name !== "string" || typeof color !== "string") return;
+
+    // Anything that isn't exactly a 6-digit hex color is dropped rather than
+    // escaped — the value is concatenated with "55" for the selection alpha
+    // below, so it has to be a form that concatenation is valid for.
+    if (!HEX_COLOR_PATTERN.test(color)) return;
+
     rules.push(`
       .yRemoteSelection-${clientID} {
         background-color: ${color}55;
@@ -96,7 +131,7 @@ function renderAwarenessStyles(awareness: Awareness, localClientID: number) {
         border-left: 2px solid ${color};
       }
       .yRemoteSelectionHead-${clientID}::after {
-        content: "${name.replace(/"/g, "'")}";
+        content: "${escapeCssString(name)}";
         position: absolute;
         top: -1.1em;
         left: -2px;
