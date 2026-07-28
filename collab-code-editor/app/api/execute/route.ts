@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { fileExtFor } from "../../lib/languages";
 
 const PISTON_EXECUTE_URL = `${process.env.PISTON_API_URL ?? "http://localhost:2000"}/api/v2/execute`;
 
@@ -11,12 +12,14 @@ const PISTON_TIMEOUT_MS = 15_000;
 
 // Pinned against Piston's /runtimes output for the languages in the editor's
 // language switcher. Update these if Piston drops support for a version.
-const LANGUAGE_MAP: Record<string, { language: string; version: string; fileExt: string }> = {
-  javascript: { language: "javascript", version: "18.15.0", fileExt: "js" },
-  typescript: { language: "typescript", version: "5.0.3", fileExt: "ts" },
-  python: { language: "python", version: "3.10.0", fileExt: "py" },
-  java: { language: "java", version: "15.0.2", fileExt: "java" },
-  cpp: { language: "c++", version: "10.2.0", fileExt: "cpp" },
+// File extensions are not here: they're shared with the client's Save button
+// via `app/lib/languages.ts`, so the two lists can't drift apart.
+const LANGUAGE_MAP: Record<string, { language: string; version: string }> = {
+  javascript: { language: "javascript", version: "18.15.0" },
+  typescript: { language: "typescript", version: "5.0.3" },
+  python: { language: "python", version: "3.10.0" },
+  java: { language: "java", version: "15.0.2" },
+  cpp: { language: "c++", version: "10.2.0" },
 };
 
 type PistonStage = {
@@ -74,7 +77,7 @@ export async function POST(request: Request) {
         body: JSON.stringify({
           language: mapping.language,
           version: mapping.version,
-          files: [{ name: `main.${mapping.fileExt}`, content: code }],
+          files: [{ name: `main.${fileExtFor(language)}`, content: code }],
         }),
         signal: controller.signal,
       });

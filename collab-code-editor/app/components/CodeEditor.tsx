@@ -9,6 +9,7 @@ import ActivityToasts, { type ActivityToast } from "./ActivityToasts";
 import IdentityDialog from "./IdentityDialog";
 import UserBar from "./UserBar";
 import { readPeers, type Peer } from "../lib/awareness";
+import { LANGUAGES, downloadFileName } from "../lib/languages";
 import { playJoinSound, playLeaveSound } from "../lib/sound";
 import {
   displayName,
@@ -21,14 +22,6 @@ import {
 // The editor instance Monaco hands back on mount, without importing
 // monaco-editor itself (it touches `window` at import time).
 type MonacoEditor = Parameters<OnMount>[0];
-
-const LANGUAGES = [
-  { label: "JavaScript", value: "javascript" },
-  { label: "Python", value: "python" },
-  { label: "TypeScript", value: "typescript" },
-  { label: "Java", value: "java" },
-  { label: "C++", value: "cpp" },
-] as const;
 
 const DEFAULT_CODE = `console.log("Hello, world!");\n`;
 
@@ -463,6 +456,21 @@ export default function CodeEditor({ roomId }: CodeEditorProps) {
     }
   };
 
+  // Purely local, unlike Run: nothing is written to the Y.Doc and no request
+  // leaves the browser. `language` is a per-user preference, so each peer
+  // downloads the same shared text under their own extension.
+  const handleSave = () => {
+    const blob = new Blob([code], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = downloadFileName(language);
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  };
+
   // Derived from the shared state, not a local flag, so the Run button
   // disables for every peer identically.
   const isLoading = execState.status === "running";
@@ -547,6 +555,17 @@ export default function CodeEditor({ roomId }: CodeEditorProps) {
             <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white/40 border-t-white" />
           )}
           {isLoading ? "Running..." : "Run"}
+        </button>
+        <button
+          type="button"
+          onClick={handleSave}
+          // No room-wide lock here (Save touches no shared state), so an
+          // empty editor is the only thing worth guarding against.
+          disabled={code.length === 0}
+          title={`Download ${downloadFileName(language)}`}
+          className="rounded border border-zinc-700 px-4 py-1.5 text-sm font-medium text-zinc-200 transition-colors hover:bg-zinc-800 disabled:cursor-not-allowed disabled:border-zinc-800 disabled:text-zinc-500"
+        >
+          Save
         </button>
         {execState.status !== "idle" && (
           <span className="flex items-center gap-1.5 text-xs text-zinc-500">

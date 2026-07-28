@@ -40,7 +40,7 @@ A lightweight, no-database collaborative code editor. Users create or join a roo
 - [x] Live multiplayer cursors: each user's cursor/selection shown in their assigned color
 - [x] Output panel: displays stdout/stderr from Piston after running code
 - [x] "Run" button: sends current code + selected language to backend → Piston → streams result to output panel for **everyone in the room**
-- [ ] "Save" button: downloads the current file to the user's device with correct extension (`.py`, `.cpp`, `.ts`, etc. based on selected language)
+- [x] "Save" button: downloads the current file to the user's device with correct extension (`.py`, `.cpp`, `.ts`, etc. based on selected language)
 - [ ] Room becomes inaccessible / redirects home if the room ID doesn't exist (e.g. it already closed)
 
 ### 3. Real-time collaboration (Yjs)

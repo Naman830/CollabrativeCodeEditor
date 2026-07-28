@@ -35,6 +35,7 @@ Key files:
 - `collab-code-editor/app/room/[roomId]/page.tsx` — dynamic room route; `roomId` is the Yjs document name
 - `collab-code-editor/app/lib/user.ts` — the entire user model: palette, name sanitizing, and identity as an external store
 - `collab-code-editor/app/lib/awareness.ts` — `readPeers()`, the one boundary that turns hostile remote awareness state into values the UI may render
+- `collab-code-editor/app/lib/languages.ts` — the one supported-language enumeration: dropdown labels, file extensions, and the Save filename; shared by the editor and the execute route
 - `collab-code-editor/app/components/UserBar.tsx` — presence chips; renders only what `readPeers` returned
 - `collab-code-editor/app/components/IdentityDialog.tsx` — the name/colour prompt, shared by the create and join flows
 - `collab-code-editor/app/api/execute/route.ts` — server-side proxy to Piston
@@ -212,6 +213,35 @@ the clicking user's own trusted `displayName(user)`/`user.color` (`lib/user.ts`)
 they click Run — not from remote awareness. `readPeers`/`lib/awareness.ts` exists to sanitize
 *other* peers' self-reported state; a client's own already-validated identity needs no such
 gate, and going through `readPeers` here would be pointless indirection.
+
+## Saving (the Save button)
+
+Save is the mirror image of Run: **entirely local**, and deliberately so. It builds a `Blob`
+from the editor's current text, clicks a throwaway `<a download>`, and revokes the object URL
+— no Yjs write, no request to the server, nothing stored anywhere (V1_Tasks.md's core
+principle: "saving a file means downloading it to the user's device").
+
+It must stay off the shared `Y.Doc`. The language dropdown is a per-user editing preference,
+so two peers looking at the same text can be on different languages, and each has to get
+their own extension — verified with two tabs: one on C++ downloaded `main.cpp` while the
+other downloaded `Main.java`, same contents. Putting the filename or a "last saved" flag into
+shared state would force one peer's choice onto everyone.
+
+**`app/lib/languages.ts` is the only place languages are enumerated.** It holds the dropdown
+labels, the Monaco/Piston language ids, and the file extensions; `CodeEditor.tsx` and
+`app/api/execute/route.ts` both import from it, and the route keeps only the pinned Piston
+*versions* (a property of the sandbox image, not the language). The extension list used to
+live solely in the route's `LANGUAGE_MAP`, which the client cannot import — it pulls in
+`next/server` — so a Save button would have meant a second, silently-diverging copy.
+
+**Java is the one capitalized filename.** `downloadFileName()` returns `Main.java`, not
+`main.java`, because javac requires a public class to live in a file named after it; every
+other language gets `main.<ext>`, matching the name the execute route hands Piston. Note the
+route deliberately still sends `main.java` — Piston's payload filename is unrelated to the
+local download, and changing it risks that runtime.
+
+Save's only disabled state is an empty document. It has no equivalent of Run's room-wide
+`"running"` lock, since there is nothing for two clickers to contend over.
 
 ## Environment variables
 
