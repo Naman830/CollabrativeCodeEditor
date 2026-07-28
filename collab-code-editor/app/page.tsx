@@ -3,7 +3,7 @@
 import { useState, type SubmitEventHandler } from "react";
 import { useRouter } from "next/navigation";
 import IdentityDialog from "./components/IdentityDialog";
-import { createRoom } from "./lib/rooms";
+import { RoomCreateError, createRoom } from "./lib/rooms";
 import { setActiveUser, type CollabUser } from "./lib/user";
 
 export default function Home() {
@@ -46,9 +46,15 @@ export default function Home() {
       // that provably does not exist and can never sync.
       const newRoomId = await createRoom();
       goToRoom(newRoomId);
-    } catch {
+    } catch (err) {
       setCreating(false);
-      setCreateError("Couldn't reach the sync server. Please try again.");
+      // A server that answered and refused (rate limit, reservation ceiling)
+      // explained why; only an unanswered request is a reachability problem.
+      setCreateError(
+        err instanceof RoomCreateError
+          ? err.message
+          : "Couldn't reach the sync server. Please try again."
+      );
     } finally {
       setReserving(false);
     }

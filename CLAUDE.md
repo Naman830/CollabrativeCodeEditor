@@ -40,7 +40,9 @@ Key files:
 - `collab-code-editor/app/lib/languages.ts` — the one supported-language enumeration: dropdown labels, file extensions, and the Save filename; shared by the editor and the execute route
 - `collab-code-editor/app/components/UserBar.tsx` — presence chips; renders only what `readPeers` returned
 - `collab-code-editor/app/components/IdentityDialog.tsx` — the name/colour prompt, shared by the create and join flows
-- `collab-code-editor/app/api/execute/route.ts` — server-side proxy to Piston
+- `collab-code-editor/app/lib/execution.ts` — the cap on what may be *sent* for execution (`MAX_CODE_BYTES`), shared by the client's pre-flight check and the route's 413
+- `collab-code-editor/app/lib/rateLimit.ts` / `server/rateLimit.js` — the same in-memory sliding-window limiter, once per workspace
+- `collab-code-editor/app/api/execute/route.ts` — server-side proxy to Piston; also where the sandbox-side execution limits live
 - `server/yjsConnection.js` — the only place that speaks the Yjs wire protocol; also the gate that refuses connections to rooms that don't exist
 - `server/rooms.js` — the one authority on whether a room exists, and the only thing that ever deletes one
 
@@ -85,6 +87,14 @@ also maps `run.status` (`OL`/`EL`/`TO`) to a plain-English `notice` field, strip
 fatal-signal line from stderr, and `CodeEditor.tsx` renders the notice in amber under the
 output. `notice` is optional on `ExecuteSuccess` because older records may still sit in a
 room's shared `execution` map.
+
+**Piston validates every per-request limit against a configured ceiling, and 400s the whole
+request if one exceeds it** (`run_timeout cannot exceed the configured limit of 3000`). So
+the numbers in `app/api/execute/route.ts` and the `PISTON_*` vars in `docker-compose.yml` are
+one setting in two places: **never raise the route's without raising compose's first.**
+Like `PISTON_OUTPUT_MAX_SIZE`, those vars live only in compose, so a Piston started any
+other way reverts to defaults — and the defaults are the *tighter* ones (3s run), which
+means every run fails outright rather than silently loosening. See "Execution limits" below.
 
 **Seeding the document.** Starter code is inserted into the `Y.Text` only after the provider
 fires `sync`. Seeding before sync would insert the boilerplate into a still-empty local doc,

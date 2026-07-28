@@ -33,6 +33,22 @@ export async function checkRoom(roomId: string): Promise<RoomCheck> {
 }
 
 /**
+ * A refusal the server explained, as opposed to a network failure. Room
+ * creation is rate limited per IP, so "the server said no" is now a state a
+ * normal user can reach, and it must not be reported as "couldn't reach the
+ * sync server" — the two call for opposite reactions (wait vs retry now).
+ */
+export class RoomCreateError extends Error {
+  readonly status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "RoomCreateError";
+    this.status = status;
+  }
+}
+
+/**
  * Reserves a room and returns its ID. Throws if the server can't be reached —
  * the caller must surface that rather than navigating into a room that
  * provably does not exist.
@@ -42,7 +58,19 @@ export async function checkRoom(roomId: string): Promise<RoomCheck> {
  */
 export async function createRoom(): Promise<string> {
   const res = await fetch(`${API_URL}/rooms`, { method: "POST" });
-  if (!res.ok) throw new Error(`Room creation failed (${res.status})`);
+  if (!res.ok) {
+    // The server's own wording when it has one (rate limit, reservation
+    // ceiling); it knows why it refused and we do not.
+    const explained = await res
+      .json()
+      .then((data: unknown) =>
+        typeof data === "object" && data !== null && typeof (data as { error?: unknown }).error === "string"
+          ? (data as { error: string }).error
+          : null
+      )
+      .catch(() => null);
+    throw new RoomCreateError(explained ?? `Room creation failed (${res.status})`, res.status);
+  }
   const data: unknown = await res.json();
   const roomId =
     typeof data === "object" && data !== null

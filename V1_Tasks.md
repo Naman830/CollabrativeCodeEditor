@@ -61,7 +61,7 @@ A lightweight, no-database collaborative code editor. Users create or join a roo
 - [x] Dockerized Piston instance running alongside/near the Node server
 - [x] Backend endpoint that accepts `{ language, code }` and forwards to Piston
 - [x] Handle and surface Piston errors (timeouts, unsupported language, runtime errors) cleanly in the output panel
-- [ ] Reasonable execution timeout to prevent runaway/blocking processes
+- [x] Reasonable execution timeout to prevent runaway/blocking processes: sandbox-side limits sent with every request and capped in `docker-compose.yml` — 5s run (wall *and* CPU, since a busy loop burns both), 10s compile, 256 MB run memory, 512 MB compile memory. A killed program gets a plain-English notice instead of a raw sandbox signal
 
 ### 6. Notifications / activity feed (extra, in-room)
 - [x] Toast or subtle banner: "X joined the room" (with a join sound effect)
@@ -69,8 +69,8 @@ A lightweight, no-database collaborative code editor. Users create or join a roo
 
 ### 7. Security / abuse prevention
 - [x] Room IDs long and random enough to be unguessable (no sequential/short IDs)
-- [ ] Basic rate limiting on room creation and code execution endpoints
-- [ ] Sane payload size limits on code sent to Piston
+- [x] Basic rate limiting on room creation and code execution endpoints: 10/minute/IP on both `POST /rooms` and `POST /api/execute`, via an in-memory sliding window (no Redis — out of scope). Exact on the sync server (one process); best-effort per instance on Vercel
+- [x] Sane payload size limits on code sent to Piston: 64 KB of code, checked cheaply against `Content-Length` before the body is read and exactly on the decoded program afterwards. The client checks the same shared constant so an oversized document never reaches the wire
 
 ---
 

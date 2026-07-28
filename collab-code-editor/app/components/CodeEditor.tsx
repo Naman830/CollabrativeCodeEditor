@@ -9,6 +9,7 @@ import ActivityToasts, { type ActivityToast } from "./ActivityToasts";
 import IdentityDialog from "./IdentityDialog";
 import UserBar from "./UserBar";
 import { readPeers, type Peer } from "../lib/awareness";
+import { MAX_CODE_BYTES, TOO_LARGE_MESSAGE, codeByteLength } from "../lib/execution";
 import { LANGUAGES, downloadFileName } from "../lib/languages";
 import { WS_URL } from "../lib/rooms";
 import { playJoinSound, playLeaveSound } from "../lib/sound";
@@ -36,10 +37,13 @@ const CLOSE_ROOM_NOT_FOUND = 4404;
 // nothing else ever writes to the execution map — every peer's Run button
 // stays disabled forever, since it's gated on `status === "running"`. This
 // bounds how long the room waits before treating an abandoned run as failed.
-// Set above the API route's own PISTON_TIMEOUT_MS (15s) plus margin for the
-// request/response round trip, so a run that's merely slow — not abandoned —
-// is never pre-empted by this.
-const STALE_RUN_MS = 20_000;
+// It is the outermost bound of a nested set, and the ordering is what keeps
+// each layer meaningful: the sandbox stops the program (10s compile + 5s run at
+// worst), the route's PISTON_TIMEOUT_MS (18s) catches a Piston that never
+// answers, and only then does this decide the *client* is gone. Set below any
+// of them and a run that is merely slow gets pre-empted and reported as a lost
+// connection.
+const STALE_RUN_MS = 25_000;
 
 // Everything below is built from `readPeers`'s output, not raw awareness state
 // directly — `lib/awareness` is the boundary that sanitizes and deduplicates
@@ -430,6 +434,24 @@ export default function CodeEditor({ roomId, onRoomClosed }: CodeEditorProps) {
     const runId = `${yDoc.clientID}-${runCounterRef.current}`;
     const startedBy: RunAttribution = { name: displayName(user), color: user.color };
     const startedAt = Date.now();
+
+    // The route enforces this too (it has to — it is reachable without the UI);
+    // checking here just avoids pushing a payload over the wire to be refused,
+    // and both sides read the same constant so they cannot disagree. The failure
+    // is written to the shared map like any other: the document is shared, so
+    // "this is too big to run" is true for everyone looking at it.
+    if (codeByteLength(code) > MAX_CODE_BYTES) {
+      executionMap.set("state", {
+        status: "error",
+        runId,
+        language,
+        startedBy,
+        startedAt,
+        finishedAt: Date.now(),
+        error: TOO_LARGE_MESSAGE,
+      });
+      return;
+    }
 
     executionMap.set("state", { status: "running", runId, language, startedBy, startedAt });
 

@@ -4,8 +4,15 @@ const http = require("http");
 const { WebSocketServer } = require("ws");
 const { handleYjsConnection } = require("./yjsConnection");
 const { reserveRoom, roomExists, GRACE_MS } = require("./rooms");
+const { createRateLimiter, clientKey } = require("./rateLimit");
 
 const PORT = process.env.PORT || 8080;
+
+// 10 rooms/minute/IP. Creating a room is a deliberate act — click, name, enter —
+// so this is far above real use while stopping a loop from burning through the
+// reservation ceiling in rooms.js and denying everyone else a room. Only
+// POST /rooms is limited: GET /rooms/:id and /health allocate nothing.
+const createRoomLimiter = createRateLimiter({ limit: 10, windowMs: 60_000 });
 
 // The frontend is always a different origin (localhost:3000 -> localhost:8080 in
 // dev, Vercel -> Railway in production), and there is nothing to protect here:
@@ -45,6 +52,14 @@ const server = http.createServer((req, res) => {
   // The request body is deliberately empty — no Content-Type means this stays a
   // CORS *simple* request and skips the preflight round trip.
   if (req.method === "POST" && path === "/rooms") {
+    const limit = createRoomLimiter(clientKey(req));
+    if (!limit.allowed) {
+      res.setHeader("Retry-After", String(limit.retryAfterSeconds));
+      return json(res, 429, {
+        error: "You're creating rooms too quickly. Wait a moment and try again.",
+      });
+    }
+
     const roomId = reserveRoom();
     if (!roomId) {
       return json(res, 429, { error: "Too many rooms are being created. Try again shortly." });
