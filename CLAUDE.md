@@ -3,6 +3,24 @@
 A multiplayer code editor: Yjs CRDT sync over WebSockets, plus sandboxed multi-language
 execution via a self-hosted Piston instance.
 
+## Scope of work: follow `V1_Tasks.md`
+
+`V1_Tasks.md` at the repo root is the **authoritative feature checklist for v1**. Read it
+before starting any feature work — the user prompts against those items, so "build the user
+bar" means the user-bar line in that file, not a fresh interpretation.
+
+Rules:
+- Work in the order given by its *Suggested build order* section unless the user names a
+  specific item.
+- Tick a box (`- [ ]` → `- [x]`) **only after** the feature is implemented and verified
+  running, in the same change that implements it. Never tick ahead of the code.
+- A parent bullet stays unticked until every one of its sub-bullets is ticked.
+- Respect its *Explicitly out of scope for v1* list: **no database, no Redis, no auth, no
+  server-side persistence.** Do not add them even as a convenience — see the
+  "Not built yet" section below for what is deliberately deferred.
+- If a task turns out to be wrong or impossible as written, say so and update the checklist
+  text rather than silently ticking or skipping it.
+
 ## Repo layout
 
 Two independent workspaces. **There is no root `package.json`** — install and run each separately.

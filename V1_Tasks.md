@@ -22,45 +22,45 @@ A lightweight, no-database collaborative code editor. Users create or join a roo
 ## Feature checklist
 
 ### 1. Landing / home page
-- [ ] Simple hero with two primary actions: **Create a Room** / **Join a Room**
+- [x] Simple hero with two primary actions: **Create a Room** / **Join a Room**
 - [ ] "Create a Room" flow:
   - [ ] Prompt for first name + last name (no accounts)
   - [ ] Generate a cryptographically random room ID (`crypto.randomUUID()` or `nanoid(12)+`)
   - [ ] Assign the user a random color (used later for cursor/presence)
-  - [ ] Redirect to `/room/<id>`
+  - [x] Redirect to `/room/<id>`
 - [ ] "Join a Room" flow:
-  - [ ] Input field for room ID, OR
-  - [ ] Deep link support: pasting/opening a room URL joins directly (`/room/<id>`)
+  - [x] Input field for room ID, OR
+  - [x] Deep link support: pasting/opening a room URL joins directly (`/room/<id>`)
   - [ ] Prompt for first name + last name + assign random color on join too
 
 ### 2. Room / editor page
 - [ ] Top user bar: shows connected users' short names/initials, each tagged with their assigned color
-- [ ] Code editor pane (e.g. Monaco or CodeMirror) wired to Yjs for CRDT sync
-- [ ] Language selector dropdown (drives both editor syntax highlighting and Piston execution)
-- [ ] Live multiplayer cursors: each user's cursor/selection shown in their assigned color
-- [ ] Output panel: displays stdout/stderr from Piston after running code
+- [x] Code editor pane (e.g. Monaco or CodeMirror) wired to Yjs for CRDT sync
+- [x] Language selector dropdown (drives both editor syntax highlighting and Piston execution)
+- [x] Live multiplayer cursors: each user's cursor/selection shown in their assigned color
+- [x] Output panel: displays stdout/stderr from Piston after running code
 - [ ] "Run" button: sends current code + selected language to backend → Piston → streams result to output panel for **everyone in the room**
 - [ ] "Save" button: downloads the current file to the user's device with correct extension (`.py`, `.cpp`, `.ts`, etc. based on selected language)
 - [ ] Room becomes inaccessible / redirects home if the room ID doesn't exist (e.g. it already closed)
 
 ### 3. Real-time collaboration (Yjs)
-- [ ] Yjs document created in-memory per room on the server
-- [ ] WebSocket provider connecting client editor to the Yjs doc
+- [x] Yjs document created in-memory per room on the server
+- [x] WebSocket provider connecting client editor to the Yjs doc
 - [ ] Awareness protocol wired up for:
-  - [ ] Live cursor positions
-  - [ ] Live selections
+  - [x] Live cursor positions
+  - [x] Live selections
   - [ ] Presence (who's currently in the room)
-- [ ] Conflict-free concurrent editing verified with 2+ simultaneous typers
+- [x] Conflict-free concurrent editing verified with 2+ simultaneous typers
 
 ### 4. Room lifecycle management
-- [ ] Server maintains an in-memory `Map<roomId, { yjsDoc, users }>`
-- [ ] On last user disconnect: destroy the Yjs doc and remove the room from the map (instant, or a few-second debounce to survive page refresh — pick one)
-- [ ] No write to disk, no external persistence at any point
+- [x] Server maintains an in-memory `Map<roomId, { yjsDoc, users }>`
+- [x] On last user disconnect: destroy the Yjs doc and remove the room from the map (instant, or a few-second debounce to survive page refresh — pick one)
+- [x] No write to disk, no external persistence at any point
 
 ### 5. Code execution (Piston)
-- [ ] Dockerized Piston instance running alongside/near the Node server
-- [ ] Backend endpoint that accepts `{ language, code }` and forwards to Piston
-- [ ] Handle and surface Piston errors (timeouts, unsupported language, runtime errors) cleanly in the output panel
+- [x] Dockerized Piston instance running alongside/near the Node server
+- [x] Backend endpoint that accepts `{ language, code }` and forwards to Piston
+- [x] Handle and surface Piston errors (timeouts, unsupported language, runtime errors) cleanly in the output panel
 - [ ] Reasonable execution timeout to prevent runaway/blocking processes
 
 ### 6. Notifications / activity feed (extra, in-room)
