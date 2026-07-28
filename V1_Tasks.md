@@ -34,7 +34,7 @@ A lightweight, no-database collaborative code editor. Users create or join a roo
   - [x] Prompt for first name + last name + assign random color on join too
 
 ### 2. Room / editor page
-- [x] Top user bar: shows connected users' short names/initials, each tagged with their assigned color
+- [x] Top user bar: shows connected users' short names/initials, each tagged with their assigned color (duplicate short names numbered, e.g. "Naman S1"/"Naman S2"; duplicate colors reassigned to a free palette entry, both resolved per room)
 - [x] Code editor pane (e.g. Monaco or CodeMirror) wired to Yjs for CRDT sync
 - [x] Language selector dropdown (drives both editor syntax highlighting and Piston execution)
 - [x] Live multiplayer cursors: each user's cursor/selection shown in their assigned color

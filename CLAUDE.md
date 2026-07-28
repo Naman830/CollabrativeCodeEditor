@@ -129,17 +129,33 @@ Don't merge them: cursor positions must never enter document history.
 
 **Awareness state is untrusted input.** Any peer sets its own `user` field to whatever it
 likes — it never passes through our form, so sanitizing at the input boundary proves
-nothing. `renderAwarenessStyles` builds a `<style>` tag from it, so the name is escaped as a
-CSS string and the colour is rejected unless it matches `HEX_COLOR` (`/^#[0-9a-f]{6}$/i`,
-exported from `lib/awareness.ts`). Without the colour check a peer can send
+nothing. `readPeers()` (`lib/awareness.ts`) is the single point that turns that raw state
+into values the UI may render: names are re-sanitized (React escapes them, but an unbounded
+or control-character name still wrecks the layout) and a colour failing `HEX_COLOR`
+(`/^#[0-9a-f]{6}$/i`, exported from `lib/awareness.ts`) falls back to grey instead of
+reaching an inline `style` or the cursor `<style>` tag. Without that check a peer can send
 `red } body { display: none } .x {` and restyle every other participant's page; this was
 verified exploitable before the guard was added.
 
-The user bar reads the same state, so it goes through `readPeers()` rather than touching
-`awareness.getStates()` itself: names are re-sanitized (React escapes them, but an unbounded
-or control-character name still wrecks the layout) and a colour failing `HEX_COLOR` falls
-back to grey instead of reaching an inline `style`. Anything new that renders a remote name
-or colour (join/leave toasts) must go through `readPeers` too, not read awareness directly.
+The user bar and `CodeEditor.tsx`'s `renderAwarenessStyles` (the remote-cursor `<style>`
+block) both consume `readPeers`'s output rather than touching `awareness.getStates()`
+directly — neither may read raw awareness state itself. Anything new that renders a remote
+name or colour (join/leave toasts) must go through `readPeers` too.
+
+**`readPeers()` also deduplicates names and colors.** Two peers can independently end up
+with the same short name (two "Naman Singla"s both display as `Naman S.`) or the same colour
+(an 8-colour palette in `lib/user.ts`'s `CURSOR_COLORS`, picked at random per joiner with no
+coordination). Neither is preventable in `IdentityDialog` — it has no `roomId` and no
+awareness access, since the Yjs stack isn't created until identity is submitted (see the
+effect-scoped lifecycle note above) — so there is no point before the dialog closes at which
+"who else is here" is knowable. Both collisions are resolved reactively inside `readPeers`
+once awareness makes them visible: a name shared by 2+ peers gets a 1-based number appended
+(`Naman S.` → `Naman S1` / `Naman S2`), and a colour already claimed by an earlier peer is
+swapped for the first unclaimed entry in `CURSOR_COLORS`. Resolution walks peers in ascending
+`clientID` order, not the local-first order used for display — `clientID` is the one
+ordering every connected client agrees on, so all viewers independently compute the same
+winner for a contested name or colour. The user's originally-chosen colour in `sessionStorage`
+is never touched; only the rendered copy shifts, and only while the collision lasts.
 
 ## Environment variables
 
