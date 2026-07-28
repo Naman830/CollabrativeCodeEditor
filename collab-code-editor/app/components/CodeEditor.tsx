@@ -177,6 +177,41 @@ function DownloadIcon() {
   );
 }
 
+function CopyIcon() {
+  return (
+    <svg
+      aria-hidden
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="h-3.5 w-3.5"
+    >
+      <rect x="9" y="9" width="11" height="11" rx="2" />
+      <path d="M5 15V6a2 2 0 0 1 2-2h9" />
+    </svg>
+  );
+}
+
+function CheckIcon() {
+  return (
+    <svg
+      aria-hidden
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="h-3.5 w-3.5"
+    >
+      <path d="m5 13 4 4 10-10" />
+    </svg>
+  );
+}
+
 export default function CodeEditor({ roomId, onRoomClosed }: CodeEditorProps) {
   const [language, setLanguage] = useState<string>("javascript");
   // Starts empty, not at DEFAULT_CODE: the editor really is empty until the
@@ -200,6 +235,43 @@ export default function CodeEditor({ roomId, onRoomClosed }: CodeEditorProps) {
   useEffect(() => {
     onRoomClosedRef.current = onRoomClosed;
   });
+
+  // "Copied" is a transient label on the room chip; the timer is a ref so the
+  // cleanup can cancel it and never setState on an unmounted component.
+  const [copied, setCopied] = useState(false);
+  const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    return () => {
+      if (copyTimerRef.current !== null) clearTimeout(copyTimerRef.current);
+    };
+  }, []);
+
+  const handleCopyRoomId = useCallback(async () => {
+    try {
+      // navigator.clipboard only exists in a secure context, so a room opened
+      // over plain http on a LAN address (the usual way to test with a phone)
+      // falls back to the old selection trick rather than throwing.
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(roomId);
+      } else {
+        const scratch = document.createElement("textarea");
+        scratch.value = roomId;
+        scratch.setAttribute("readonly", "");
+        scratch.style.position = "fixed";
+        scratch.style.opacity = "0";
+        document.body.appendChild(scratch);
+        scratch.select();
+        document.execCommand("copy");
+        document.body.removeChild(scratch);
+      }
+      if (copyTimerRef.current !== null) clearTimeout(copyTimerRef.current);
+      setCopied(true);
+      copyTimerRef.current = setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // Clipboard permission can still be denied outright; the id is visible in
+      // the address bar either way, so there is nothing to report.
+    }
+  }, [roomId]);
 
   // Awareness is a mutable instance inside the effect below, so React only sees
   // presence changes because they are mirrored into this state.
@@ -524,13 +596,24 @@ export default function CodeEditor({ roomId, onRoomClosed }: CodeEditorProps) {
           ))}
         </select>
 
-        <span
-          title={roomId}
-          className="flex min-w-0 items-center gap-1.5 rounded-lg border border-edge bg-raised/60 px-2.5 py-1.5 text-xs text-zinc-500"
+        {/* The chip truncates a long id, so the button is the only way to get
+            the whole thing without retyping it out of the address bar. */}
+        <button
+          type="button"
+          onClick={handleCopyRoomId}
+          title={`Copy room ID: ${roomId}`}
+          aria-label={`Copy room ID ${roomId}`}
+          className="flex min-w-0 items-center gap-1.5 rounded-lg border border-edge bg-raised/60 px-2.5 py-1.5 text-xs text-zinc-500 transition-colors hover:border-zinc-600 hover:text-zinc-300 focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/30"
         >
           Room
           <span className="max-w-[14rem] truncate font-mono text-zinc-300">{roomId}</span>
-        </span>
+          <span className={copied ? "text-emerald-400" : "text-zinc-500"}>
+            {copied ? <CheckIcon /> : <CopyIcon />}
+          </span>
+          <span aria-live="polite" className="sr-only">
+            {copied ? "Room ID copied" : ""}
+          </span>
+        </button>
 
         <div className="ml-auto flex items-center gap-2">
           <span className="flex items-center gap-2 rounded-lg border border-edge bg-raised/60 px-2.5 py-1.5 text-xs text-zinc-400">
