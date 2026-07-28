@@ -397,19 +397,53 @@ Save's only disabled state is an empty document. It has no equivalent of Run's r
 | Var | Where | Purpose |
 | --- | --- | --- |
 | `NEXT_PUBLIC_WS_URL` | `collab-code-editor/.env.local` | WebSocket server URL. Defaults to `ws://localhost:8080`; production points at the Railway `wss://` URL. **Also the source of the room-routes HTTP base** — `app/lib/rooms.ts` swaps the scheme, so there is no separate variable to keep in sync. |
-| `PISTON_API_URL` | `collab-code-editor` | Piston base URL. Defaults to `http://localhost:2000`. |
+| `PISTON_API_URL` | `collab-code-editor` | Piston base URL. Defaults to `http://localhost:2000`. **No trailing slash** — `app/api/execute/route.ts` appends `/api/v2/execute`. On Vercel it holds the tunnel hostname (see "Production execution path"); Vercel env changes only reach a *new* deployment, so changing it requires a redeploy. |
 | `PISTON_OUTPUT_MAX_SIZE`, `PISTON_RUN_TIMEOUT`, `PISTON_RUN_CPU_TIME`, `PISTON_COMPILE_TIMEOUT`, `PISTON_COMPILE_CPU_TIME`, `PISTON_RUN_MEMORY_LIMIT`, `PISTON_COMPILE_MEMORY_LIMIT` | `collab-code-editor/docker-compose.yml` | Ceilings inside the Piston container, **not** app config — they exist only in compose, and Piston rejects any per-request limit above them. Keep in step with the constants in `app/api/execute/route.ts`. |
 | `PORT` | `server/.env` | Port for both the WebSocket upgrade and the room HTTP routes. Defaults to `8080`. |
 | `ROOM_GRACE_MS` | `server/.env` | How long an emptied room lingers before destruction. Defaults to `10000`. |
 | `ROOM_RESERVATION_MS` | `server/.env` | How long a created-but-never-entered room stays claimable. Defaults to `300000`. |
+
+## Production execution path
+
+Piston cannot be deployed alongside the other two services: it needs a **privileged**
+container (`isolate`, cgroups, `tmpfs … :exec`), which neither Vercel nor Railway allows.
+The public Piston API at `emkc.org` is not a fallback — it went **whitelist-only on
+2026-02-15** and now `401`s every request.
+
+So the deployed `/api/execute` talks to a Piston running on a developer machine, reached
+through a **reserved ngrok hostname** held in `PISTON_API_URL`. Two facts follow, and both
+have already caused confusion once:
+
+- **Run only works while that machine is online.** This is a property of the deployment, not
+  a bug. Piston down → `"Could not reach the code execution service."`
+- **Tunnel down reads as a *different* error.** ngrok/Cloudflare answer with an HTML error
+  page, which fails `pistonRes.json()` and surfaces as `"Code execution service returned an
+  invalid response."` (`route.ts`'s second 502). That string means *the tunnel*, never Piston
+  and never the user's code.
+
+The hostname must be **reserved**, not a quick tunnel. A `trycloudflare`/anonymous tunnel
+mints a new URL on every restart, and since a Vercel env change only reaches a *new*
+deployment, each restart would cost an env edit **plus a redeploy**. The reserved hostname is
+set once and then survives reboots.
+
+On the current machine that tunnel is a `systemd --user` unit, `ngrok-piston.service`
+(`Restart=always`, so it recovers from network changes), and Piston itself is
+`restart: unless-stopped` in `docker-compose.yml`, so both return after a reboot.
+
+The five versions pinned in `LANGUAGE_MAP` match a stock `ghcr.io/engineer-man/piston`
+image, so pointing `PISTON_API_URL` at any self-hosted instance needs no code change. The
+image is **amd64-only** (single-arch manifest) — ARM free tiers cannot host it.
 
 ## Not built yet
 
 Postgres persistence and Redis pub/sub for horizontal scaling are on the roadmap but
 unimplemented. **Documents are in-memory only — room state does not survive a WebSocket
 server restart**, and since a restart wipes the room registry too, every client still in a
-room gets its reconnect refused and is sent home (see "Room lifetime"). Piston is local-only;
-code execution does not work on the deployed site.
+room gets its reconnect refused and is sent home (see "Room lifetime"). Hosting Piston
+somewhere always-on (a VPS permitting privileged containers) is the one roadmap item that
+would make execution independent of a developer machine — see "Production execution path"
+above, which replaces an older note here claiming execution simply does not work in
+production.
 
 Room eviction *is* implemented — see "Room lifetime" above; that section replaces an older
 note here claiming rooms are never evicted. Execution resource limits and rate limiting are

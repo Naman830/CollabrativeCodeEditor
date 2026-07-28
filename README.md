@@ -74,15 +74,19 @@ CollabCode fixes that with a room you can share by URL:
 | :-- | :-- | :-- |
 | **Frontend** | 🟢 Live | [real-time-collabrative-code-editor-two.vercel.app](https://real-time-collabrative-code-editor-two.vercel.app) |
 | **Sync server** | 🟢 Live | `wss://collabrativecodeeditor-production.up.railway.app` |
-| **Piston sandbox** | 🔴 Local only | — |
+| **Piston sandbox** | 🟡 Tunneled | a local container, reached over a fixed tunnel hostname |
 
 > [!IMPORTANT]
-> **Collaboration works on the live demo. Code execution does not.**
-> Piston needs a privileged Docker container with `tmpfs ... :exec` to build its isolation
-> layer — it cannot run on Vercel or Railway. On the deployed site, **Run** returns
-> *"Could not reach the code execution service."*
+> **Execution on the live demo runs on a developer machine, not in the cloud.**
+> Piston needs a privileged Docker container with `tmpfs … :exec` to build its isolation layer,
+> and neither Vercel nor Railway permits that. So the deployed `/api/execute` points at a local
+> Piston exposed through a reserved ngrok hostname (`PISTON_API_URL`).
 >
-> **To see the Run button work, [run it locally](#-quick-start)** — it's three commands.
+> The consequence is honest and unavoidable: **Run works on the live demo only while that
+> machine is online.** When it isn't, Run reports *"Could not reach the code execution service."*
+> Making this independent of any one machine means [hosting Piston on a VPS](#️-roadmap).
+>
+> **[Running locally](#-quick-start) is the reliable way to see it** — three commands, no tunnel.
 
 ---
 
@@ -144,7 +148,7 @@ flowchart TB
         HTTP --- RM
     end
 
-    subgraph SANDBOX["🐳 Piston · Docker, local"]
+    subgraph SANDBOX["🐳 Piston · Docker — local, tunneled in production"]
         P["Isolated container<br/><i>per run</i>"]
     end
 
@@ -633,6 +637,16 @@ re-check that endpoint after any Piston image update.
 **Everyone gets sent home at once.** The sync server restarted. Documents are in-memory only, so a
 restart wipes the room registry, and every client's reconnect is correctly refused.
 
+**On the deployed site: *"Code execution service returned an invalid response."*** The tunnel is
+down, so the route received the tunnel provider's HTML error page where it expected Piston's JSON.
+Check `systemctl --user status ngrok-piston` on the host machine — **not** the Vercel logs.
+
+**On the deployed site: *"Couldn't reach the sync server."*** Before blaming Railway, check whether
+your own DNS resolves it — some mobile-carrier resolvers refuse the whole `up.railway.app` zone
+while resolving `railway.app` fine, which is indistinguishable from a dead server in the browser.
+See [`server/README.md`](server/README.md#troubleshooting-couldnt-reach-the-sync-server) for the
+one-line `curl --resolve` check that settles it.
+
 </details>
 
 ---
@@ -644,7 +658,7 @@ restart wipes the room registry, and every client's reconnect is correctly refus
 
 <tr><td><code>NEXT_PUBLIC_WS_URL</code></td><td><code>collab-code-editor/.env.local</code></td><td><code>ws://localhost:8080</code></td><td>Sync server URL. <b>Also the source of the room-routes HTTP base</b> — <code>app/lib/rooms.ts</code> just swaps the scheme, so there's no second variable that could drift.</td></tr>
 
-<tr><td><code>PISTON_API_URL</code></td><td><code>collab-code-editor</code></td><td><code>http://localhost:2000</code></td><td>Piston base URL.</td></tr>
+<tr><td><code>PISTON_API_URL</code></td><td><code>collab-code-editor</code></td><td><code>http://localhost:2000</code></td><td>Piston base URL. <b>No trailing slash</b> — the route appends <code>/api/v2/execute</code> itself. In production this is the tunnel hostname; a Vercel env change only reaches a <i>new</i> deployment, so it needs a redeploy to take effect.</td></tr>
 
 <tr><td><code>PORT</code></td><td><code>server/.env</code></td><td><code>8080</code></td><td>Serves both the WebSocket upgrade and the room HTTP routes — one listener, one port.</td></tr>
 
@@ -708,7 +722,9 @@ restart wipes the room registry, and every client's reconnect is correctly refus
 
 **Beyond v1:**
 
-- [ ] 🐳 Deploy Piston somewhere that allows privileged containers, so **Run** works on the live demo
+- [ ] 🐳 Host Piston on a VPS that allows privileged containers, so **Run** on the live demo stops
+      depending on a developer machine being online (the image is **amd64-only**, so ARM free tiers
+      are out)
 - [ ] 🗄️ Postgres persistence — rooms that survive a restart
 - [ ] 🔴 Redis pub/sub — multiple sync instances sharing room state, and a global rate limiter
 - [ ] 🔗 Shareable short links
