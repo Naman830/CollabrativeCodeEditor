@@ -33,6 +33,8 @@ Two independent workspaces. **There is no root `package.json`** — install and 
 Key files:
 - `collab-code-editor/app/components/CodeEditor.tsx` — the whole client-side Yjs stack (doc, provider, awareness, Monaco binding)
 - `collab-code-editor/app/room/[roomId]/page.tsx` — dynamic room route; `roomId` is the Yjs document name
+- `collab-code-editor/app/lib/user.ts` — the entire user model: palette, name sanitizing, and identity as an external store
+- `collab-code-editor/app/components/IdentityDialog.tsx` — the name/colour prompt, shared by the create and join flows
 - `collab-code-editor/app/api/execute/route.ts` — server-side proxy to Piston
 - `server/yjsConnection.js` — the only place that speaks the Yjs wire protocol
 
@@ -73,9 +75,30 @@ move the seed earlier, and never give Monaco a `defaultValue` — `MonacoBinding
 model to the `Y.Text` contents when it attaches, so it would be discarded anyway.
 
 **Yjs lifecycle is effect-scoped.** The `Y.Doc`, provider, awareness handler, and binding are
-all created and destroyed inside one effect keyed on `roomId`. Do not hoist the `Y.Doc` into
-component state — a cleanup that destroys a doc nothing recreates breaks both room switching
-and React StrictMode's dev remount.
+all created and destroyed inside one effect keyed on `roomId` *and the local user*. Do not
+hoist the `Y.Doc` into component state — a cleanup that destroys a doc nothing recreates
+breaks both room switching and React StrictMode's dev remount. The effect deliberately
+early-returns until identity is known, so no socket opens before there is a name to announce.
+
+**Identity storage is split on purpose.** `app/lib/user.ts` keeps the active
+`{firstName, lastName, color}` in **sessionStorage**, and mirrors only the *name* to
+localStorage as a form prefill. sessionStorage is per-tab, so a second tab on the same room
+is a genuinely separate collaborator — which is the only way to test multiplayer locally
+without an incognito window. Consolidating both into localStorage looks like a
+simplification and silently breaks that: both tabs become one user with one cursor. The
+colour is excluded from the mirror for the same reason.
+
+`setActiveUser()` is the single writer. It updates an in-memory snapshot as well as storage,
+which matters because landing → room is a client-side navigation that keeps the module
+alive; a stale snapshot would re-prompt someone who just filled the form in.
+
+**Identity is read via `useSyncExternalStore`, not useState + useEffect.** `IdentityState` is
+three-valued (`unknown` / `absent` / `present`) and the *server* snapshot is always
+`unknown`, so the name prompt is never in the SSR output — otherwise it flashes at everyone
+who already has a name. React 19's `react-hooks/set-state-in-effect` lint rule also rejects
+the obvious `useEffect(() => setUser(load()))` version, so this is not merely a style
+preference. `IdentityDialog` reads storage in lazy `useState` initializers, which is only
+safe because callers keep it out of the server-rendered tree.
 
 ## Architecture invariant
 
@@ -88,6 +111,14 @@ Within sync, there are likewise two protocols on the same socket:
 - **Awareness** — ephemeral cursor/selection/user state, dropped entirely on disconnect
 
 Don't merge them: cursor positions must never enter document history.
+
+**Awareness state is untrusted input.** Any peer sets its own `user` field to whatever it
+likes — it never passes through our form, so sanitizing at the input boundary proves
+nothing. `renderAwarenessStyles` builds a `<style>` tag from it, so the name is escaped as a
+CSS string and the colour is rejected unless it matches `/^#[0-9a-f]{6}$/i`. Without the
+colour check a peer can send `red } body { display: none } .x {` and restyle every other
+participant's page; this was verified exploitable before the guard was added. Anything new
+that renders a remote name or colour (user bar, join/leave toasts) inherits this problem.
 
 ## Environment variables
 
@@ -103,5 +134,20 @@ Postgres persistence, Redis pub/sub for horizontal scaling, and execution resour
 all on the roadmap but unimplemented. **Documents are in-memory only — room state does not
 survive a WebSocket server restart.** Piston is local-only; code execution does not work on
 the deployed site.
+
+**Rooms are never evicted, despite what `V1_Tasks.md` §4 claims.** That checklist item is
+ticked, but it is not true. `server/` delegates all room state to `y-websocket/bin/utils.js`,
+whose `closeConn` puts `docs.delete(doc.name)` *inside* an
+`if (doc.conns.size === 0 && persistence !== null)` branch — and `server/index.js` never
+calls `setPersistence` or sets `YPERSISTENCE`. So the `docs` map only ever grows: content
+survives an empty room (rejoining a supposedly-closed room shows the old code) and memory is
+unbounded. Two consequences before building on room lifetime:
+
+- §2's "redirect home if the room ID doesn't exist" has no meaningful notion of
+  "doesn't exist" — every room is created on first connect via `map.setIfUndefined`.
+- A room-existence HTTP endpoint would answer "has anyone ever visited", not "is this live".
+
+The fix is to `docs.delete` unconditionally at `conns.size === 0` (optionally debounced a few
+seconds to survive a refresh), and to correct the checklist text rather than trust the tick.
 
 @collab-code-editor/AGENTS.md
