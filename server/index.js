@@ -27,7 +27,7 @@ function json(res, status, body) {
   res.end(JSON.stringify(body));
 }
 
-// Hand-rolled rather than Express: the whole HTTP surface is three routes.
+// Hand-rolled rather than Express: the whole HTTP surface is four routes.
 const server = http.createServer((req, res) => {
   const url = new URL(req.url, `http://${req.headers.host ?? "localhost"}`);
   const path = url.pathname;
@@ -37,6 +37,18 @@ const server = http.createServer((req, res) => {
     res.writeHead(204);
     res.end();
     return;
+  }
+
+  // Purely cosmetic. Opening the Railway URL in a browser used to return the
+  // catch-all 404, which reads like a dead deployment even though the service
+  // is fine — this host is only ever used as wss:// plus the routes below.
+  if (req.method === "GET" && path === "/") {
+    return json(res, 200, {
+      service: "collab-code-editor sync server",
+      status: "ok",
+      transport: "websocket (yjs sync protocol) on this same port",
+      routes: ["GET /health", "POST /rooms", "GET /rooms/:roomId"],
+    });
   }
 
   if (req.method === "GET" && path === "/health") {
