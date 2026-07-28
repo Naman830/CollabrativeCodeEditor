@@ -28,18 +28,21 @@ Two independent workspaces. **There is no root `package.json`** — install and 
 | Path | What it is |
 | --- | --- |
 | `collab-code-editor/` | Next.js 16 (App Router) frontend. Monaco editor, room routing, and the `/api/execute` proxy to Piston. |
-| `server/` | Standalone Node.js WebSocket server speaking the Yjs sync protocol. Deployed to Railway. |
+| `server/` | Standalone Node.js WebSocket server speaking the Yjs sync protocol, plus the room-lifetime HTTP routes on the same port. Deployed to Railway. |
 
 Key files:
 - `collab-code-editor/app/components/CodeEditor.tsx` — the whole client-side Yjs stack (doc, provider, awareness, Monaco binding)
 - `collab-code-editor/app/room/[roomId]/page.tsx` — dynamic room route; `roomId` is the Yjs document name
+- `collab-code-editor/app/components/RoomGate.tsx` — decides whether a room may be entered at all, *before* the editor (and therefore the socket) exists
+- `collab-code-editor/app/lib/rooms.ts` — the client's view of room lifetime: `WS_URL`, the derived HTTP base, `createRoom()`, `checkRoom()`
 - `collab-code-editor/app/lib/user.ts` — the entire user model: palette, name sanitizing, and identity as an external store
 - `collab-code-editor/app/lib/awareness.ts` — `readPeers()`, the one boundary that turns hostile remote awareness state into values the UI may render
 - `collab-code-editor/app/lib/languages.ts` — the one supported-language enumeration: dropdown labels, file extensions, and the Save filename; shared by the editor and the execute route
 - `collab-code-editor/app/components/UserBar.tsx` — presence chips; renders only what `readPeers` returned
 - `collab-code-editor/app/components/IdentityDialog.tsx` — the name/colour prompt, shared by the create and join flows
 - `collab-code-editor/app/api/execute/route.ts` — server-side proxy to Piston
-- `server/yjsConnection.js` — the only place that speaks the Yjs wire protocol
+- `server/yjsConnection.js` — the only place that speaks the Yjs wire protocol; also the gate that refuses connections to rooms that don't exist
+- `server/rooms.js` — the one authority on whether a room exists, and the only thing that ever deletes one
 
 ## Running locally
 
@@ -170,6 +173,64 @@ ordering every connected client agrees on, so all viewers independently compute 
 winner for a contested name or colour. The user's originally-chosen colour in `sessionStorage`
 is never touched; only the rendered copy shifts, and only while the collision lasts.
 
+## Room lifetime
+
+A room has three stages, and `server/rooms.js` is the only module that knows about any of
+them:
+
+```
+reserved ──connect──► live ──last socket closes──► grace (10s) ──► destroyed
+   │                    ▲                             │
+   └─5 min, unclaimed───┘  reconnect cancels ─────────┘
+```
+
+`roomExists()` is true for all three stages, which is what makes a page refresh survive.
+
+**y-websocket will not delete rooms for us, so this module must.** `closeConn` in
+`y-websocket/bin/utils.js` puts `docs.delete(doc.name)` *inside* an
+`if (doc.conns.size === 0 && persistence !== null)` branch, and this server deliberately
+never calls `setPersistence`. Left alone, the `docs` map only ever grows: an "closed" room
+still holds its old code, and memory is unbounded. `scheduleEviction()` owns that deletion
+instead, and re-checks `conns.size === 0` *when the timer fires* rather than trusting the
+cancel path — a reconnect landing inside the grace window must not lose its doc to a timer
+that was already queued.
+
+**Connecting to a room is what creates it, so the gate has to be server-side.**
+`setupWSConnection` calls `map.setIfUndefined(docs, docName, …)`. A client-side check alone
+would therefore be bypassed the instant the socket opened — the "dead" room would spring back
+into existence, empty. `server/yjsConnection.js` refuses unknown rooms *before* calling
+`setupWSConnection`, which is also what stops an old tab, reconnecting after an eviction or a
+server restart, from silently resurrecting the room it remembers.
+
+**Refusal is a post-handshake close with code 4404, not a rejected upgrade.** A rejected
+upgrade reaches the browser as an opaque error with no code attached, and the client needs to
+tell "this room is gone" (stop retrying, show the closed screen) from "the network blipped"
+(keep retrying). The constant is `CLOSE_ROOM_NOT_FOUND`, duplicated in
+`server/yjsConnection.js` and `CodeEditor.tsx` because the two workspaces share no code.
+Note y-websocket keeps reconnecting forever on its own, so the client's handler must call
+`provider.disconnect()` — that sets `shouldConnect = false`, which is the only thing `setupWS`
+checks before re-dialling.
+
+**Rooms are minted by the server (`POST /rooms`), not the browser.** This is the whole basis
+of "this room ID doesn't exist": an ID nobody was ever issued is refused at connect time. The
+landing page therefore fails *closed* when the sync server is unreachable, rather than
+dropping someone into a room that can never sync. The POST deliberately sends **no body** —
+adding a JSON `Content-Type` would make it a non-simple CORS request and buy a preflight
+round trip before every room creation.
+
+**`app/lib/rooms.ts` derives the HTTP base from `NEXT_PUBLIC_WS_URL`** by swapping the
+scheme (`ws`→`http`). The sync server serves its room routes and the WebSocket upgrade off one
+listener on one port, so there is intentionally no second env var that could drift.
+
+**`missing` and `unreachable` are separate states and must stay separate.** `RoomGate`
+redirects home only for `missing`; a sync server that can't be reached gets its own screen
+with a Retry, because the room may be perfectly alive and unverifiable. Collapsing them would
+tell people their room was gone every time the network hiccuped.
+
+**`RoomGate` must not mount `CodeEditor` while checking.** Mounting the editor is what opens
+the WebSocket, which is exactly what the gate exists to prevent — verified by asserting no
+socket to the sync server is opened when a dead room ID is visited.
+
 ## Shared code execution (the Run button)
 
 Clicking Run broadcasts the result to **everyone in the room**, not just the clicker. This
@@ -259,18 +320,25 @@ Save's only disabled state is an empty document. It has no equivalent of Run's r
 
 | Var | Where | Purpose |
 | --- | --- | --- |
-| `NEXT_PUBLIC_WS_URL` | `collab-code-editor/.env.local` | WebSocket server URL. Defaults to `ws://localhost:8080`; production points at the Railway `wss://` URL. |
+| `NEXT_PUBLIC_WS_URL` | `collab-code-editor/.env.local` | WebSocket server URL. Defaults to `ws://localhost:8080`; production points at the Railway `wss://` URL. **Also the source of the room-routes HTTP base** — `app/lib/rooms.ts` swaps the scheme, so there is no separate variable to keep in sync. |
 | `PISTON_API_URL` | `collab-code-editor` | Piston base URL. Defaults to `http://localhost:2000`. |
-| `PORT` | `server/.env` | WebSocket server port. Defaults to `8080`. |
+| `PORT` | `server/.env` | Port for both the WebSocket upgrade and the room HTTP routes. Defaults to `8080`. |
+| `ROOM_GRACE_MS` | `server/.env` | How long an emptied room lingers before destruction. Defaults to `10000`. |
+| `ROOM_RESERVATION_MS` | `server/.env` | How long a created-but-never-entered room stays claimable. Defaults to `300000`. |
 
 ## Not built yet
 
 Postgres persistence, Redis pub/sub for horizontal scaling, and execution resource limits are
 all on the roadmap but unimplemented. **Documents are in-memory only — room state does not
-survive a WebSocket server restart.** Piston is local-only; code execution does not work on
-the deployed site.
+survive a WebSocket server restart**, and since a restart wipes the room registry too, every
+client still in a room gets its reconnect refused and is sent home (see "Room lifetime").
+Piston is local-only; code execution does not work on the deployed site.
 
-Room eviction *is* now implemented — see the "Room lifetime" section above. This section is
-for what genuinely does not exist yet.
+Room eviction *is* implemented — see "Room lifetime" above; that section replaces an older
+note here claiming rooms are never evicted.
+
+**The reservation ceiling is not rate limiting.** `MAX_RESERVATIONS` in `server/rooms.js`
+stops `POST /rooms` from growing the map without bound, but it is a global cap with no notion
+of *who* is calling — V1_Tasks.md §7's "basic rate limiting on room creation" is still open.
 
 @collab-code-editor/AGENTS.md
