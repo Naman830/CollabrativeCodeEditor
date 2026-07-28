@@ -8,7 +8,7 @@
 // unbounded or control-character-laden name would wreck the layout, and the
 // name shown next to a cursor must match the name shown in the bar.
 
-import { sanitizeName, initials as initialsOf } from "./user";
+import { CURSOR_COLORS, sanitizeName, initials as initialsOf } from "./user";
 import type { Awareness } from "y-protocols/awareness";
 
 /**
@@ -65,9 +65,19 @@ function deriveInitials(firstName: string, lastName: string, name: string): stri
  * have connected but not yet published a `user` field are skipped rather than
  * rendered blank — they show up a tick later once their state arrives.
  *
- * The local user sorts first; everyone else sorts by clientID, which is stable
- * for the lifetime of a connection so the bar doesn't reshuffle on every
- * keystroke-driven awareness update.
+ * Two peers can independently end up with the same short name (two "Naman
+ * Singla"s both render as "Naman S.") or the same color (an 8-color palette
+ * picked at random, with no coordination between joiners). Neither is
+ * preventable at pick time — the identity dialog has no visibility into the
+ * room — so both are resolved here, reactively, once awareness makes the
+ * collision visible:
+ *  - a name shared by 2+ peers gets a 1-based number appended ("Naman S." ->
+ *    "Naman S1" / "Naman S2")
+ *  - a color already claimed by an earlier peer gets swapped for the first
+ *    unclaimed color in the fixed palette
+ * Resolution order is ascending clientID, not local-first — clientID is the
+ * one ordering every client agrees on, so all viewers compute the same
+ * winner. The local-first order used for display is applied afterward.
  */
 export function readPeers(awareness: Awareness, localClientID: number): Peer[] {
   const peers: Peer[] = [];
@@ -90,6 +100,30 @@ export function readPeers(awareness: Awareness, localClientID: number): Peer[] {
           : FALLBACK_COLOR,
       isLocal: clientID === localClientID,
     });
+  });
+
+  peers.sort((a, b) => a.clientID - b.clientID);
+
+  const nameCounts = new Map<string, number>();
+  peers.forEach((peer) => nameCounts.set(peer.name, (nameCounts.get(peer.name) ?? 0) + 1));
+  const nameSeen = new Map<string, number>();
+  peers.forEach((peer) => {
+    if ((nameCounts.get(peer.name) ?? 0) < 2) return;
+    const n = (nameSeen.get(peer.name) ?? 0) + 1;
+    nameSeen.set(peer.name, n);
+    peer.name = `${peer.name.replace(/\.$/, "")}${n}`;
+  });
+
+  const claimedColors = new Set<string>();
+  peers.forEach((peer) => {
+    if (!claimedColors.has(peer.color)) {
+      claimedColors.add(peer.color);
+      return;
+    }
+    const free = CURSOR_COLORS.find((color) => !claimedColors.has(color));
+    if (!free) return; // palette exhausted; a repeat is unavoidable here
+    peer.color = free;
+    claimedColors.add(free);
   });
 
   return peers.sort((a, b) => {

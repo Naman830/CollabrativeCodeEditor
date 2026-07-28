@@ -5,10 +5,9 @@ import Editor, { OnChange, OnMount } from "@monaco-editor/react";
 import * as Y from "yjs";
 import type { MonacoBinding } from "y-monaco";
 import type { WebsocketProvider } from "y-websocket";
-import type { Awareness } from "y-protocols/awareness";
 import IdentityDialog from "./IdentityDialog";
 import UserBar from "./UserBar";
-import { HEX_COLOR, readPeers, type Peer } from "../lib/awareness";
+import { readPeers, type Peer } from "../lib/awareness";
 import {
   displayName,
   getIdentityServerSnapshot,
@@ -33,10 +32,9 @@ const DEFAULT_CODE = `console.log("Hello, world!");\n`;
 
 const WS_URL = process.env.NEXT_PUBLIC_WS_URL ?? "ws://localhost:8080";
 
-// Everything below is built from *remote* awareness state, which any peer can
-// set to anything at all — it never passes through our own input sanitizing.
-// So both the label and the colour are treated as hostile here. HEX_COLOR is
-// shared with `lib/awareness`, which applies the same guard for the user bar.
+// Everything below is built from `readPeers`'s output, not raw awareness state
+// directly — `lib/awareness` is the boundary that sanitizes and deduplicates
+// what any peer can set its own `user` field to.
 
 // Escape order matters: backslashes first, or we'd re-escape our own escapes.
 // Newlines are illegal inside a CSS string and must become the \A escape.
@@ -47,12 +45,15 @@ function cssString(value: string): string {
     .replace(/\r?\n/g, "\\A ");
 }
 
-// Rebuilds the remote-cursor <style> tag from current awareness state, keyed
-// by clientID. Regenerating the whole block (rather than patching it) means
-// rules for clients who've left are simply dropped instead of lingering.
+// Rebuilds the remote-cursor <style> tag from the same deduped Peer[] the user
+// bar renders, keyed by clientID. Regenerating the whole block (rather than
+// patching it) means rules for clients who've left are simply dropped instead
+// of lingering. Sourcing this from `readPeers`'s output rather than raw
+// awareness state matters: readPeers is what resolves duplicate names/colors,
+// and the cursor label must match the bar chip for the same person exactly.
 const AWARENESS_STYLE_ID = "yjs-remote-cursor-styles";
 
-function renderAwarenessStyles(awareness: Awareness, localClientID: number) {
+function renderAwarenessStyles(peers: Peer[]) {
   let styleEl = document.getElementById(AWARENESS_STYLE_ID) as HTMLStyleElement | null;
   if (!styleEl) {
     styleEl = document.createElement("style");
@@ -61,14 +62,8 @@ function renderAwarenessStyles(awareness: Awareness, localClientID: number) {
   }
 
   const rules: string[] = [];
-  awareness.getStates().forEach((state, clientID) => {
-    if (clientID === localClientID) return;
-    const user = (state as { user?: { name: string; color: string } }).user;
-    if (!user) return;
-
-    const { name, color } = user;
-    if (typeof name !== "string" || typeof color !== "string") return;
-    if (!HEX_COLOR.test(color)) return;
+  peers.forEach(({ clientID, name, color, isLocal }) => {
+    if (isLocal) return;
 
     rules.push(`
       .yRemoteSelection-${clientID} {
@@ -212,8 +207,9 @@ export default function CodeEditor({ roomId }: CodeEditorProps) {
       // and the user bar. They must not drift apart — a peer shown in the bar
       // with one colour and a caret in another reads as two different people.
       awarenessChangeHandler = () => {
-        renderAwarenessStyles(awareness, yDoc.clientID);
-        setPeers(readPeers(awareness, yDoc.clientID));
+        const nextPeers = readPeers(awareness, yDoc.clientID);
+        renderAwarenessStyles(nextPeers);
+        setPeers(nextPeers);
       };
       awareness.on("change", awarenessChangeHandler);
       awarenessChangeHandler();
