@@ -273,17 +273,18 @@ writes a final result, and since every peer's Run button stays disabled while st
 `"running"`, the room would otherwise be stuck showing "Running..." **permanently**, with no
 way for anyone to ever click Run again. Fixed with a small watchdog: every connected client
 runs a `setInterval` that checks whether the current `"running"` record is older than
-`STALE_RUN_MS` (20s — set above the API route's own 15s Piston timeout plus round-trip
-margin, so a merely-slow run is never pre-empted) and, if so, writes an `"error"` record
-itself. There is no single "owner" of an abandoned run once it's shared state, so whichever
-client's watchdog tick fires first heals it for everyone; the others' ticks are redundant,
-idempotent no-ops.
+`STALE_RUN_MS` and, if so, writes an `"error"` record itself. There is no single "owner" of an
+abandoned run once it's shared state, so whichever client's watchdog tick fires first heals it
+for everyone; the others' ticks are redundant, idempotent no-ops.
 
-**The Piston fetch has a 15s `AbortController` timeout** (`app/api/execute/route.ts`), added
-for the same reason: a hang used to strand one user, but now strands the whole room's output
-panel. This is a narrow fetch-level safety net, **not** V1_Tasks.md item 5 ("Reasonable
-execution timeout") — that item is about sandbox-side execution/resource limits on the
-program being run, a separate and larger piece of work.
+**Three timeouts are nested, and the ordering is the whole point.** Innermost, the sandbox
+stops the *program* (10s compile + 5s run at worst). Then the route's `PISTON_TIMEOUT_MS`
+(18s `AbortController`) catches a Piston that never answers at all. Outermost,
+`STALE_RUN_MS` (25s) decides the *client* is gone. Each layer must sit above the one it
+contains or it starts firing on cases the inner layer was about to handle correctly — set
+the fetch abort to 15s and a legitimate 10s-compile-plus-5s-run reports "Execution timed
+out"; set the watchdog below the fetch abort and a merely-slow run is reported room-wide as
+a lost connection. Change one and re-check all three.
 
 **The output panel shows the run's own `language`, never the viewer's local dropdown
 selection.** The language selector is a per-user editing preference — two peers can have
@@ -296,6 +297,71 @@ the clicking user's own trusted `displayName(user)`/`user.color` (`lib/user.ts`)
 they click Run — not from remote awareness. `readPeers`/`lib/awareness.ts` exists to sanitize
 *other* peers' self-reported state; a client's own already-validated identity needs no such
 gate, and going through `readPeers` here would be pointless indirection.
+
+## Execution limits (what a run may consume)
+
+Sent with every Piston request from `app/api/execute/route.ts`, and mirrored as ceilings in
+`docker-compose.yml` (see the Piston gotcha above — Piston 400s a request that exceeds its
+configured limit, so the two files are one setting in two places):
+
+| Limit | Value | Why |
+| --- | --- | --- |
+| `run_timeout` / `run_cpu_time` | 5s each | Wall and CPU are **separate** ceilings in Piston, and both must be raised together. `while True: pass` burns CPU as fast as wall clock, so raising only `run_timeout` leaves it dying at the 3s default `run_cpu_time` — verified: it was killed at 3.1s with `run_timeout: 5000` set. |
+| `compile_timeout` / `compile_cpu_time` | 10s each | Piston's own defaults; javac and g++ need the room. |
+| `run_memory_limit` | 256 MB | An allocation loop is stopped here rather than by the host running out of memory. |
+| `compile_memory_limit` | 512 MB | Verified sufficient for the java and c++ packages; the run stage is the one worth squeezing. |
+
+Piston's untouched defaults do the rest of the work and are worth knowing before adding
+another limit: `max_process_count` (64) is what bounds a fork bomb and `max_open_files`
+(2048) a descriptor loop.
+
+**A sandbox-killed program must not read as a crash in the user's code.** Piston reports an
+out-of-memory kill as exit code 137 with a line from its own shell wrapper
+(`/piston/packages/python/3.10.0/run: line 3: 3 Killed …`), which exposes sandbox internals
+and says nothing about memory. `noticeFor()` turns it into a plain sentence and
+`OOM_KILL_NOISE` strips the line, exactly as `SANDBOX_KEEPER_NOISE` does for the output cap.
+
+**Status `"RE"` means *any* non-zero exit, so it is not by itself notice-worthy.** A normal
+`raise ValueError` comes back as `status: "RE", code: 1` — stderr and the exit code already
+say that, and an amber "Exited with error status 1" over the top is pure noise. Only
+`code === 137` (128 + SIGKILL) earns a notice.
+
+## Rate limiting and payload size
+
+Both endpoints that cost real resources are limited to **10 requests/minute/IP**:
+`POST /rooms` on the sync server and `POST /api/execute` on the frontend. The limiter is an
+in-memory sliding window, duplicated once per workspace (`server/rateLimit.js`,
+`app/lib/rateLimit.ts`) — the two workspaces share no code, the same reason
+`CLOSE_ROOM_NOT_FOUND` exists twice.
+
+**The frontend limiter is honestly approximate and the code says so.** No Redis and no
+database is a v1 constraint, not an oversight, so there is no shared counter: on Vercel each
+serverless instance keeps its own, and a caller spread across N warm instances gets up to N
+times the nominal limit. It converts an unbounded flood into a bounded one; it is not a
+security boundary. The sync-server side *is* exact — one Railway process, one counter.
+
+**This is a different thing from `MAX_RESERVATIONS`.** That is a global ceiling on unclaimed
+rooms with no notion of who created them; this bounds a single caller. Both are needed: the
+limiter stops one script exhausting the ceiling, the ceiling stops many callers doing it.
+
+**A 429 must not be reported as "couldn't reach the sync server".** Rate limiting makes "the
+server answered and refused" a state a normal user can hit, and the two call for opposite
+reactions (wait vs retry now). `createRoom()` therefore throws a `RoomCreateError` carrying
+the server's own wording, and only an unanswered request falls back to the reachability
+message.
+
+**`MAX_CODE_BYTES` (64 KB) is checked twice, deliberately.** `Content-Length` is checked
+before the body is read, so an absurd payload is refused without being buffered — but that
+header measures the JSON envelope, and escaping can nearly double a program made of quotes
+and newlines, so the cheap check is deliberately *loose* (`MAX_CODE_BYTES * 2 + 4 KB`). The
+exact check runs on the decoded `code` string afterwards and is the one that enforces the
+cap. Both use UTF-8 byte length, not `String.length`: a document of emoji or CJK is up to 4x
+its character count on the wire, and the wire size is what is being capped.
+
+`CodeEditor.tsx` checks the same constant from `app/lib/execution.ts` before fetching. That
+is a courtesy, not the enforcement — the route is reachable without the UI — but it means an
+oversized document never crosses the wire, and it writes the failure into the shared
+`execution` map like any other result, since the document is shared and so is the problem.
 
 ## Saving (the Save button)
 
@@ -332,23 +398,26 @@ Save's only disabled state is an empty document. It has no equivalent of Run's r
 | --- | --- | --- |
 | `NEXT_PUBLIC_WS_URL` | `collab-code-editor/.env.local` | WebSocket server URL. Defaults to `ws://localhost:8080`; production points at the Railway `wss://` URL. **Also the source of the room-routes HTTP base** — `app/lib/rooms.ts` swaps the scheme, so there is no separate variable to keep in sync. |
 | `PISTON_API_URL` | `collab-code-editor` | Piston base URL. Defaults to `http://localhost:2000`. |
+| `PISTON_OUTPUT_MAX_SIZE`, `PISTON_RUN_TIMEOUT`, `PISTON_RUN_CPU_TIME`, `PISTON_COMPILE_TIMEOUT`, `PISTON_COMPILE_CPU_TIME`, `PISTON_RUN_MEMORY_LIMIT`, `PISTON_COMPILE_MEMORY_LIMIT` | `collab-code-editor/docker-compose.yml` | Ceilings inside the Piston container, **not** app config — they exist only in compose, and Piston rejects any per-request limit above them. Keep in step with the constants in `app/api/execute/route.ts`. |
 | `PORT` | `server/.env` | Port for both the WebSocket upgrade and the room HTTP routes. Defaults to `8080`. |
 | `ROOM_GRACE_MS` | `server/.env` | How long an emptied room lingers before destruction. Defaults to `10000`. |
 | `ROOM_RESERVATION_MS` | `server/.env` | How long a created-but-never-entered room stays claimable. Defaults to `300000`. |
 
 ## Not built yet
 
-Postgres persistence, Redis pub/sub for horizontal scaling, and execution resource limits are
-all on the roadmap but unimplemented. **Documents are in-memory only — room state does not
-survive a WebSocket server restart**, and since a restart wipes the room registry too, every
-client still in a room gets its reconnect refused and is sent home (see "Room lifetime").
-Piston is local-only; code execution does not work on the deployed site.
+Postgres persistence and Redis pub/sub for horizontal scaling are on the roadmap but
+unimplemented. **Documents are in-memory only — room state does not survive a WebSocket
+server restart**, and since a restart wipes the room registry too, every client still in a
+room gets its reconnect refused and is sent home (see "Room lifetime"). Piston is local-only;
+code execution does not work on the deployed site.
 
 Room eviction *is* implemented — see "Room lifetime" above; that section replaces an older
-note here claiming rooms are never evicted.
+note here claiming rooms are never evicted. Execution resource limits and rate limiting are
+likewise implemented now — see "Execution limits" and "Rate limiting and payload size"; those
+sections replace older notes here calling both unbuilt. **Every V1_Tasks.md box is ticked.**
 
-**The reservation ceiling is not rate limiting.** `MAX_RESERVATIONS` in `server/rooms.js`
-stops `POST /rooms` from growing the map without bound, but it is a global cap with no notion
-of *who* is calling — V1_Tasks.md §7's "basic rate limiting on room creation" is still open.
+The one thing missing Redis genuinely costs: the frontend's rate limiter counts per
+serverless instance rather than globally. That is a documented approximation, not a gap to
+close inside v1's constraints.
 
 @collab-code-editor/AGENTS.md
