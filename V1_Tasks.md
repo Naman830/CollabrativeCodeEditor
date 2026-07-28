@@ -64,8 +64,8 @@ A lightweight, no-database collaborative code editor. Users create or join a roo
 - [ ] Reasonable execution timeout to prevent runaway/blocking processes
 
 ### 6. Notifications / activity feed (extra, in-room)
-- [ ] Toast or subtle banner: "X joined the room" (with a join sound effect)
-- [ ] Toast or subtle banner: "X left the room" (with a leave sound effect)
+- [x] Toast or subtle banner: "X joined the room" (with a join sound effect)
+- [x] Toast or subtle banner: "X left the room" (with a leave sound effect)
 
 ### 7. Security / abuse prevention
 - [x] Room IDs long and random enough to be unguessable (no sequential/short IDs)

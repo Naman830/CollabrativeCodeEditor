@@ -1,13 +1,15 @@
 "use client";
 
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import Editor, { OnChange, OnMount } from "@monaco-editor/react";
 import * as Y from "yjs";
 import type { MonacoBinding } from "y-monaco";
 import type { WebsocketProvider } from "y-websocket";
+import ActivityToasts, { type ActivityToast } from "./ActivityToasts";
 import IdentityDialog from "./IdentityDialog";
 import UserBar from "./UserBar";
 import { readPeers, type Peer } from "../lib/awareness";
+import { playJoinSound, playLeaveSound } from "../lib/sound";
 import {
   displayName,
   getIdentityServerSnapshot,
@@ -187,6 +189,13 @@ export default function CodeEditor({ roomId }: CodeEditorProps) {
   // below, so React has no way to see a change to it without being told.
   const [peers, setPeers] = useState<Peer[]>([]);
 
+  // Join/leave banners, diffed from consecutive `readPeers` snapshots inside
+  // the awareness handler below (see `knownPeers` in the effect).
+  const [toasts, setToasts] = useState<ActivityToast[]>([]);
+  const dismissToast = useCallback((id: string) => {
+    setToasts((prev) => prev.filter((toast) => toast.id !== id));
+  }, []);
+
   // "unknown" until hydration resolves, then "absent" (prompt) or "present"
   // (connect). Arriving here from the landing page means it is already present.
   const identity = useSyncExternalStore(
@@ -216,6 +225,11 @@ export default function CodeEditor({ roomId }: CodeEditorProps) {
     let provider: WebsocketProvider | null = null;
     let binding: MonacoBinding | null = null;
     let awarenessChangeHandler: (() => void) | null = null;
+    // Baseline for join/leave detection, keyed by clientID. Stays null until
+    // the first awareness snapshot arrives so that everyone already in the
+    // room when *we* connect doesn't generate a "joined" toast for us — only
+    // changes after that baseline do.
+    let knownPeers: Map<number, Peer> | null = null;
 
     // Shared execution state rides on the same Y.Doc as the code itself, so it
     // syncs to every peer (including late joiners) via the same sync protocol
@@ -295,6 +309,29 @@ export default function CodeEditor({ roomId }: CodeEditorProps) {
         const nextPeers = readPeers(awareness, yDoc.clientID);
         renderAwarenessStyles(nextPeers);
         setPeers(nextPeers);
+
+        // Diff against the previous snapshot to find who joined/left. This
+        // fires on every awareness change, including cursor moves, but a
+        // cursor move never adds or removes a clientID key, so the diff below
+        // is a no-op for those — only actual presence changes produce toasts.
+        const nextByClientID = new Map(nextPeers.map((peer) => [peer.clientID, peer]));
+        if (knownPeers) {
+          const newToasts: ActivityToast[] = [];
+          nextByClientID.forEach((peer, clientID) => {
+            if (peer.isLocal || knownPeers!.has(clientID)) return;
+            newToasts.push({ id: `join-${clientID}-${Date.now()}`, kind: "join", name: peer.name, color: peer.color });
+            playJoinSound();
+          });
+          knownPeers.forEach((peer, clientID) => {
+            if (peer.isLocal || nextByClientID.has(clientID)) return;
+            newToasts.push({ id: `leave-${clientID}-${Date.now()}`, kind: "leave", name: peer.name, color: peer.color });
+            playLeaveSound();
+          });
+          if (newToasts.length > 0) {
+            setToasts((prev) => [...prev, ...newToasts]);
+          }
+        }
+        knownPeers = nextByClientID;
       };
       awareness.on("change", awarenessChangeHandler);
       awarenessChangeHandler();
@@ -333,6 +370,9 @@ export default function CodeEditor({ roomId }: CodeEditorProps) {
       // Peers belong to the connection that just died. Leaving them would show
       // the old room's occupants for as long as the new socket takes to sync.
       setPeers([]);
+      // Same reasoning: any pending join/leave toasts belong to the
+      // connection that just died, not to whatever room this reconnects to.
+      setToasts([]);
       // Same reasoning as `setPeers([])`: the last run's result belongs to the
       // connection that just died, not to whatever room this component
       // reconnects to next.
@@ -435,6 +475,7 @@ export default function CodeEditor({ roomId }: CodeEditorProps) {
 
   return (
     <div className="flex h-full flex-col bg-[#1e1e1e] text-zinc-200">
+      <ActivityToasts toasts={toasts} onDismiss={dismissToast} />
       <UserBar peers={peers} connected={syncStatus === "connected"} />
 
       <div className="flex items-center gap-3 border-b border-zinc-800 bg-[#252526] px-4 py-2">
