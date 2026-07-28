@@ -2,6 +2,13 @@ import { NextResponse } from "next/server";
 
 const PISTON_EXECUTE_URL = `${process.env.PISTON_API_URL ?? "http://localhost:2000"}/api/v2/execute`;
 
+// The result of a run is now broadcast room-wide (see CodeEditor.tsx's shared
+// `execution` Y.Map), so a hung Piston request would lock every peer's output
+// panel indefinitely rather than just the requester's. This bound is a narrow
+// fetch-level safety net for that — it is not the broader execution/resource
+// timeout policy V1_Tasks.md still tracks separately.
+const PISTON_TIMEOUT_MS = 15_000;
+
 // Pinned against Piston's /runtimes output for the languages in the editor's
 // language switcher. Update these if Piston drops support for a version.
 const LANGUAGE_MAP: Record<string, { language: string; version: string; fileExt: string }> = {
@@ -58,16 +65,29 @@ export async function POST(request: Request) {
 
   let pistonRes: Response;
   try {
-    pistonRes = await fetch(PISTON_EXECUTE_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        language: mapping.language,
-        version: mapping.version,
-        files: [{ name: `main.${mapping.fileExt}`, content: code }],
-      }),
-    });
-  } catch {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), PISTON_TIMEOUT_MS);
+    try {
+      pistonRes = await fetch(PISTON_EXECUTE_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          language: mapping.language,
+          version: mapping.version,
+          files: [{ name: `main.${mapping.fileExt}`, content: code }],
+        }),
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timeout);
+    }
+  } catch (err) {
+    if (err instanceof DOMException && err.name === "AbortError") {
+      return NextResponse.json(
+        { success: false, error: "Execution timed out." },
+        { status: 504 }
+      );
+    }
     return NextResponse.json(
       { success: false, error: "Could not reach the code execution service. Please try again." },
       { status: 502 }
