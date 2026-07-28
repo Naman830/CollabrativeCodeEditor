@@ -15,7 +15,7 @@ A lightweight, no-database collaborative code editor. Users create or join a roo
 - No accounts, no login, no database.
 - A room is just an in-memory Yjs document keyed by a random, unguessable ID.
 - Saving a file means downloading it to the user's device — nothing is stored server-side.
-- When the last person leaves a room, the room and its contents are destroyed instantly.
+- When the last person leaves a room, the room and its contents are destroyed (after a short grace period so a page refresh doesn't count as leaving).
 
 ---
 
@@ -25,7 +25,7 @@ A lightweight, no-database collaborative code editor. Users create or join a roo
 - [x] Simple hero with two primary actions: **Create a Room** / **Join a Room**
 - [x] "Create a Room" flow:
   - [x] Prompt for first name + last name (no accounts)
-  - [x] Generate a cryptographically random room ID (`crypto.randomUUID()` or `nanoid(12)+`)
+  - [x] Generate a cryptographically random room ID (`crypto.randomUUID()`, minted by the server via `POST /rooms` so that an ID the server never handed out can be refused at connect time)
   - [x] Assign the user a random color (used later for cursor/presence)
   - [x] Redirect to `/room/<id>`
 - [x] "Join a Room" flow:
@@ -41,7 +41,7 @@ A lightweight, no-database collaborative code editor. Users create or join a roo
 - [x] Output panel: displays stdout/stderr from Piston after running code
 - [x] "Run" button: sends current code + selected language to backend → Piston → streams result to output panel for **everyone in the room**
 - [x] "Save" button: downloads the current file to the user's device with correct extension (`.py`, `.cpp`, `.ts`, etc. based on selected language)
-- [ ] Room becomes inaccessible / redirects home if the room ID doesn't exist (e.g. it already closed)
+- [x] Room becomes inaccessible / redirects home if the room ID doesn't exist (e.g. it already closed): the room is checked over HTTP before the editor mounts, so no WebSocket is opened for a dead room, and the server itself refuses connections to unknown rooms. A closed room shows "This room has closed" and redirects home after 3s; a sync server that can't be reached is reported separately, with a Retry, so it is never mistaken for a closed room.
 
 ### 3. Real-time collaboration (Yjs)
 - [x] Yjs document created in-memory per room on the server
@@ -53,8 +53,8 @@ A lightweight, no-database collaborative code editor. Users create or join a roo
 - [x] Conflict-free concurrent editing verified with 2+ simultaneous typers
 
 ### 4. Room lifecycle management
-- [x] Server maintains an in-memory `Map<roomId, { yjsDoc, users }>`
-- [x] On last user disconnect: destroy the Yjs doc and remove the room from the map (instant, or a few-second debounce to survive page refresh — pick one)
+- [x] Server maintains an in-memory `Map<roomId, { yjsDoc, users }>` (`server/rooms.js`, over y-websocket's `docs` map)
+- [x] On last user disconnect: destroy the Yjs doc and remove the room from the map — **debounced**, 10s by default (`ROOM_GRACE_MS`), so the last person in a room can refresh without deleting it out from under themselves
 - [x] No write to disk, no external persistence at any point
 
 ### 5. Code execution (Piston)

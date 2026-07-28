@@ -18,6 +18,12 @@ type IdentityDialogProps = {
    * what decides whether a close button and Escape handler are wired up.
    */
   onCancel?: () => void;
+  /**
+   * Set while the caller's `onSubmit` is still in flight — the create flow now
+   * reserves the room on the server, so submitting is a network round trip and a
+   * second click would reserve a second room.
+   */
+  busy?: boolean;
 };
 
 /**
@@ -32,6 +38,7 @@ export default function IdentityDialog({
   submitLabel,
   onSubmit,
   onCancel,
+  busy = false,
 }: IdentityDialogProps) {
   const [prefill] = useState(loadNamePrefill);
   const [firstName, setFirstName] = useState(() => prefill?.firstName ?? "");
@@ -58,7 +65,7 @@ export default function IdentityDialog({
 
   const handleSubmit: SubmitEventHandler<HTMLFormElement> = (e) => {
     e.preventDefault();
-    if (!isValid) return;
+    if (!isValid || busy) return;
     onSubmit({ firstName: cleanFirst, lastName: cleanLast, color });
   };
 
@@ -136,9 +143,12 @@ export default function IdentityDialog({
 
           <button
             type="submit"
-            disabled={!isValid}
-            className="rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-500 disabled:cursor-not-allowed disabled:bg-blue-900 disabled:text-zinc-400"
+            disabled={!isValid || busy}
+            className="flex items-center justify-center gap-2 rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-500 disabled:cursor-not-allowed disabled:bg-blue-900 disabled:text-zinc-400"
           >
+            {busy && (
+              <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white/40 border-t-white" />
+            )}
             {submitLabel}
           </button>
 

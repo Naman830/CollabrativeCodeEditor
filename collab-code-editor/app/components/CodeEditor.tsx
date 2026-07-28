@@ -10,6 +10,7 @@ import IdentityDialog from "./IdentityDialog";
 import UserBar from "./UserBar";
 import { readPeers, type Peer } from "../lib/awareness";
 import { LANGUAGES, downloadFileName } from "../lib/languages";
+import { WS_URL } from "../lib/rooms";
 import { playJoinSound, playLeaveSound } from "../lib/sound";
 import {
   displayName,
@@ -25,7 +26,10 @@ type MonacoEditor = Parameters<OnMount>[0];
 
 const DEFAULT_CODE = `console.log("Hello, world!");\n`;
 
-const WS_URL = process.env.NEXT_PUBLIC_WS_URL ?? "ws://localhost:8080";
+// The close code the sync server uses to refuse a connection to a room that no
+// longer exists (`CLOSE_ROOM_NOT_FOUND` in server/yjsConnection.js). Any other
+// close is an ordinary disconnect and must keep retrying.
+const CLOSE_ROOM_NOT_FOUND = 4404;
 
 // If the peer who started a run disappears mid-flight (tab closed, crash,
 // network drop), their fetch to /api/execute is cancelled by the browser and
@@ -157,9 +161,15 @@ type ExecutionState =
 
 type CodeEditorProps = {
   roomId: string;
+  /**
+   * Called when the server refuses this room because it no longer exists. Only
+   * `RoomGate` can act on that — it owns the closed-room screen — so this
+   * component just reports it upward.
+   */
+  onRoomClosed?: () => void;
 };
 
-export default function CodeEditor({ roomId }: CodeEditorProps) {
+export default function CodeEditor({ roomId, onRoomClosed }: CodeEditorProps) {
   const [language, setLanguage] = useState<string>("javascript");
   // Starts empty rather than at DEFAULT_CODE: the editor is genuinely empty
   // until the binding attaches, and Monaco's onChange fires on that first
@@ -180,6 +190,14 @@ export default function CodeEditor({ roomId }: CodeEditorProps) {
   // teardown immediately.
   const collabRef = useRef<Y.Doc | null>(null);
   const runCounterRef = useRef(0);
+
+  // Read through a ref rather than being listed as an effect dependency: a
+  // caller passing an inline arrow would otherwise tear down and rebuild the
+  // entire Yjs stack — doc, socket, binding — on every render.
+  const onRoomClosedRef = useRef(onRoomClosed);
+  useEffect(() => {
+    onRoomClosedRef.current = onRoomClosed;
+  });
 
   // Presence for the user bar. Mirrors awareness rather than being derived from
   // it on render: awareness is a mutable instance living inside the effect
@@ -285,6 +303,20 @@ export default function CodeEditor({ roomId }: CodeEditorProps) {
       provider = new WebsocketProvider(WS_URL, roomId, yDoc, { disableBc: true });
       provider.on("status", ({ status }: { status: SyncStatus }) => {
         setSyncStatus(status);
+      });
+
+      // The mount-time existence check can't cover a room that dies *during* a
+      // session: evicted while this client was offline, or the server restarted.
+      // The reconnect is then refused with CLOSE_ROOM_NOT_FOUND, and without
+      // `disconnect()` y-websocket would keep retrying a room that is never
+      // coming back (its reconnect timer only stops once `shouldConnect` is
+      // false). Every other close code is an ordinary drop and must keep
+      // retrying, so this deliberately does nothing for them.
+      const closedProvider = provider;
+      closedProvider.on("connection-close", (event: CloseEvent) => {
+        if (event?.code !== CLOSE_ROOM_NOT_FOUND) return;
+        closedProvider.disconnect();
+        if (!cancelled) onRoomClosedRef.current?.();
       });
 
       // Reuse the awareness instance the provider already creates — publish

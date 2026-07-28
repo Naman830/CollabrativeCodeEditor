@@ -3,20 +3,20 @@
 import { useState, type SubmitEventHandler } from "react";
 import { useRouter } from "next/navigation";
 import IdentityDialog from "./components/IdentityDialog";
+import { createRoom } from "./lib/rooms";
 import { setActiveUser, type CollabUser } from "./lib/user";
-
-// Full UUID, not a truncation of one: a room ID is the only thing standing
-// between a stranger and the document, so it has to be unguessable.
-function generateRoomId(): string {
-  return crypto.randomUUID();
-}
 
 export default function Home() {
   const router = useRouter();
   const [roomId, setRoomId] = useState("");
-  // Non-null while the identity dialog is open — holds the ID the room will get
-  // once a name has been entered.
-  const [pendingRoomId, setPendingRoomId] = useState<string | null>(null);
+  // True while the identity dialog for a new room is open. The room's ID isn't
+  // known until submit — the server mints it, so that a room ID the server never
+  // handed out can be refused at connect time.
+  const [creating, setCreating] = useState(false);
+  // Separate from `creating`: the dialog is open the whole time, but only
+  // reserving is in flight.
+  const [reserving, setReserving] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
 
   const goToRoom = (id: string) => {
     const trimmed = id.trim();
@@ -31,14 +31,27 @@ export default function Home() {
 
   // Creating asks who you are first; the redirect happens on dialog submit.
   // Joining deliberately does not prompt here — the room itself prompts, which
-  // covers typed room IDs and pasted deep links with one code path.
+  // covers typed room IDs and pasted deep links with one code path, and RoomGate
+  // there is what turns a room ID that no longer exists into a trip home.
   const handleCreate = () => {
-    setPendingRoomId(generateRoomId());
+    setCreateError(null);
+    setCreating(true);
   };
 
-  const handleIdentitySubmit = (user: CollabUser) => {
+  const handleIdentitySubmit = async (user: CollabUser) => {
     setActiveUser(user);
-    if (pendingRoomId) goToRoom(pendingRoomId);
+    setReserving(true);
+    try {
+      // Fails closed: better an error here than dropping someone into a room
+      // that provably does not exist and can never sync.
+      const newRoomId = await createRoom();
+      goToRoom(newRoomId);
+    } catch {
+      setCreating(false);
+      setCreateError("Couldn't reach the sync server. Please try again.");
+    } finally {
+      setReserving(false);
+    }
   };
 
   return (
@@ -80,13 +93,20 @@ export default function Home() {
         Create New Room
       </button>
 
-      {pendingRoomId && (
+      {createError && (
+        <p role="alert" className="text-sm text-red-400">
+          {createError}
+        </p>
+      )}
+
+      {creating && (
         <IdentityDialog
           title="Create a room"
           description="Pick a name so everyone can tell your cursor apart."
           submitLabel="Create & Enter"
           onSubmit={handleIdentitySubmit}
-          onCancel={() => setPendingRoomId(null)}
+          onCancel={reserving ? undefined : () => setCreating(false)}
+          busy={reserving}
         />
       )}
     </div>
