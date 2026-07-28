@@ -7,6 +7,8 @@ import type { MonacoBinding } from "y-monaco";
 import type { WebsocketProvider } from "y-websocket";
 import type { Awareness } from "y-protocols/awareness";
 import IdentityDialog from "./IdentityDialog";
+import UserBar from "./UserBar";
+import { HEX_COLOR, readPeers, type Peer } from "../lib/awareness";
 import {
   displayName,
   getIdentityServerSnapshot,
@@ -33,12 +35,8 @@ const WS_URL = process.env.NEXT_PUBLIC_WS_URL ?? "ws://localhost:8080";
 
 // Everything below is built from *remote* awareness state, which any peer can
 // set to anything at all — it never passes through our own input sanitizing.
-// So both the label and the colour are treated as hostile here.
-
-// A peer's colour is interpolated straight into rule bodies, where a value like
-// `red } body { display: none } .x {` would escape the block and restyle the
-// whole page. Only accept a plain hex colour.
-const HEX_COLOR = /^#[0-9a-f]{6}$/i;
+// So both the label and the colour are treated as hostile here. HEX_COLOR is
+// shared with `lib/awareness`, which applies the same guard for the user bar.
 
 // Escape order matters: backslashes first, or we'd re-escape our own escapes.
 // Newlines are illegal inside a CSS string and must become the \A escape.
@@ -139,6 +137,11 @@ export default function CodeEditor({ roomId }: CodeEditorProps) {
   const [editor, setEditor] = useState<MonacoEditor | null>(null);
   const [syncStatus, setSyncStatus] = useState<SyncStatus>("connecting");
 
+  // Presence for the user bar. Mirrors awareness rather than being derived from
+  // it on render: awareness is a mutable instance living inside the effect
+  // below, so React has no way to see a change to it without being told.
+  const [peers, setPeers] = useState<Peer[]>([]);
+
   // "unknown" until hydration resolves, then "absent" (prompt) or "present"
   // (connect). Arriving here from the landing page means it is already present.
   const identity = useSyncExternalStore(
@@ -181,7 +184,14 @@ export default function CodeEditor({ roomId }: CodeEditorProps) {
       ]);
       if (cancelled) return;
 
-      provider = new WebsocketProvider(WS_URL, roomId, yDoc);
+      // `disableBc` turns off y-websocket's cross-tab BroadcastChannel. Two tabs
+      // of this app are meant to be two separate collaborators (identity lives
+      // in sessionStorage precisely so that holds), and the BC channel fights
+      // that: tabs sync out-of-band, and a tab that closes gets resurrected in
+      // its siblings' awareness — the user bar then never drops anyone.
+      // Everything still syncs through the server, which is the only path a
+      // real pair of collaborators has anyway.
+      provider = new WebsocketProvider(WS_URL, roomId, yDoc, { disableBc: true });
       provider.on("status", ({ status }: { status: SyncStatus }) => {
         setSyncStatus(status);
       });
@@ -198,9 +208,15 @@ export default function CodeEditor({ roomId }: CodeEditorProps) {
         lastName: user.lastName,
       });
 
-      awarenessChangeHandler = () => renderAwarenessStyles(awareness, yDoc.clientID);
+      // One handler for both consumers of awareness: the remote-cursor styles
+      // and the user bar. They must not drift apart — a peer shown in the bar
+      // with one colour and a caret in another reads as two different people.
+      awarenessChangeHandler = () => {
+        renderAwarenessStyles(awareness, yDoc.clientID);
+        setPeers(readPeers(awareness, yDoc.clientID));
+      };
       awareness.on("change", awarenessChangeHandler);
-      renderAwarenessStyles(awareness, yDoc.clientID);
+      awarenessChangeHandler();
 
       const yText = yDoc.getText("monaco");
       binding = new MonacoBinding(yText, model, new Set([editor]), awareness);
@@ -227,6 +243,9 @@ export default function CodeEditor({ roomId }: CodeEditorProps) {
       provider?.destroy();
       yDoc.destroy();
       document.getElementById(AWARENESS_STYLE_ID)?.remove();
+      // Peers belong to the connection that just died. Leaving them would show
+      // the old room's occupants for as long as the new socket takes to sync.
+      setPeers([]);
     };
   }, [editor, roomId, user]);
 
@@ -277,6 +296,8 @@ export default function CodeEditor({ roomId }: CodeEditorProps) {
 
   return (
     <div className="flex h-full flex-col bg-[#1e1e1e] text-zinc-200">
+      <UserBar peers={peers} connected={syncStatus === "connected"} />
+
       <div className="flex items-center gap-3 border-b border-zinc-800 bg-[#252526] px-4 py-2">
         <label htmlFor="language-select" className="text-sm text-zinc-400">
           Language

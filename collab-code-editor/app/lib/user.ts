@@ -49,8 +49,12 @@ export function displayName(user: CollabUser): string {
   return initial ? `${user.firstName} ${initial}.` : user.firstName;
 }
 
-/** "Naman Gupta" -> "NG" — for the user bar's avatar chips. */
-export function initials(user: CollabUser): string {
+/**
+ * "Naman Gupta" -> "NG" — for the user bar's avatar chips. Takes just the name
+ * parts, not a whole CollabUser, because the bar also builds chips for remote
+ * peers, who have no colour we're willing to trust at this point.
+ */
+export function initials(user: { firstName: string; lastName: string }): string {
   return (
     user.firstName.charAt(0) + user.lastName.charAt(0)
   ).toUpperCase();

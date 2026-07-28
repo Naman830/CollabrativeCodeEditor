@@ -34,6 +34,8 @@ Key files:
 - `collab-code-editor/app/components/CodeEditor.tsx` — the whole client-side Yjs stack (doc, provider, awareness, Monaco binding)
 - `collab-code-editor/app/room/[roomId]/page.tsx` — dynamic room route; `roomId` is the Yjs document name
 - `collab-code-editor/app/lib/user.ts` — the entire user model: palette, name sanitizing, and identity as an external store
+- `collab-code-editor/app/lib/awareness.ts` — `readPeers()`, the one boundary that turns hostile remote awareness state into values the UI may render
+- `collab-code-editor/app/components/UserBar.tsx` — presence chips; renders only what `readPeers` returned
 - `collab-code-editor/app/components/IdentityDialog.tsx` — the name/colour prompt, shared by the create and join flows
 - `collab-code-editor/app/api/execute/route.ts` — server-side proxy to Piston
 - `server/yjsConnection.js` — the only place that speaks the Yjs wire protocol
@@ -80,6 +82,19 @@ hoist the `Y.Doc` into component state — a cleanup that destroys a doc nothing
 breaks both room switching and React StrictMode's dev remount. The effect deliberately
 early-returns until identity is known, so no socket opens before there is a name to announce.
 
+**y-websocket's BroadcastChannel is disabled, and must stay disabled.** The provider is
+constructed with `{ disableBc: true }`. By default y-websocket also syncs tabs of the same
+origin peer-to-peer over a `BroadcastChannel`, which breaks presence: when a tab closes, the
+server broadcasts the awareness removal, and a sibling tab immediately re-announces the
+departed client with a higher clock. The peer is resurrected within milliseconds and never
+ages out, because each re-announce refreshes its `lastUpdated` and so the 30s
+`outdatedTimeout` never fires. Verified: with BC on, closing a tab left it in the user bar
+indefinitely (still there after 10s); with BC off it disappears in under 2s. Departures
+looked fine across two separate browser contexts, which is exactly the case BC does not
+cover — so testing in one browser is what catches this, and it is also the documented way to
+test multiplayer locally. Turning BC off costs nothing here: every real collaborator is a
+different browser and syncs through the server regardless.
+
 **Identity storage is split on purpose.** `app/lib/user.ts` keeps the active
 `{firstName, lastName, color}` in **sessionStorage**, and mirrors only the *name* to
 localStorage as a form prefill. sessionStorage is per-tab, so a second tab on the same room
@@ -115,10 +130,16 @@ Don't merge them: cursor positions must never enter document history.
 **Awareness state is untrusted input.** Any peer sets its own `user` field to whatever it
 likes — it never passes through our form, so sanitizing at the input boundary proves
 nothing. `renderAwarenessStyles` builds a `<style>` tag from it, so the name is escaped as a
-CSS string and the colour is rejected unless it matches `/^#[0-9a-f]{6}$/i`. Without the
-colour check a peer can send `red } body { display: none } .x {` and restyle every other
-participant's page; this was verified exploitable before the guard was added. Anything new
-that renders a remote name or colour (user bar, join/leave toasts) inherits this problem.
+CSS string and the colour is rejected unless it matches `HEX_COLOR` (`/^#[0-9a-f]{6}$/i`,
+exported from `lib/awareness.ts`). Without the colour check a peer can send
+`red } body { display: none } .x {` and restyle every other participant's page; this was
+verified exploitable before the guard was added.
+
+The user bar reads the same state, so it goes through `readPeers()` rather than touching
+`awareness.getStates()` itself: names are re-sanitized (React escapes them, but an unbounded
+or control-character name still wrecks the layout) and a colour failing `HEX_COLOR` falls
+back to grey instead of reaching an inline `style`. Anything new that renders a remote name
+or colour (join/leave toasts) must go through `readPeers` too, not read awareness directly.
 
 ## Environment variables
 

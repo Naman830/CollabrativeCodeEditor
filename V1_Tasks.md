@@ -34,7 +34,7 @@ A lightweight, no-database collaborative code editor. Users create or join a roo
   - [x] Prompt for first name + last name + assign random color on join too
 
 ### 2. Room / editor page
-- [ ] Top user bar: shows connected users' short names/initials, each tagged with their assigned color
+- [x] Top user bar: shows connected users' short names/initials, each tagged with their assigned color
 - [x] Code editor pane (e.g. Monaco or CodeMirror) wired to Yjs for CRDT sync
 - [x] Language selector dropdown (drives both editor syntax highlighting and Piston execution)
 - [x] Live multiplayer cursors: each user's cursor/selection shown in their assigned color
@@ -46,10 +46,10 @@ A lightweight, no-database collaborative code editor. Users create or join a roo
 ### 3. Real-time collaboration (Yjs)
 - [x] Yjs document created in-memory per room on the server
 - [x] WebSocket provider connecting client editor to the Yjs doc
-- [ ] Awareness protocol wired up for:
+- [x] Awareness protocol wired up for:
   - [x] Live cursor positions
   - [x] Live selections
-  - [ ] Presence (who's currently in the room)
+  - [x] Presence (who's currently in the room)
 - [x] Conflict-free concurrent editing verified with 2+ simultaneous typers
 
 ### 4. Room lifecycle management
