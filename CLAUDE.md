@@ -71,6 +71,18 @@ curl -s localhost:2000/api/v2/runtimes | head -c 200
 versions (e.g. `python@3.10.0`, `java@15.0.2`). They must match what `/api/v2/runtimes`
 reports, or execution fails. Re-check that endpoint after any Piston image update.
 
+**Piston's output cap is 1 KB by default, and it does not truncate.** When a stdio buffer
+would exceed `output_max_size`, Piston drops the offending chunk and `SIGABRT`s the sandbox,
+so the run comes back with `code: null`, `signal: "SIGKILL"`, `status: "OL"` and a stderr of
+`Sandbox keeper received fatal signal 6` — which reads like a crash in the user's code but is
+purely a limit. A 10x10 multiplication table (~1.1 KB) is enough to hit it. `docker-compose.yml`
+now sets `PISTON_OUTPUT_MAX_SIZE: 65536`; **this lives only in compose, so a Piston started any
+other way silently reverts to 1 KB.** The cap can still be hit, so `app/api/execute/route.ts`
+also maps `run.status` (`OL`/`EL`/`TO`) to a plain-English `notice` field, strips the
+fatal-signal line from stderr, and `CodeEditor.tsx` renders the notice in amber under the
+output. `notice` is optional on `ExecuteSuccess` because older records may still sit in a
+room's shared `execution` map.
+
 **Seeding the document.** Starter code is inserted into the `Y.Text` only after the provider
 fires `sync`. Seeding before sync would insert the boilerplate into a still-empty local doc,
 and the CRDT would merge it into the existing document for everyone else in the room. Never

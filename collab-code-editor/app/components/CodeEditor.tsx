@@ -107,6 +107,10 @@ type ExecuteSuccess = {
   stderr: string;
   exitCode: number | null;
   compile: { stdout: string; stderr: string; exitCode: number | null } | null;
+  // Set when the sandbox stopped the program itself (output cap, timeout)
+  // instead of it exiting on its own. Optional because a record written by an
+  // older peer can still be sitting in the room's shared `execution` map.
+  notice?: string | null;
 };
 
 type ExecuteFailure = {
@@ -479,7 +483,10 @@ export default function CodeEditor({ roomId }: CodeEditorProps) {
     execState.status === "success" &&
     ((execState.result.compile && execState.result.compile.exitCode !== 0) ||
       execState.result.exitCode !== 0 ||
-      execState.result.stderr.length > 0);
+      execState.result.stderr.length > 0 ||
+      // A sandbox-side stop has no exit code at all (the process was killed),
+      // so without this the panel would look like a clean run.
+      Boolean(execState.result.notice));
 
   return (
     <div className="flex h-full flex-col bg-[#1e1e1e] text-zinc-200">
@@ -625,11 +632,20 @@ export default function CodeEditor({ roomId }: CodeEditorProps) {
                 {execState.result.stderr}
               </pre>
             )}
-            {!execState.result.stdout && !execState.result.stderr && (
-              <pre className="whitespace-pre-wrap font-mono text-sm text-zinc-600">
-                (no output)
+            {/* Last, because it explains why the output above stops where it
+                does — the program was killed mid-write, not finished. */}
+            {execState.result.notice && (
+              <pre className="whitespace-pre-wrap font-mono text-sm text-amber-400">
+                {execState.result.notice}
               </pre>
             )}
+            {!execState.result.stdout &&
+              !execState.result.stderr &&
+              !execState.result.notice && (
+                <pre className="whitespace-pre-wrap font-mono text-sm text-zinc-600">
+                  (no output)
+                </pre>
+              )}
           </>
         )}
       </div>

@@ -28,7 +28,33 @@ type PistonStage = {
   output: string;
   code: number | null;
   signal: string | null;
+  // Only present when the sandbox itself stopped the program (output cap,
+  // timeout, killing signal) rather than the program exiting on its own.
+  status?: string | null;
+  message?: string | null;
 };
+
+// Piston kills the sandbox with SIGABRT when a stdio buffer overflows, so the
+// program's own stderr ends with a line about a fatal signal that has nothing
+// to do with the user's code. We explain the real reason via `notice` instead.
+const SANDBOX_KEEPER_NOISE = /^Sandbox keeper received fatal signal \d+\n?/m;
+
+// A sandbox-side stop is not a normal non-zero exit, and the raw Piston wording
+// ("stdout length exceeded") reads as an internal error to someone who just
+// clicked Run. Anything unrecognised falls back to Piston's own message.
+function noticeFor(run: PistonStage | undefined): string | null {
+  if (!run?.status) return null;
+  switch (run.status) {
+    case "OL":
+      return "Output limit reached — the program printed too much and was stopped. Trim what you print and run again.";
+    case "EL":
+      return "Error-output limit reached — the program wrote too much to stderr and was stopped.";
+    case "TO":
+      return "The program ran too long and was stopped by the sandbox.";
+    default:
+      return run.message ?? null;
+  }
+}
 
 type PistonResponse = {
   language: string;
@@ -114,11 +140,16 @@ export async function POST(request: Request) {
     );
   }
 
+  const notice = noticeFor(data.run);
+
   return NextResponse.json({
     success: true,
     stdout: data.run?.stdout ?? "",
-    stderr: data.run?.stderr ?? "",
+    stderr: notice
+      ? (data.run?.stderr ?? "").replace(SANDBOX_KEEPER_NOISE, "")
+      : (data.run?.stderr ?? ""),
     exitCode: data.run?.code ?? null,
+    notice,
     compile: data.compile
       ? {
           stdout: data.compile.stdout ?? "",

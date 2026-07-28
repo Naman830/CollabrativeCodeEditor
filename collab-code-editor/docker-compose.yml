@@ -6,6 +6,14 @@ services:
     privileged: true
     ports:
       - "2000:2000"
+    environment:
+      # Piston caps each stdio buffer at 1024 bytes by default, and does not
+      # truncate when the cap is hit: it drops the offending chunk and SIGABRTs
+      # the sandbox, so a program printing more than ~1 KB dies mid-write with
+      # "Sandbox keeper received fatal signal 6" (run.status "OL"). A 10x10
+      # multiplication table is enough to trigger it. 64 KB per stream is plenty
+      # for an editor output panel while still bounding a runaway print loop.
+      PISTON_OUTPUT_MAX_SIZE: 65536
     volumes:
       - piston_data:/piston
     tmpfs:
