@@ -23,15 +23,15 @@ A lightweight, no-database collaborative code editor. Users create or join a roo
 
 ### 1. Landing / home page
 - [x] Simple hero with two primary actions: **Create a Room** / **Join a Room**
-- [ ] "Create a Room" flow:
-  - [ ] Prompt for first name + last name (no accounts)
-  - [ ] Generate a cryptographically random room ID (`crypto.randomUUID()` or `nanoid(12)+`)
-  - [ ] Assign the user a random color (used later for cursor/presence)
+- [x] "Create a Room" flow:
+  - [x] Prompt for first name + last name (no accounts)
+  - [x] Generate a cryptographically random room ID (`crypto.randomUUID()` or `nanoid(12)+`)
+  - [x] Assign the user a random color (used later for cursor/presence)
   - [x] Redirect to `/room/<id>`
-- [ ] "Join a Room" flow:
+- [x] "Join a Room" flow:
   - [x] Input field for room ID, OR
   - [x] Deep link support: pasting/opening a room URL joins directly (`/room/<id>`)
-  - [ ] Prompt for first name + last name + assign random color on join too
+  - [x] Prompt for first name + last name + assign random color on join too
 
 ### 2. Room / editor page
 - [ ] Top user bar: shows connected users' short names/initials, each tagged with their assigned color
@@ -68,7 +68,7 @@ A lightweight, no-database collaborative code editor. Users create or join a roo
 - [ ] Toast or subtle banner: "X left the room" (with a leave sound effect)
 
 ### 7. Security / abuse prevention
-- [ ] Room IDs long and random enough to be unguessable (no sequential/short IDs)
+- [x] Room IDs long and random enough to be unguessable (no sequential/short IDs)
 - [ ] Basic rate limiting on room creation and code execution endpoints
 - [ ] Sane payload size limits on code sent to Piston
 
