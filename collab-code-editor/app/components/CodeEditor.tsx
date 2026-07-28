@@ -1,11 +1,19 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import Editor, { OnChange, OnMount } from "@monaco-editor/react";
 import * as Y from "yjs";
 import type { MonacoBinding } from "y-monaco";
 import type { WebsocketProvider } from "y-websocket";
 import type { Awareness } from "y-protocols/awareness";
+import IdentityDialog from "./IdentityDialog";
+import {
+  displayName,
+  getIdentityServerSnapshot,
+  getIdentitySnapshot,
+  setActiveUser,
+  subscribeIdentity,
+} from "../lib/user";
 
 // The editor instance Monaco hands back on mount, without importing
 // monaco-editor itself (it touches `window` at import time).
@@ -23,22 +31,22 @@ const DEFAULT_CODE = `console.log("Hello, world!");\n`;
 
 const WS_URL = process.env.NEXT_PUBLIC_WS_URL ?? "ws://localhost:8080";
 
-// Fixed palette so remote cursor colors stay legible on the vs-dark theme.
-const CURSOR_COLORS = [
-  "#e57373",
-  "#64b5f6",
-  "#81c784",
-  "#ffb74d",
-  "#ba68c8",
-  "#4dd0e1",
-  "#f06292",
-  "#a1887f",
-];
+// Everything below is built from *remote* awareness state, which any peer can
+// set to anything at all — it never passes through our own input sanitizing.
+// So both the label and the colour are treated as hostile here.
 
-function randomUser() {
-  const id = Math.floor(Math.random() * 9000) + 1000;
-  const color = CURSOR_COLORS[Math.floor(Math.random() * CURSOR_COLORS.length)];
-  return { name: `User ${id}`, color };
+// A peer's colour is interpolated straight into rule bodies, where a value like
+// `red } body { display: none } .x {` would escape the block and restyle the
+// whole page. Only accept a plain hex colour.
+const HEX_COLOR = /^#[0-9a-f]{6}$/i;
+
+// Escape order matters: backslashes first, or we'd re-escape our own escapes.
+// Newlines are illegal inside a CSS string and must become the \A escape.
+function cssString(value: string): string {
+  return value
+    .replace(/\\/g, "\\\\")
+    .replace(/"/g, '\\"')
+    .replace(/\r?\n/g, "\\A ");
 }
 
 // Rebuilds the remote-cursor <style> tag from current awareness state, keyed
@@ -61,6 +69,9 @@ function renderAwarenessStyles(awareness: Awareness, localClientID: number) {
     if (!user) return;
 
     const { name, color } = user;
+    if (typeof name !== "string" || typeof color !== "string") return;
+    if (!HEX_COLOR.test(color)) return;
+
     rules.push(`
       .yRemoteSelection-${clientID} {
         background-color: ${color}55;
@@ -70,7 +81,7 @@ function renderAwarenessStyles(awareness: Awareness, localClientID: number) {
         border-left: 2px solid ${color};
       }
       .yRemoteSelectionHead-${clientID}::after {
-        content: "${name.replace(/"/g, "'")}";
+        content: "${cssString(name)}";
         position: absolute;
         top: -1.1em;
         left: -2px;
@@ -128,13 +139,26 @@ export default function CodeEditor({ roomId }: CodeEditorProps) {
   const [editor, setEditor] = useState<MonacoEditor | null>(null);
   const [syncStatus, setSyncStatus] = useState<SyncStatus>("connecting");
 
+  // "unknown" until hydration resolves, then "absent" (prompt) or "present"
+  // (connect). Arriving here from the landing page means it is already present.
+  const identity = useSyncExternalStore(
+    subscribeIdentity,
+    getIdentitySnapshot,
+    getIdentityServerSnapshot,
+  );
+  const user = identity.status === "present" ? identity.user : null;
+
   // Owns the entire Yjs lifecycle — doc, provider, awareness, and binding are
   // all created here and all torn down together. Everything is scoped to this
   // effect rather than to the component, so switching rooms (or React's
   // StrictMode remount in dev) rebuilds the stack instead of leaving the
   // cleanup to destroy a Y.Doc that nothing ever recreates.
+  // `user` joins the dependency list rather than being read from a ref: we must
+  // not open a socket before we know who to announce, or peers would briefly
+  // see an anonymous cursor. It only ever transitions null -> set once per
+  // mount, so the stack is still built exactly once.
   useEffect(() => {
-    if (!editor) return;
+    if (!editor || !user) return;
     const model = editor.getModel();
     if (!model) return;
 
@@ -162,10 +186,17 @@ export default function CodeEditor({ roomId }: CodeEditorProps) {
         setSyncStatus(status);
       });
 
-      // Reuse the awareness instance the provider already creates — assign
-      // this client a random name/color pair as its local presence state.
+      // Reuse the awareness instance the provider already creates — publish
+      // the name and colour this user chose as its local presence state.
+      // `name` is the pre-shortened cursor label; the raw parts ride along for
+      // the user bar, which needs initials.
       const { awareness } = provider;
-      awareness.setLocalStateField("user", randomUser());
+      awareness.setLocalStateField("user", {
+        name: displayName(user),
+        color: user.color,
+        firstName: user.firstName,
+        lastName: user.lastName,
+      });
 
       awarenessChangeHandler = () => renderAwarenessStyles(awareness, yDoc.clientID);
       awareness.on("change", awarenessChangeHandler);
@@ -197,7 +228,7 @@ export default function CodeEditor({ roomId }: CodeEditorProps) {
       yDoc.destroy();
       document.getElementById(AWARENESS_STYLE_ID)?.remove();
     };
-  }, [editor, roomId]);
+  }, [editor, roomId, user]);
 
   const handleEditorMount: OnMount = (mountedEditor) => {
     setEditor(mountedEditor);
@@ -373,6 +404,19 @@ export default function CodeEditor({ roomId }: CodeEditorProps) {
           </>
         )}
       </div>
+
+      {/* Deep links and the landing page's Join button both land here without an
+          identity. No onCancel: there is nowhere to fall back to, and the room
+          stays disconnected until a name is entered. Monaco keeps loading
+          underneath in the meantime. */}
+      {identity.status === "absent" && (
+        <IdentityDialog
+          title="Join this room"
+          description="Pick a name so everyone can tell your cursor apart."
+          submitLabel="Join Room"
+          onSubmit={setActiveUser}
+        />
+      )}
     </div>
   );
 }

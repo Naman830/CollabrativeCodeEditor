@@ -2,14 +2,21 @@
 
 import { useState, type SubmitEventHandler } from "react";
 import { useRouter } from "next/navigation";
+import IdentityDialog from "./components/IdentityDialog";
+import { setActiveUser, type CollabUser } from "./lib/user";
 
+// Full UUID, not a truncation of one: a room ID is the only thing standing
+// between a stranger and the document, so it has to be unguessable.
 function generateRoomId(): string {
-  return crypto.randomUUID().slice(0, 8);
+  return crypto.randomUUID();
 }
 
 export default function Home() {
   const router = useRouter();
   const [roomId, setRoomId] = useState("");
+  // Non-null while the identity dialog is open — holds the ID the room will get
+  // once a name has been entered.
+  const [pendingRoomId, setPendingRoomId] = useState<string | null>(null);
 
   const goToRoom = (id: string) => {
     const trimmed = id.trim();
@@ -22,8 +29,16 @@ export default function Home() {
     goToRoom(roomId);
   };
 
+  // Creating asks who you are first; the redirect happens on dialog submit.
+  // Joining deliberately does not prompt here — the room itself prompts, which
+  // covers typed room IDs and pasted deep links with one code path.
   const handleCreate = () => {
-    goToRoom(generateRoomId());
+    setPendingRoomId(generateRoomId());
+  };
+
+  const handleIdentitySubmit = (user: CollabUser) => {
+    setActiveUser(user);
+    if (pendingRoomId) goToRoom(pendingRoomId);
   };
 
   return (
@@ -64,6 +79,16 @@ export default function Home() {
       >
         Create New Room
       </button>
+
+      {pendingRoomId && (
+        <IdentityDialog
+          title="Create a room"
+          description="Pick a name so everyone can tell your cursor apart."
+          submitLabel="Create & Enter"
+          onSubmit={handleIdentitySubmit}
+          onCancel={() => setPendingRoomId(null)}
+        />
+      )}
     </div>
   );
 }
