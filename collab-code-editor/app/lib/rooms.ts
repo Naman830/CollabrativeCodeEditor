@@ -31,9 +31,9 @@ export async function checkRoom(roomId: string): Promise<RoomCheck> {
 
 /**
  * A refusal the server explained, as opposed to a network failure. Room
- * creation is rate limited per IP, so "the server said no" is now a state a
- * normal user can reach, and it must not be reported as "couldn't reach the
- * sync server" — the two call for opposite reactions (wait vs retry now).
+ * creation is rate limited, so "the server said no" is a state normal users
+ * reach, and it needs the opposite reaction to a failed connection: wait,
+ * rather than retry now.
  */
 export class RoomCreateError extends Error {
   readonly status: number;
@@ -47,17 +47,15 @@ export class RoomCreateError extends Error {
 
 /**
  * Reserves a room and returns its ID. Throws if the server can't be reached —
- * the caller must surface that rather than navigating into a room that
- * provably does not exist.
+ * the caller must show that rather than enter a room that doesn't exist.
  *
- * No request body on purpose: without a Content-Type header this stays a CORS
- * simple request, so there is no preflight before every room creation.
+ * No request body on purpose: without a Content-Type this stays a CORS simple
+ * request, so room creation costs no preflight round trip.
  */
 export async function createRoom(): Promise<string> {
   const res = await fetch(`${API_URL}/rooms`, { method: "POST" });
   if (!res.ok) {
-    // The server's own wording when it has one (rate limit, reservation
-    // ceiling); it knows why it refused and we do not.
+    // Prefer the server's own wording — it knows why it refused.
     const explained = await res
       .json()
       .then((data: unknown) =>

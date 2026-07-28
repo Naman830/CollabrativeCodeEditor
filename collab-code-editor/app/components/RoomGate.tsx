@@ -14,6 +14,25 @@ type RoomGateProps = {
   roomId: string;
 };
 
+function GateIcon({ children }: { children: React.ReactNode }) {
+  return (
+    <span className="grid h-11 w-11 place-items-center rounded-xl border border-edge bg-raised text-zinc-400">
+      <svg
+        aria-hidden
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        className="h-5 w-5"
+      >
+        {children}
+      </svg>
+    </span>
+  );
+}
+
 /**
  * Decides whether this room may be entered — *before* `CodeEditor` mounts.
  * Mounting the editor opens the WebSocket, and connecting is what creates the
@@ -92,9 +111,10 @@ export default function RoomGate({ roomId }: RoomGateProps) {
 
       {state === "missing" && (
         <div className="relative flex max-w-sm flex-col items-center gap-4 rounded-2xl border border-edge bg-panel/80 p-8 shadow-2xl shadow-black/40 backdrop-blur">
-          <span className="grid h-11 w-11 place-items-center rounded-xl border border-edge bg-raised text-xl">
-            🔒
-          </span>
+          <GateIcon>
+            <rect x="4" y="10" width="16" height="10" rx="2" />
+            <path d="M8 10V7a4 4 0 0 1 8 0v3" />
+          </GateIcon>
           <h1 className="text-xl font-semibold text-zinc-50">This room has closed</h1>
           <p className="text-sm text-zinc-400">
             Rooms live only while someone is in them — this one disappeared when the last
@@ -113,9 +133,12 @@ export default function RoomGate({ roomId }: RoomGateProps) {
           this offers a retry instead of sending someone away from it. */}
       {state === "unreachable" && (
         <div className="relative flex max-w-sm flex-col items-center gap-4 rounded-2xl border border-edge bg-panel/80 p-8 shadow-2xl shadow-black/40 backdrop-blur">
-          <span className="grid h-11 w-11 place-items-center rounded-xl border border-edge bg-raised text-xl">
-            📡
-          </span>
+          <GateIcon>
+            <path d="M5 12.5a7 7 0 0 1 14 0" />
+            <path d="M8.5 15.5a3.5 3.5 0 0 1 7 0" />
+            <path d="M12 19h.01" />
+            <path d="m4 4 16 16" />
+          </GateIcon>
           <h1 className="text-xl font-semibold text-zinc-50">
             Couldn&apos;t reach the sync server
           </h1>

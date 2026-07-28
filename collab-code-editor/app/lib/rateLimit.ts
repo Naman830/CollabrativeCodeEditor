@@ -1,16 +1,12 @@
 // A dependency-free, in-memory sliding-window rate limiter.
 //
-// In-memory is a deliberate choice, not an oversight: v1 has no database and no
-// Redis (see V1_Tasks.md's out-of-scope list), and a shared counter store is the
-// only thing that would make this exact across processes. The consequence is
-// worth stating plainly — on Vercel each serverless instance keeps its own
-// counters, so a caller spread across N warm instances gets up to N times the
-// nominal limit. That still turns an unbounded flood into a bounded one, which
-// is what this is for; it is not a security boundary.
+// In-memory is a v1 constraint, not an oversight: no database, no Redis. So the
+// count is per serverless instance — a caller spread across N warm instances
+// gets up to N times the limit. It bounds a flood; it is not a security
+// boundary.
 //
 // `server/rateLimit.js` is the same algorithm for the sync server. The two
-// workspaces share no code (no root package.json), so the duplication is
-// intentional, exactly like `CLOSE_ROOM_NOT_FOUND`.
+// workspaces share no code, so the duplication is intentional.
 
 export type RateLimitResult = {
   allowed: boolean;
@@ -23,9 +19,9 @@ type Options = {
   limit: number;
   windowMs: number;
   /**
-   * Ceiling on tracked keys. Without it the map is itself the abuse vector: one
-   * request per forged IP would grow it without bound. On overflow the oldest
-   * entries are dropped, which at worst forgives a limited caller.
+   * Ceiling on tracked keys — without it the map is the abuse vector, since one
+   * request per forged IP grows it forever. Overflow drops the oldest entries,
+   * which at worst forgives a limited caller.
    */
   maxKeys?: number;
 };
@@ -38,9 +34,8 @@ export function createRateLimiter({ limit, windowMs, maxKeys = 10_000 }: Options
     const now = Date.now();
     const cutoff = now - windowMs;
 
-    // Map iteration order is insertion order, and every allowed hit re-inserts
-    // its key at the end (delete + set below), so the head is the least recently
-    // active entry — dropping from there evicts stale keys first.
+    // Map iteration is insertion-ordered and every allowed hit re-inserts its
+    // key at the end, so the head is the least recently active entry.
     if (hits.size > maxKeys) {
       for (const key of hits.keys()) {
         hits.delete(key);
@@ -65,13 +60,12 @@ export function createRateLimiter({ limit, windowMs, maxKeys = 10_000 }: Options
 }
 
 /**
- * Best-effort caller identity. `x-forwarded-for` is trustworthy only because a
- * proxy that overwrites it (Vercel) sits in front in production; a directly
- * exposed deployment could be fed a forged header, so this bounds accidents and
- * casual scripts rather than a determined attacker.
+ * Best-effort caller identity. `x-forwarded-for` is only trustworthy because
+ * Vercel overwrites it in production, so this bounds accidents and casual
+ * scripts rather than a determined attacker.
  *
- * Everything unattributable collapses to one shared bucket, which fails closed:
- * unidentified callers throttle each other rather than going unlimited.
+ * Anything unattributable shares one bucket, which fails closed: unidentified
+ * callers throttle each other instead of going unlimited.
  */
 export function clientKey(request: Request): string {
   const forwarded = request.headers.get("x-forwarded-for");

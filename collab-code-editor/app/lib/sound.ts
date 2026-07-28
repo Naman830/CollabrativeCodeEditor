@@ -1,8 +1,6 @@
-// Short synthesized blips for join/leave activity via the Web Audio API,
-// rather than shipping binary audio assets the repo has nowhere to source
-// from. Each call builds its own oscillator; the shared AudioContext is
-// created lazily so construction never runs at import time (SSR has no
-// `window`) and isn't attempted until an activity event actually happens.
+// Join/leave blips synthesized with the Web Audio API, so the repo ships no
+// audio files. The shared AudioContext is built lazily — never at import time,
+// since SSR has no `window`.
 
 let ctx: AudioContext | null = null;
 
@@ -16,18 +14,15 @@ function getContext(): AudioContext | null {
   return ctx;
 }
 
-// Plays `frequencies` as a short sequence of overlapping sine blips. Wrapped
-// in try/catch: autoplay policies or an already-closed context should mean
-// "no sound", never a thrown error that breaks the awareness handler calling
-// this.
+// Plays `frequencies` as overlapping sine blips. The try/catch means a blocked
+// or closed context is silence, never an error thrown into the awareness
+// handler that called this.
 function playTone(frequencies: number[], stepSeconds: number, gain: number): void {
   try {
     const audioCtx = getContext();
     if (!audioCtx) return;
-    // A context created before any user gesture starts "suspended"; by the
-    // time this fires the identity form's submit click has already unlocked
-    // it, so resuming here (rather than requiring a separate unlock step) is
-    // safe.
+    // A context built before any user gesture starts suspended. By now the
+    // identity form's submit click has unlocked it, so resuming here is enough.
     void audioCtx.resume();
 
     let startTime = audioCtx.currentTime;
@@ -45,8 +40,7 @@ function playTone(frequencies: number[], stepSeconds: number, gain: number): voi
       startTime += stepSeconds * 0.8;
     });
   } catch {
-    // Best-effort only — a missing/blocked AudioContext should never surface
-    // to the user as an error.
+    // Best-effort: a blocked AudioContext must never surface as an error.
   }
 }
 

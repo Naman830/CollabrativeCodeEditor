@@ -1,12 +1,9 @@
-// The single enumeration of the languages the editor supports: dropdown
-// labels, Monaco's language id, and the file extension. Deliberately free of
-// browser and Next APIs so both the client editor and the `/api/execute`
-// route handler can import it — the extension used to live only in the
-// route's LANGUAGE_MAP, which the client can't touch (it imports
-// `next/server`), and duplicating it is exactly how the two lists drift.
+// The one list of supported languages: dropdown label, Monaco id, and file
+// extension. Free of browser and Next APIs so both the editor and the
+// `/api/execute` route can import it instead of keeping two lists that drift.
 //
-// Piston's pinned versions stay in `app/api/execute/route.ts`: they're a
-// property of the sandbox image, not of the language.
+// Piston's pinned versions stay in the route — they belong to the sandbox
+// image, not to the language.
 
 export const LANGUAGES = [
   { label: "JavaScript", value: "javascript", ext: "js" },
@@ -24,12 +21,9 @@ export function fileExtFor(language: string): string {
 }
 
 /**
- * Name for the file the Save button hands to the browser.
- *
- * `main.<ext>` matches the name the execute route already gives Piston, so a
- * downloaded file runs the same way locally. Java is the one capitalized
- * case: javac requires the file to be named after its public class, so
- * `Main.java` is what compiles — `main.java` would not.
+ * Filename the Save button hands to the browser. `main.<ext>` matches what the
+ * execute route sends Piston, so a download runs the same way locally. Java is
+ * the exception: javac needs the file named after its public class.
  */
 export function downloadFileName(language: string): string {
   if (language === "java") return "Main.java";
