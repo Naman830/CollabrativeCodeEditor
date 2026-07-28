@@ -21,36 +21,26 @@ import {
   subscribeIdentity,
 } from "../lib/user";
 
-// The editor instance Monaco hands back on mount, without importing
+// The editor instance Monaco hands back on mount, typed without importing
 // monaco-editor itself (it touches `window` at import time).
 type MonacoEditor = Parameters<OnMount>[0];
 
 const DEFAULT_CODE = `console.log("Hello, world!");\n`;
 
-// The close code the sync server uses to refuse a connection to a room that no
-// longer exists (`CLOSE_ROOM_NOT_FOUND` in server/yjsConnection.js). Any other
-// close is an ordinary disconnect and must keep retrying.
+// The close code the sync server sends for a room that no longer exists
+// (`CLOSE_ROOM_NOT_FOUND` in server/yjsConnection.js). Any other close is an
+// ordinary disconnect and must keep retrying.
 const CLOSE_ROOM_NOT_FOUND = 4404;
 
-// If the peer who started a run disappears mid-flight (tab closed, crash,
-// network drop), their fetch to /api/execute is cancelled by the browser and
-// nothing else ever writes to the execution map — every peer's Run button
-// stays disabled forever, since it's gated on `status === "running"`. This
-// bounds how long the room waits before treating an abandoned run as failed.
-// It is the outermost bound of a nested set, and the ordering is what keeps
-// each layer meaningful: the sandbox stops the program (10s compile + 5s run at
-// worst), the route's PISTON_TIMEOUT_MS (18s) catches a Piston that never
-// answers, and only then does this decide the *client* is gone. Set below any
-// of them and a run that is merely slow gets pre-empted and reported as a lost
-// connection.
+// How long the room waits before treating a run as abandoned. If the peer who
+// clicked Run disappears mid-flight, nothing else ever writes a result and every
+// Run button stays disabled. This is the outermost of three nested timeouts —
+// sandbox (10s compile + 5s run), then the route's 18s fetch abort, then this —
+// so lowering it would report merely-slow runs as a lost connection.
 const STALE_RUN_MS = 25_000;
 
-// Everything below is built from `readPeers`'s output, not raw awareness state
-// directly — `lib/awareness` is the boundary that sanitizes and deduplicates
-// what any peer can set its own `user` field to.
-
-// Escape order matters: backslashes first, or we'd re-escape our own escapes.
-// Newlines are illegal inside a CSS string and must become the \A escape.
+// Escape order matters: backslashes first, or we re-escape our own escapes.
+// Newlines are illegal in a CSS string and become the \A escape.
 function cssString(value: string): string {
   return value
     .replace(/\\/g, "\\\\")
@@ -58,14 +48,11 @@ function cssString(value: string): string {
     .replace(/\r?\n/g, "\\A ");
 }
 
-// Rebuilds the remote-cursor <style> tag from the same deduped Peer[] the user
-// bar renders, keyed by clientID. Regenerating the whole block (rather than
-// patching it) means rules for clients who've left are simply dropped instead
-// of lingering. Sourcing this from `readPeers`'s output rather than raw
-// awareness state matters: readPeers is what resolves duplicate names/colors,
-// and the cursor label must match the bar chip for the same person exactly.
 const AWARENESS_STYLE_ID = "yjs-remote-cursor-styles";
 
+// Rebuilds the remote-cursor <style> tag from the same deduped peers the user
+// bar renders, so a caret label always matches that person's chip. Regenerating
+// the whole block drops rules for clients who have left.
 function renderAwarenessStyles(peers: Peer[]) {
   let styleEl = document.getElementById(AWARENESS_STYLE_ID) as HTMLStyleElement | null;
   if (!styleEl) {
@@ -115,9 +102,8 @@ type ExecuteSuccess = {
   stderr: string;
   exitCode: number | null;
   compile: { stdout: string; stderr: string; exitCode: number | null } | null;
-  // Set when the sandbox stopped the program itself (output cap, timeout)
-  // instead of it exiting on its own. Optional because a record written by an
-  // older peer can still be sitting in the room's shared `execution` map.
+  // Set when the sandbox stopped the program itself (output cap, timeout).
+  // Optional because older records may still sit in a room's execution map.
   notice?: string | null;
 };
 
@@ -126,15 +112,10 @@ type ExecuteFailure = {
   error: string;
 };
 
-// Lives in a Y.Map (single key, whole-record replacement) rather than local
-// state, so every peer sees the same run — see the `execution` map wiring
-// below. `runId` exists to resolve the one race the room-wide lock can't:
-// two peers clicking Run before either has received the other's "running"
-// write both converge on the same winning record via Yjs, and the loser's
-// eventual Piston response must recognise itself as stale and discard rather
-// than clobber the winner.
 type RunAttribution = { name: string; color: string };
 
+// Lives in a Y.Map under one key, replaced whole, so every peer sees the same
+// run. `runId` lets a run that lost a race recognise its own result as stale.
 type ExecutionState =
   | { status: "idle" }
   | {
@@ -165,58 +146,73 @@ type ExecutionState =
 
 type CodeEditorProps = {
   roomId: string;
-  /**
-   * Called when the server refuses this room because it no longer exists. Only
-   * `RoomGate` can act on that — it owns the closed-room screen — so this
-   * component just reports it upward.
-   */
+  /** Fired when the server refuses this room. Only `RoomGate` can act on it. */
   onRoomClosed?: () => void;
 };
 
+function PlayIcon() {
+  return (
+    <svg aria-hidden viewBox="0 0 24 24" fill="currentColor" className="h-3.5 w-3.5">
+      <path d="M8 5.5v13l11-6.5z" />
+    </svg>
+  );
+}
+
+function DownloadIcon() {
+  return (
+    <svg
+      aria-hidden
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="h-3.5 w-3.5"
+    >
+      <path d="M12 4v11" />
+      <path d="m7 11 5 5 5-5" />
+      <path d="M5 19h14" />
+    </svg>
+  );
+}
+
 export default function CodeEditor({ roomId, onRoomClosed }: CodeEditorProps) {
   const [language, setLanguage] = useState<string>("javascript");
-  // Starts empty rather than at DEFAULT_CODE: the editor is genuinely empty
-  // until the binding attaches, and Monaco's onChange fires on that first
-  // programmatic setValue, so this catches up on its own.
+  // Starts empty, not at DEFAULT_CODE: the editor really is empty until the
+  // binding attaches, and Monaco's onChange fires then, so this catches up.
   const [code, setCode] = useState<string>("");
   const [execState, setExecState] = useState<ExecutionState>({ status: "idle" });
 
-  // The editor instance is state, not a ref, so the Yjs effect below can list
-  // it as a dependency and run once Monaco is actually mounted.
+  // State rather than a ref, so the Yjs effect can depend on it and run once
+  // Monaco has actually mounted.
   const [editor, setEditor] = useState<MonacoEditor | null>(null);
   const [syncStatus, setSyncStatus] = useState<SyncStatus>("connecting");
 
-  // `handleRun` needs the live `Y.Doc` to write into the shared execution map,
-  // but per this repo's lifecycle rules the doc itself must never live in
-  // component state (a state-held doc with nothing to recreate it breaks room
-  // switching and StrictMode remounts) — a ref is fine since it triggers no
-  // render. Nulled first on effect cleanup so an in-flight run notices the
-  // teardown immediately.
+  // `handleRun` needs the live Y.Doc, but the doc must never live in component
+  // state (see the effect below) — a ref triggers no render, so it is safe.
   const collabRef = useRef<Y.Doc | null>(null);
   const runCounterRef = useRef(0);
 
-  // Read through a ref rather than being listed as an effect dependency: a
-  // caller passing an inline arrow would otherwise tear down and rebuild the
-  // entire Yjs stack — doc, socket, binding — on every render.
+  // Read through a ref instead of being an effect dependency: an inline arrow
+  // from the caller would otherwise rebuild the whole Yjs stack every render.
   const onRoomClosedRef = useRef(onRoomClosed);
   useEffect(() => {
     onRoomClosedRef.current = onRoomClosed;
   });
 
-  // Presence for the user bar. Mirrors awareness rather than being derived from
-  // it on render: awareness is a mutable instance living inside the effect
-  // below, so React has no way to see a change to it without being told.
+  // Awareness is a mutable instance inside the effect below, so React only sees
+  // presence changes because they are mirrored into this state.
   const [peers, setPeers] = useState<Peer[]>([]);
 
-  // Join/leave banners, diffed from consecutive `readPeers` snapshots inside
-  // the awareness handler below (see `knownPeers` in the effect).
+  // Join/leave banners, diffed from consecutive peer snapshots below.
   const [toasts, setToasts] = useState<ActivityToast[]>([]);
   const dismissToast = useCallback((id: string) => {
     setToasts((prev) => prev.filter((toast) => toast.id !== id));
   }, []);
 
   // "unknown" until hydration resolves, then "absent" (prompt) or "present"
-  // (connect). Arriving here from the landing page means it is already present.
+  // (connect). Arriving from the landing page means it is already present.
   const identity = useSyncExternalStore(
     subscribeIdentity,
     getIdentitySnapshot,
@@ -224,15 +220,11 @@ export default function CodeEditor({ roomId, onRoomClosed }: CodeEditorProps) {
   );
   const user = identity.status === "present" ? identity.user : null;
 
-  // Owns the entire Yjs lifecycle — doc, provider, awareness, and binding are
-  // all created here and all torn down together. Everything is scoped to this
-  // effect rather than to the component, so switching rooms (or React's
-  // StrictMode remount in dev) rebuilds the stack instead of leaving the
-  // cleanup to destroy a Y.Doc that nothing ever recreates.
-  // `user` joins the dependency list rather than being read from a ref: we must
-  // not open a socket before we know who to announce, or peers would briefly
-  // see an anonymous cursor. It only ever transitions null -> set once per
-  // mount, so the stack is still built exactly once.
+  // Owns the whole Yjs lifecycle: doc, provider, awareness and binding are all
+  // created and torn down here, so switching rooms (or React's StrictMode
+  // remount) rebuilds the stack instead of destroying a doc nothing recreates.
+  // `user` is a dependency because no socket may open before we know who to
+  // announce; it only ever goes null -> set once per mount.
   useEffect(() => {
     if (!editor || !user) return;
     const model = editor.getModel();
@@ -244,17 +236,13 @@ export default function CodeEditor({ roomId, onRoomClosed }: CodeEditorProps) {
     let provider: WebsocketProvider | null = null;
     let binding: MonacoBinding | null = null;
     let awarenessChangeHandler: (() => void) | null = null;
-    // Baseline for join/leave detection, keyed by clientID. Stays null until
-    // the first awareness snapshot arrives so that everyone already in the
-    // room when *we* connect doesn't generate a "joined" toast for us — only
-    // changes after that baseline do.
+    // Baseline for join/leave detection. Null until the first snapshot, so
+    // people already in the room don't each fire a "joined" toast at us.
     let knownPeers: Map<number, Peer> | null = null;
 
-    // Shared execution state rides on the same Y.Doc as the code itself, so it
-    // syncs to every peer (including late joiners) via the same sync protocol
-    // — no server changes, no separate channel. Registered synchronously here
-    // rather than inside the async IIFE below: Y.Map needs neither the
-    // WebSocket provider nor Monaco to exist.
+    // Execution state rides on the same Y.Doc as the code, so it syncs to every
+    // peer (late joiners included) with no server changes. Registered here
+    // rather than in the async block: a Y.Map needs neither socket nor Monaco.
     const executionMap = yDoc.getMap<ExecutionState>("execution");
     const applyExecutionState = () => {
       setExecState(executionMap.get("state") ?? { status: "idle" });
@@ -262,10 +250,9 @@ export default function CodeEditor({ roomId, onRoomClosed }: CodeEditorProps) {
     executionMap.observe(applyExecutionState);
     applyExecutionState();
 
-    // Any connected peer can heal a run abandoned by whoever started it —
-    // there's no single "owner" once the record is shared, so every client
-    // runs this same check and whichever fires first wins (idempotent: they'd
-    // all write an equivalent error record).
+    // Any peer can heal a run abandoned by whoever started it — there is no
+    // owner once the record is shared, so whichever tick fires first wins and
+    // the rest are identical no-ops.
     const staleRunWatchdog = setInterval(() => {
       const current = executionMap.get("state");
       if (
@@ -284,13 +271,9 @@ export default function CodeEditor({ roomId, onRoomClosed }: CodeEditorProps) {
       }
     }, 2000);
 
-    // No need to reset syncStatus here: the room route keys this component on
-    // roomId, so a room switch remounts with the "connecting" initial state,
-    // and every transition after that arrives via the provider's status event.
     (async () => {
-      // Both packages touch browser globals at import time (y-websocket reads
-      // `WebSocket`, y-monaco pulls in raw monaco-editor which reads `window`),
-      // so they have to be loaded client-side only.
+      // Both packages touch browser globals at import time, so they can only be
+      // loaded client-side.
       const [{ WebsocketProvider }, { MonacoBinding }] = await Promise.all([
         import("y-websocket"),
         import("y-monaco"),
@@ -298,24 +281,16 @@ export default function CodeEditor({ roomId, onRoomClosed }: CodeEditorProps) {
       if (cancelled) return;
 
       // `disableBc` turns off y-websocket's cross-tab BroadcastChannel. Two tabs
-      // of this app are meant to be two separate collaborators (identity lives
-      // in sessionStorage precisely so that holds), and the BC channel fights
-      // that: tabs sync out-of-band, and a tab that closes gets resurrected in
-      // its siblings' awareness — the user bar then never drops anyone.
-      // Everything still syncs through the server, which is the only path a
-      // real pair of collaborators has anyway.
+      // are meant to be two collaborators, and BC resurrects a closed tab in its
+      // siblings' awareness — the user bar would then never drop anyone.
       provider = new WebsocketProvider(WS_URL, roomId, yDoc, { disableBc: true });
       provider.on("status", ({ status }: { status: SyncStatus }) => {
         setSyncStatus(status);
       });
 
-      // The mount-time existence check can't cover a room that dies *during* a
-      // session: evicted while this client was offline, or the server restarted.
-      // The reconnect is then refused with CLOSE_ROOM_NOT_FOUND, and without
-      // `disconnect()` y-websocket would keep retrying a room that is never
-      // coming back (its reconnect timer only stops once `shouldConnect` is
-      // false). Every other close code is an ordinary drop and must keep
-      // retrying, so this deliberately does nothing for them.
+      // A room can die during a session, and the reconnect is then refused with
+      // this code. `disconnect()` is what stops y-websocket retrying forever;
+      // every other close code is an ordinary drop that should keep retrying.
       const closedProvider = provider;
       closedProvider.on("connection-close", (event: CloseEvent) => {
         if (event?.code !== CLOSE_ROOM_NOT_FOUND) return;
@@ -323,10 +298,8 @@ export default function CodeEditor({ roomId, onRoomClosed }: CodeEditorProps) {
         if (!cancelled) onRoomClosedRef.current?.();
       });
 
-      // Reuse the awareness instance the provider already creates — publish
-      // the name and colour this user chose as its local presence state.
-      // `name` is the pre-shortened cursor label; the raw parts ride along for
-      // the user bar, which needs initials.
+      // Publish this user as local presence. `name` is the short caret label;
+      // the raw parts ride along for the user bar's initials.
       const { awareness } = provider;
       awareness.setLocalStateField("user", {
         name: displayName(user),
@@ -335,18 +308,16 @@ export default function CodeEditor({ roomId, onRoomClosed }: CodeEditorProps) {
         lastName: user.lastName,
       });
 
-      // One handler for both consumers of awareness: the remote-cursor styles
-      // and the user bar. They must not drift apart — a peer shown in the bar
-      // with one colour and a caret in another reads as two different people.
+      // One handler for both consumers of awareness — the cursor styles and the
+      // user bar must never drift apart, or one person looks like two.
       awarenessChangeHandler = () => {
         const nextPeers = readPeers(awareness, yDoc.clientID);
         renderAwarenessStyles(nextPeers);
         setPeers(nextPeers);
 
-        // Diff against the previous snapshot to find who joined/left. This
-        // fires on every awareness change, including cursor moves, but a
-        // cursor move never adds or removes a clientID key, so the diff below
-        // is a no-op for those — only actual presence changes produce toasts.
+        // Diff against the previous snapshot for join/leave. Cursor moves also
+        // fire this, but they never add or remove a clientID, so they diff to
+        // nothing.
         const nextByClientID = new Map(nextPeers.map((peer) => [peer.clientID, peer]));
         if (knownPeers) {
           const newToasts: ActivityToast[] = [];
@@ -372,10 +343,9 @@ export default function CodeEditor({ roomId, onRoomClosed }: CodeEditorProps) {
       const yText = yDoc.getText("monaco");
       binding = new MonacoBinding(yText, model, new Set([editor]), awareness);
 
-      // Seed the starter snippet only once the server has told us what this
-      // room already contains. Seeding earlier would insert DEFAULT_CODE into
-      // a still-empty local doc, and the CRDT would then merge that boilerplate
-      // into the existing document for everyone else in the room.
+      // Seed the starter snippet only once the server has said what the room
+      // already contains — seeding earlier would merge the boilerplate into
+      // everyone else's document.
       provider.once("sync", (isSynced: boolean) => {
         if (cancelled || !isSynced || yText.length > 0) return;
         yText.insert(0, DEFAULT_CODE);
@@ -384,31 +354,25 @@ export default function CodeEditor({ roomId, onRoomClosed }: CodeEditorProps) {
 
     return () => {
       cancelled = true;
-      // Null this out first, before anything else, so a `handleRun` call still
-      // in flight sees the teardown as early as possible and discards its
-      // result instead of writing into a doc we no longer own.
+      // Cleared first so an in-flight run notices the teardown as early as
+      // possible and discards its result.
       collabRef.current = null;
       clearInterval(staleRunWatchdog);
       executionMap.unobserve(applyExecutionState);
       if (provider && awarenessChangeHandler) {
         provider.awareness.off("change", awarenessChangeHandler);
-        // Clear local presence immediately so peers drop this cursor right
-        // away instead of waiting on the server to notice the socket close.
+        // Clear presence now so peers drop this cursor immediately instead of
+        // waiting for the server to notice the socket close.
         provider.awareness.setLocalState(null);
       }
       binding?.destroy();
       provider?.destroy();
       yDoc.destroy();
       document.getElementById(AWARENESS_STYLE_ID)?.remove();
-      // Peers belong to the connection that just died. Leaving them would show
-      // the old room's occupants for as long as the new socket takes to sync.
+      // Peers, toasts and the last result all belong to the connection that
+      // just died, not to whatever this reconnects to next.
       setPeers([]);
-      // Same reasoning: any pending join/leave toasts belong to the
-      // connection that just died, not to whatever room this reconnects to.
       setToasts([]);
-      // Same reasoning as `setPeers([])`: the last run's result belongs to the
-      // connection that just died, not to whatever room this component
-      // reconnects to next.
       setExecState({ status: "idle" });
     };
   }, [editor, roomId, user]);
@@ -426,8 +390,8 @@ export default function CodeEditor({ roomId, onRoomClosed }: CodeEditorProps) {
     if (!yDoc || !user) return;
 
     const executionMap = yDoc.getMap<ExecutionState>("execution");
-    // Defense in depth against a same-tab double-click; can't prevent a
-    // different peer's concurrent click (see the runId check below).
+    // Guards a same-tab double-click. A different peer's concurrent click is
+    // handled by the runId check below.
     if (executionMap.get("state")?.status === "running") return;
 
     runCounterRef.current += 1;
@@ -435,11 +399,9 @@ export default function CodeEditor({ roomId, onRoomClosed }: CodeEditorProps) {
     const startedBy: RunAttribution = { name: displayName(user), color: user.color };
     const startedAt = Date.now();
 
-    // The route enforces this too (it has to — it is reachable without the UI);
-    // checking here just avoids pushing a payload over the wire to be refused,
-    // and both sides read the same constant so they cannot disagree. The failure
-    // is written to the shared map like any other: the document is shared, so
-    // "this is too big to run" is true for everyone looking at it.
+    // The route enforces this too (it is reachable without the UI); checking
+    // here just avoids sending a payload that will be refused. The failure goes
+    // into the shared map because the oversized document is shared as well.
     if (codeByteLength(code) > MAX_CODE_BYTES) {
       executionMap.set("state", {
         status: "error",
@@ -455,12 +417,9 @@ export default function CodeEditor({ roomId, onRoomClosed }: CodeEditorProps) {
 
     executionMap.set("state", { status: "running", runId, language, startedBy, startedAt });
 
-    // A run this client started may lose a race to a concurrent run from
-    // another peer (both write "running" before either has seen the other's
-    // update; Yjs converges both replicas on one winner) — or the effect may
-    // have torn down (room switch/unmount) while the fetch was in flight.
-    // Either way, this run's own result is stale and must be discarded rather
-    // than clobbering whatever is now current.
+    // This run may have lost a race to another peer's, or the effect may have
+    // torn down while the fetch was in flight. Either way its result is stale
+    // and must not clobber whatever is current.
     const stale = () => {
       if (collabRef.current !== yDoc) return true;
       const current = executionMap.get("state");
@@ -515,8 +474,8 @@ export default function CodeEditor({ roomId, onRoomClosed }: CodeEditorProps) {
   };
 
   // Purely local, unlike Run: nothing is written to the Y.Doc and no request
-  // leaves the browser. `language` is a per-user preference, so each peer
-  // downloads the same shared text under their own extension.
+  // leaves the browser. `language` is per-user, so each peer downloads the same
+  // text under their own extension.
   const handleSave = () => {
     const blob = new Blob([code], { type: "text/plain;charset=utf-8" });
     const url = URL.createObjectURL(blob);
@@ -529,8 +488,7 @@ export default function CodeEditor({ roomId, onRoomClosed }: CodeEditorProps) {
     URL.revokeObjectURL(url);
   };
 
-  // Derived from the shared state, not a local flag, so the Run button
-  // disables for every peer identically.
+  // Derived from shared state, so Run disables for every peer identically.
   const isLoading = execState.status === "running";
 
   const hasRuntimeFailure =
@@ -538,24 +496,26 @@ export default function CodeEditor({ roomId, onRoomClosed }: CodeEditorProps) {
     ((execState.result.compile && execState.result.compile.exitCode !== 0) ||
       execState.result.exitCode !== 0 ||
       execState.result.stderr.length > 0 ||
-      // A sandbox-side stop has no exit code at all (the process was killed),
-      // so without this the panel would look like a clean run.
+      // A sandbox-side stop has no exit code, so without this the panel would
+      // look like a clean run.
       Boolean(execState.result.notice));
 
+  const outputFailed = execState.status === "error" || hasRuntimeFailure;
+
   return (
-    <div className="flex h-full flex-col bg-[#1e1e1e] text-zinc-200">
+    <div className="flex h-full flex-col bg-app text-zinc-200">
       <ActivityToasts toasts={toasts} onDismiss={dismissToast} />
       <UserBar peers={peers} connected={syncStatus === "connected"} />
 
-      <div className="flex items-center gap-3 border-b border-zinc-800 bg-[#252526] px-4 py-2">
-        <label htmlFor="language-select" className="text-sm text-zinc-400">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-edge bg-panel px-4 py-2">
+        <label htmlFor="language-select" className="sr-only">
           Language
         </label>
         <select
           id="language-select"
           value={language}
           onChange={(e) => setLanguage(e.target.value)}
-          className="rounded border border-zinc-700 bg-[#3c3c3c] px-2 py-1 text-sm text-zinc-100 focus:outline-none focus:ring-1 focus:ring-blue-500"
+          className="rounded-lg border border-edge bg-raised px-2.5 py-1.5 text-sm text-zinc-100 transition-colors hover:border-zinc-600 focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/30"
         >
           {LANGUAGES.map((lang) => (
             <option key={lang.value} value={lang.value}>
@@ -564,35 +524,67 @@ export default function CodeEditor({ roomId, onRoomClosed }: CodeEditorProps) {
           ))}
         </select>
 
-        <span className="text-xs text-zinc-500">
-          Room: <span className="font-mono text-zinc-300">{roomId}</span>
+        <span
+          title={roomId}
+          className="flex min-w-0 items-center gap-1.5 rounded-lg border border-edge bg-raised/60 px-2.5 py-1.5 text-xs text-zinc-500"
+        >
+          Room
+          <span className="max-w-[14rem] truncate font-mono text-zinc-300">{roomId}</span>
         </span>
 
-        <div className="ml-auto flex items-center gap-2 text-xs text-zinc-400">
-          <span
-            className={`h-2 w-2 rounded-full ${
-              syncStatus === "connected"
-                ? "bg-green-500"
-                : syncStatus === "connecting"
-                  ? "bg-amber-500"
-                  : "bg-red-500"
-            }`}
-          />
-          {syncStatus === "connected"
-            ? "Synced"
-            : syncStatus === "connecting"
-              ? "Connecting…"
-              : "Disconnected"}
+        <div className="ml-auto flex items-center gap-2">
+          <span className="flex items-center gap-2 rounded-lg border border-edge bg-raised/60 px-2.5 py-1.5 text-xs text-zinc-400">
+            <span
+              className={`h-2 w-2 rounded-full ${
+                syncStatus === "connected"
+                  ? "bg-emerald-500"
+                  : syncStatus === "connecting"
+                    ? "animate-pulse bg-amber-500"
+                    : "bg-red-500"
+              }`}
+            />
+            {syncStatus === "connected"
+              ? "Synced"
+              : syncStatus === "connecting"
+                ? "Connecting…"
+                : "Disconnected"}
+          </span>
+
+          <button
+            type="button"
+            onClick={handleRun}
+            disabled={isLoading}
+            className="flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-1.5 text-sm font-medium text-white shadow-lg shadow-emerald-600/20 transition-colors hover:bg-emerald-500 disabled:cursor-not-allowed disabled:bg-raised disabled:text-zinc-500 disabled:shadow-none"
+          >
+            {isLoading ? (
+              <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-zinc-500/40 border-t-zinc-300" />
+            ) : (
+              <PlayIcon />
+            )}
+            {isLoading ? "Running…" : "Run"}
+          </button>
+
+          <button
+            type="button"
+            onClick={handleSave}
+            // No room-wide lock here — Save touches no shared state, so an empty
+            // editor is the only thing worth guarding against.
+            disabled={code.length === 0}
+            title={`Download ${downloadFileName(language)}`}
+            className="flex items-center gap-2 rounded-lg border border-edge bg-raised px-4 py-1.5 text-sm font-medium text-zinc-200 transition-colors hover:border-zinc-600 hover:bg-[#2c2c2c] disabled:cursor-not-allowed disabled:border-edge disabled:bg-transparent disabled:text-zinc-600"
+          >
+            <DownloadIcon />
+            Save
+          </button>
         </div>
       </div>
 
-      <div className="flex-1 min-h-0">
+      <div className="min-h-0 flex-1 border-b border-edge">
         <Editor
           height="100%"
           language={language}
-          // No defaultValue: MonacoBinding resets the model to the Y.Text
-          // contents as soon as it attaches, so initial content comes from the
-          // sync-gated seed above, never from Monaco itself.
+          // No defaultValue: MonacoBinding resets the model to the Y.Text as
+          // soon as it attaches, so content comes from the sync-gated seed.
           theme="vs-dark"
           onMount={handleEditorMount}
           onChange={handleEditorChange}
@@ -601,113 +593,92 @@ export default function CodeEditor({ roomId, onRoomClosed }: CodeEditorProps) {
             minimap: { enabled: false },
             automaticLayout: true,
             scrollBeyondLastLine: false,
+            padding: { top: 12, bottom: 12 },
+            smoothScrolling: true,
+            roundedSelection: false,
+            scrollbar: { verticalScrollbarSize: 10, horizontalScrollbarSize: 10 },
           }}
         />
       </div>
 
-      <div className="flex items-center gap-3 border-t border-zinc-800 bg-[#252526] px-4 py-2">
-        <button
-          type="button"
-          onClick={handleRun}
-          disabled={isLoading}
-          className="flex items-center gap-2 rounded bg-green-600 px-4 py-1.5 text-sm font-medium text-white transition-colors hover:bg-green-500 disabled:cursor-not-allowed disabled:bg-green-800 disabled:text-zinc-300"
-        >
-          {isLoading && (
-            <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white/40 border-t-white" />
-          )}
-          {isLoading ? "Running..." : "Run"}
-        </button>
-        <button
-          type="button"
-          onClick={handleSave}
-          // No room-wide lock here (Save touches no shared state), so an
-          // empty editor is the only thing worth guarding against.
-          disabled={code.length === 0}
-          title={`Download ${downloadFileName(language)}`}
-          className="rounded border border-zinc-700 px-4 py-1.5 text-sm font-medium text-zinc-200 transition-colors hover:bg-zinc-800 disabled:cursor-not-allowed disabled:border-zinc-800 disabled:text-zinc-500"
-        >
-          Save
-        </button>
-        {execState.status !== "idle" && (
-          <span className="flex items-center gap-1.5 text-xs text-zinc-500">
-            <span
-              className="h-2 w-2 rounded-full"
-              style={{ backgroundColor: execState.startedBy.color }}
-            />
-            Run by {execState.startedBy.name} ·{" "}
-            {LANGUAGES.find((lang) => lang.value === execState.language)?.label ??
-              execState.language}
-            {execState.status === "success" && (
-              <> · Exit code: {execState.result.exitCode ?? "—"}</>
-            )}
+      <div className="flex h-56 flex-col bg-panel">
+        <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-b border-edge px-4 py-2">
+          <span className="text-[11px] font-medium uppercase tracking-wider text-zinc-500">
+            Output
           </span>
-        )}
-      </div>
 
-      <div
-        className={`h-48 overflow-auto border-t px-4 py-3 transition-colors ${
-          execState.status === "error" || hasRuntimeFailure
-            ? "border-red-900 bg-[#2a1414]"
-            : "border-zinc-800 bg-black"
-        }`}
-      >
-        {execState.status === "idle" && (
-          <pre className="whitespace-pre-wrap font-mono text-sm text-zinc-600">
-            Output will appear here...
-          </pre>
-        )}
+          {execState.status !== "idle" && (
+            <span className="ml-auto flex items-center gap-1.5 text-xs text-zinc-500">
+              <span
+                className="h-2 w-2 rounded-full"
+                style={{ backgroundColor: execState.startedBy.color }}
+              />
+              Run by {execState.startedBy.name} ·{" "}
+              {LANGUAGES.find((lang) => lang.value === execState.language)?.label ??
+                execState.language}
+              {execState.status === "success" && (
+                <> · Exit code: {execState.result.exitCode ?? "—"}</>
+              )}
+            </span>
+          )}
+        </div>
 
-        {execState.status === "running" && (
-          <pre className="whitespace-pre-wrap font-mono text-sm text-zinc-500">
-            Running your code...
-          </pre>
-        )}
+        <div
+          className={`flex-1 overflow-auto px-4 py-3 font-mono text-sm transition-colors ${
+            outputFailed ? "bg-[#1f1414]" : "bg-[#101010]"
+          }`}
+        >
+          {execState.status === "idle" && (
+            <pre className="whitespace-pre-wrap text-zinc-600">
+              Output will appear here…
+            </pre>
+          )}
 
-        {execState.status === "error" && (
-          <pre className="whitespace-pre-wrap font-mono text-sm text-red-400">
-            {execState.error}
-          </pre>
-        )}
+          {execState.status === "running" && (
+            <pre className="whitespace-pre-wrap text-zinc-500">Running your code…</pre>
+          )}
 
-        {execState.status === "success" && (
-          <>
-            {execState.result.compile && execState.result.compile.exitCode !== 0 && (
-              <pre className="whitespace-pre-wrap font-mono text-sm text-red-400">
-                {execState.result.compile.stderr}
-              </pre>
-            )}
-            {execState.result.stdout && (
-              <pre className="whitespace-pre-wrap font-mono text-sm text-zinc-300">
-                {execState.result.stdout}
-              </pre>
-            )}
-            {execState.result.stderr && (
-              <pre className="whitespace-pre-wrap font-mono text-sm text-red-400">
-                {execState.result.stderr}
-              </pre>
-            )}
-            {/* Last, because it explains why the output above stops where it
-                does — the program was killed mid-write, not finished. */}
-            {execState.result.notice && (
-              <pre className="whitespace-pre-wrap font-mono text-sm text-amber-400">
-                {execState.result.notice}
-              </pre>
-            )}
-            {!execState.result.stdout &&
-              !execState.result.stderr &&
-              !execState.result.notice && (
-                <pre className="whitespace-pre-wrap font-mono text-sm text-zinc-600">
-                  (no output)
+          {execState.status === "error" && (
+            <pre className="whitespace-pre-wrap text-red-400">{execState.error}</pre>
+          )}
+
+          {execState.status === "success" && (
+            <>
+              {execState.result.compile && execState.result.compile.exitCode !== 0 && (
+                <pre className="whitespace-pre-wrap text-red-400">
+                  {execState.result.compile.stderr}
                 </pre>
               )}
-          </>
-        )}
+              {execState.result.stdout && (
+                <pre className="whitespace-pre-wrap text-zinc-300">
+                  {execState.result.stdout}
+                </pre>
+              )}
+              {execState.result.stderr && (
+                <pre className="whitespace-pre-wrap text-red-400">
+                  {execState.result.stderr}
+                </pre>
+              )}
+              {/* Last, because it explains why the output above stops where it
+                  does — the program was killed mid-write, not finished. */}
+              {execState.result.notice && (
+                <pre className="mt-2 whitespace-pre-wrap rounded-lg border border-amber-900/60 bg-amber-950/30 px-3 py-2 text-amber-300">
+                  {execState.result.notice}
+                </pre>
+              )}
+              {!execState.result.stdout &&
+                !execState.result.stderr &&
+                !execState.result.notice && (
+                  <pre className="whitespace-pre-wrap text-zinc-600">(no output)</pre>
+                )}
+            </>
+          )}
+        </div>
       </div>
 
-      {/* Deep links and the landing page's Join button both land here without an
+      {/* Deep links and the landing page's Join button both arrive without an
           identity. No onCancel: there is nowhere to fall back to, and the room
-          stays disconnected until a name is entered. Monaco keeps loading
-          underneath in the meantime. */}
+          stays disconnected until a name is entered. */}
       {identity.status === "absent" && (
         <IdentityDialog
           title="Join this room"

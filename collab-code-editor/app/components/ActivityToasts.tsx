@@ -9,8 +9,7 @@ export type ActivityToast = {
   color: string;
 };
 
-// Long enough to read, short enough that a busy room's toasts don't stack up
-// forever.
+// Long enough to read, short enough that a busy room doesn't stack them up.
 const AUTO_DISMISS_MS = 4000;
 
 type ToastRowProps = {
@@ -19,23 +18,24 @@ type ToastRowProps = {
 };
 
 function ToastRow({ toast, onDismiss }: ToastRowProps) {
-  // Each row owns its own timer, keyed on the toast's id, so toasts dismiss
-  // independently of one another regardless of arrival order.
+  // One timer per row, keyed on its id, so toasts dismiss independently.
   useEffect(() => {
     const timer = setTimeout(() => onDismiss(toast.id), AUTO_DISMISS_MS);
     return () => clearTimeout(timer);
   }, [toast.id, onDismiss]);
 
   return (
-    <li className="pointer-events-auto flex items-center gap-2 rounded-md border border-zinc-700 bg-[#2d2d2d] px-3 py-2 text-xs text-zinc-200 shadow-lg">
+    <li className="animate-toast-in pointer-events-auto flex items-center gap-2.5 rounded-xl border border-edge bg-panel/95 py-2 pl-2.5 pr-3.5 text-xs text-zinc-200 shadow-xl shadow-black/40 backdrop-blur">
       <span
         aria-hidden
-        className="h-2 w-2 shrink-0 rounded-full"
+        className="h-2.5 w-2.5 shrink-0 rounded-full ring-2 ring-panel"
         style={{ backgroundColor: toast.color }}
       />
       <span>
-        <span className="font-medium">{toast.name}</span>{" "}
-        {toast.kind === "join" ? "joined the room" : "left the room"}
+        <span className="font-medium text-zinc-100">{toast.name}</span>{" "}
+        <span className="text-zinc-400">
+          {toast.kind === "join" ? "joined the room" : "left the room"}
+        </span>
       </span>
     </li>
   );
@@ -47,9 +47,8 @@ type ActivityToastsProps = {
 };
 
 /**
- * Subtle join/leave banners, stacked bottom-right. `toasts` is built from
- * `readPeers`'s output in `CodeEditor.tsx` (never raw awareness state), so
- * names/colors here are already sanitized the same way the user bar's are.
+ * Join/leave banners, stacked bottom-right. `CodeEditor` builds these from
+ * `readPeers`'s output, so the names and colours here are already sanitized.
  */
 export default function ActivityToasts({ toasts, onDismiss }: ActivityToastsProps) {
   if (toasts.length === 0) return null;

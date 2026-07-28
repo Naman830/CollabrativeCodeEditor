@@ -24,11 +24,9 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    // suppressHydrationWarning is scoped to this element's own attributes and
-    // does not extend into the tree, so it silences extension-injected markers
-    // on <html> (ad blockers, dark-mode and grammar tools all add their own)
-    // without masking a real mismatch in any component. Nothing we render sets
-    // attributes here, so any diff on this node comes from outside the app.
+    // suppressHydrationWarning covers only this tag's own attributes, so it
+    // silences markers browser extensions add to <html> without hiding a real
+    // mismatch anywhere else. We set no attributes here ourselves.
     <html
       lang="en"
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}

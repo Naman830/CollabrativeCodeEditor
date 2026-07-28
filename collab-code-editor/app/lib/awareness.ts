@@ -1,20 +1,13 @@
-// Reading *remote* awareness state. Every field here was set by a peer, on its
-// own machine, and never passed through our identity form — so nothing in it can
-// be trusted. This module is the single place that turns that raw state into
-// values the UI is allowed to render.
-//
-// React escapes text nodes, so a hostile name is not an injection risk in the
-// user bar the way it is in the cursor <style> tag. It is still clamped: an
-// unbounded or control-character-laden name would wreck the layout, and the
-// name shown next to a cursor must match the name shown in the bar.
+// Remote awareness state is untrusted: every field was set by a peer on its own
+// machine and never passed through our form. This module is the one place that
+// turns it into values the UI may render.
 
 import { CURSOR_COLORS, sanitizeName, initials as initialsOf } from "./user";
 import type { Awareness } from "y-protocols/awareness";
 
 /**
- * Colours reach both an inline `style` and a CSS rule body, where a value like
- * `red } body { display: none } .x {` escapes the block and restyles the page.
- * Only a plain hex colour is ever let through.
+ * Colours end up inside a CSS rule, where `red } body { display: none } .x {`
+ * would escape the block and restyle the page. Plain hex only.
  */
 export const HEX_COLOR = /^#[0-9a-f]{6}$/i;
 
@@ -46,11 +39,7 @@ function asString(value: unknown): string {
   return typeof value === "string" ? sanitizeName(value) : "";
 }
 
-/**
- * Prefer the structured name parts the peer publishes alongside its cursor
- * label; fall back to the first letters of the label itself when a peer only
- * sends `name` (an older client, or one that isn't ours at all).
- */
+/** Prefer the peer's name parts; fall back to the label's first letters. */
 function deriveInitials(firstName: string, lastName: string, name: string): string {
   const fromParts = initialsOf({ firstName, lastName });
   if (fromParts) return fromParts;
@@ -61,23 +50,15 @@ function deriveInitials(firstName: string, lastName: string, name: string): stri
 }
 
 /**
- * Snapshot every client currently present, including the local one. Peers that
- * have connected but not yet published a `user` field are skipped rather than
- * rendered blank — they show up a tick later once their state arrives.
+ * Snapshot every client present, local one included. Peers that haven't
+ * published a `user` field yet are skipped and appear a tick later.
  *
- * Two peers can independently end up with the same short name (two "Naman
- * Singla"s both render as "Naman S.") or the same color (an 8-color palette
- * picked at random, with no coordination between joiners). Neither is
- * preventable at pick time — the identity dialog has no visibility into the
- * room — so both are resolved here, reactively, once awareness makes the
- * collision visible:
- *  - a name shared by 2+ peers gets a 1-based number appended ("Naman S." ->
- *    "Naman S1" / "Naman S2")
- *  - a color already claimed by an earlier peer gets swapped for the first
- *    unclaimed color in the fixed palette
- * Resolution order is ascending clientID, not local-first — clientID is the
- * one ordering every client agrees on, so all viewers compute the same
- * winner. The local-first order used for display is applied afterward.
+ * Two peers can pick the same short name or colour by chance, and the identity
+ * dialog can't see the room to prevent it, so both are resolved here once
+ * awareness makes the clash visible: a shared name gets a number appended
+ * ("Naman S." -> "Naman S1"), a taken colour swaps to the next free one.
+ * Resolution walks peers by clientID — the one order every client agrees on —
+ * so all viewers pick the same winner. Local-first display order comes after.
  */
 export function readPeers(awareness: Awareness, localClientID: number): Peer[] {
   const peers: Peer[] = [];

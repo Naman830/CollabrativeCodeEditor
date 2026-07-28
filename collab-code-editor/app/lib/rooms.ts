@@ -1,19 +1,16 @@
-// The client's view of room lifetime. Rooms are created by the sync server, not
-// by the browser: a room ID the server never handed out is refused at connect
-// time, which is what makes "this room doesn't exist" a real state rather than
-// something the client could only pretend to enforce.
+// The client's view of room lifetime. The sync server mints rooms, not the
+// browser — an ID it never handed out is refused at connect time, which is what
+// makes "this room doesn't exist" real rather than a client-side pretence.
 
 export const WS_URL = process.env.NEXT_PUBLIC_WS_URL ?? "ws://localhost:8080";
 
-// ws:// -> http://, wss:// -> https:// — same host, same port. The sync server
-// serves its room routes and the WebSocket upgrade off one listener, so there is
-// deliberately no second env var to keep in sync with this one.
+// ws:// -> http://, same host and port: the sync server serves its room routes
+// and the WebSocket upgrade off one listener, so there is no second env var.
 const API_URL = WS_URL.replace(/^ws/, "http");
 
 /**
- * "missing" and "unreachable" must never collapse into one state: bouncing
- * someone home because the sync server is down would tell them their room is
- * gone when it is not.
+ * "missing" and "unreachable" must stay separate: sending someone home because
+ * the server is down would claim their room is gone when it isn't.
  */
 export type RoomCheck = "open" | "missing" | "unreachable";
 
