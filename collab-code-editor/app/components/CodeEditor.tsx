@@ -1,11 +1,15 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import Editor, { OnChange, OnMount } from "@monaco-editor/react";
 import * as Y from "yjs";
 import type { MonacoBinding } from "y-monaco";
 import type { WebsocketProvider } from "y-websocket";
 import type { Awareness } from "y-protocols/awareness";
+
+// The editor instance Monaco hands back on mount, without importing
+// monaco-editor itself (it touches `window` at import time).
+type MonacoEditor = Parameters<OnMount>[0];
 
 const LANGUAGES = [
   { label: "JavaScript", value: "javascript" },
@@ -113,27 +117,45 @@ type CodeEditorProps = {
 
 export default function CodeEditor({ roomId }: CodeEditorProps) {
   const [language, setLanguage] = useState<string>("javascript");
-  const [code, setCode] = useState<string>(DEFAULT_CODE);
+  // Starts empty rather than at DEFAULT_CODE: the editor is genuinely empty
+  // until the binding attaches, and Monaco's onChange fires on that first
+  // programmatic setValue, so this catches up on its own.
+  const [code, setCode] = useState<string>("");
   const [runState, setRunState] = useState<RunState>({ status: "idle" });
 
-  const [yDoc] = useState(() => new Y.Doc());
-  const bindingRef = useRef<MonacoBinding | null>(null);
-  // handleEditorMount races the provider's dynamic import — await this
-  // instead of a plain ref so the binding always picks up awareness even if
-  // the editor finishes mounting first.
-  const providerReadyRef = useRef<Promise<WebsocketProvider | null>>(Promise.resolve(null));
+  // The editor instance is state, not a ref, so the Yjs effect below can list
+  // it as a dependency and run once Monaco is actually mounted.
+  const [editor, setEditor] = useState<MonacoEditor | null>(null);
   const [syncStatus, setSyncStatus] = useState<SyncStatus>("connecting");
 
+  // Owns the entire Yjs lifecycle — doc, provider, awareness, and binding are
+  // all created here and all torn down together. Everything is scoped to this
+  // effect rather than to the component, so switching rooms (or React's
+  // StrictMode remount in dev) rebuilds the stack instead of leaving the
+  // cleanup to destroy a Y.Doc that nothing ever recreates.
   useEffect(() => {
+    if (!editor) return;
+    const model = editor.getModel();
+    if (!model) return;
+
     let cancelled = false;
+    const yDoc = new Y.Doc();
     let provider: WebsocketProvider | null = null;
+    let binding: MonacoBinding | null = null;
     let awarenessChangeHandler: (() => void) | null = null;
 
-    const providerReady = (async () => {
-      // y-websocket reads the `WebSocket` global at construction time — load
-      // it client-side only, same as the y-monaco import in handleEditorMount.
-      const { WebsocketProvider } = await import("y-websocket");
-      if (cancelled) return null;
+    // No need to reset syncStatus here: the room route keys this component on
+    // roomId, so a room switch remounts with the "connecting" initial state,
+    // and every transition after that arrives via the provider's status event.
+    (async () => {
+      // Both packages touch browser globals at import time (y-websocket reads
+      // `WebSocket`, y-monaco pulls in raw monaco-editor which reads `window`),
+      // so they have to be loaded client-side only.
+      const [{ WebsocketProvider }, { MonacoBinding }] = await Promise.all([
+        import("y-websocket"),
+        import("y-monaco"),
+      ]);
+      if (cancelled) return;
 
       provider = new WebsocketProvider(WS_URL, roomId, yDoc);
       provider.on("status", ({ status }: { status: SyncStatus }) => {
@@ -149,9 +171,18 @@ export default function CodeEditor({ roomId }: CodeEditorProps) {
       awareness.on("change", awarenessChangeHandler);
       renderAwarenessStyles(awareness, yDoc.clientID);
 
-      return provider;
+      const yText = yDoc.getText("monaco");
+      binding = new MonacoBinding(yText, model, new Set([editor]), awareness);
+
+      // Seed the starter snippet only once the server has told us what this
+      // room already contains. Seeding earlier would insert DEFAULT_CODE into
+      // a still-empty local doc, and the CRDT would then merge that boilerplate
+      // into the existing document for everyone else in the room.
+      provider.once("sync", (isSynced: boolean) => {
+        if (cancelled || !isSynced || yText.length > 0) return;
+        yText.insert(0, DEFAULT_CODE);
+      });
     })();
-    providerReadyRef.current = providerReady;
 
     return () => {
       cancelled = true;
@@ -161,34 +192,15 @@ export default function CodeEditor({ roomId }: CodeEditorProps) {
         // away instead of waiting on the server to notice the socket close.
         provider.awareness.setLocalState(null);
       }
+      binding?.destroy();
       provider?.destroy();
-      bindingRef.current?.destroy();
       yDoc.destroy();
       document.getElementById(AWARENESS_STYLE_ID)?.remove();
     };
-  }, [yDoc, roomId]);
+  }, [editor, roomId]);
 
-  const handleEditorMount: OnMount = async (editor) => {
-    const yText = yDoc.getText("monaco");
-    if (yText.length === 0) {
-      yText.insert(0, DEFAULT_CODE);
-    }
-
-    const model = editor.getModel();
-    if (model) {
-      // y-monaco pulls in raw monaco-editor, which touches `window` at
-      // import time — load it client-side only, after the editor mounts.
-      const [{ MonacoBinding }, provider] = await Promise.all([
-        import("y-monaco"),
-        providerReadyRef.current,
-      ]);
-      bindingRef.current = new MonacoBinding(
-        yText,
-        model,
-        new Set([editor]),
-        provider?.awareness,
-      );
-    }
+  const handleEditorMount: OnMount = (mountedEditor) => {
+    setEditor(mountedEditor);
   };
 
   const handleEditorChange: OnChange = (value) => {
@@ -277,7 +289,9 @@ export default function CodeEditor({ roomId }: CodeEditorProps) {
         <Editor
           height="100%"
           language={language}
-          defaultValue={DEFAULT_CODE}
+          // No defaultValue: MonacoBinding resets the model to the Y.Text
+          // contents as soon as it attaches, so initial content comes from the
+          // sync-gated seed above, never from Monaco itself.
           theme="vs-dark"
           onMount={handleEditorMount}
           onChange={handleEditorChange}
