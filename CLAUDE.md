@@ -270,19 +270,7 @@ all on the roadmap but unimplemented. **Documents are in-memory only — room st
 survive a WebSocket server restart.** Piston is local-only; code execution does not work on
 the deployed site.
 
-**Rooms are never evicted, despite what `V1_Tasks.md` §4 claims.** That checklist item is
-ticked, but it is not true. `server/` delegates all room state to `y-websocket/bin/utils.js`,
-whose `closeConn` puts `docs.delete(doc.name)` *inside* an
-`if (doc.conns.size === 0 && persistence !== null)` branch — and `server/index.js` never
-calls `setPersistence` or sets `YPERSISTENCE`. So the `docs` map only ever grows: content
-survives an empty room (rejoining a supposedly-closed room shows the old code) and memory is
-unbounded. Two consequences before building on room lifetime:
-
-- §2's "redirect home if the room ID doesn't exist" has no meaningful notion of
-  "doesn't exist" — every room is created on first connect via `map.setIfUndefined`.
-- A room-existence HTTP endpoint would answer "has anyone ever visited", not "is this live".
-
-The fix is to `docs.delete` unconditionally at `conns.size === 0` (optionally debounced a few
-seconds to survive a refresh), and to correct the checklist text rather than trust the tick.
+Room eviction *is* now implemented — see the "Room lifetime" section above. This section is
+for what genuinely does not exist yet.
 
 @collab-code-editor/AGENTS.md
