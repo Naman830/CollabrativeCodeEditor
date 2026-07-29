@@ -15,6 +15,11 @@ export const LANGUAGES = [
 
 export type LanguageValue = (typeof LANGUAGES)[number]["value"];
 
+/** Dropdown label for a language id, falling back to the id itself. */
+export function languageLabel(language: string): string {
+  return LANGUAGES.find((lang) => lang.value === language)?.label ?? language;
+}
+
 /** File extension for a language id, without the leading dot. */
 export function fileExtFor(language: string): string {
   return LANGUAGES.find((lang) => lang.value === language)?.ext ?? "txt";
