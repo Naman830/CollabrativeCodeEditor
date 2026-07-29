@@ -67,7 +67,7 @@ Two independent workspaces. **There is no root `package.json`** — install and 
 
 Key files:
 - `collab-code-editor/proxy.ts` — Clerk's request hook. **Next 16 renamed `middleware.ts` to `proxy.ts`**; it attaches the session and protects nothing
-- `collab-code-editor/app/lib/clerkIdentity.ts` — the one boundary between Clerk and the app; nothing else imports `useUser`
+- `collab-code-editor/app/lib/clerkIdentity.ts` — the one boundary between Clerk and the app; nothing else imports `useUser` or `useAuth`. Also exports `useClerkToken()`, the sanctioned way an account ID reaches the sync server
 - `collab-code-editor/app/lib/monacoLoader.ts` — points `@monaco-editor/react` at the npm package so no global AMD loader is installed
 - `collab-code-editor/app/components/CodeEditor.tsx` — the room screen. **Composition only**: it holds `language`, `code` and the Monaco instance, and hands everything else to the hooks and panels below
 - `collab-code-editor/app/hooks/useCollabRoom.ts` — the whole client-side Yjs stack (doc, provider, awareness, Monaco binding, the shared `execution` map and the stale-run watchdog), plus the peers/toasts it mirrors into React
@@ -89,10 +89,12 @@ Key files:
 - `collab-code-editor/app/lib/execution.ts` — the cap on what may be *sent* for execution (`MAX_CODE_BYTES`), shared by the client's pre-flight check and the route's 413
 - `collab-code-editor/app/lib/rateLimit.ts` / `server/rateLimit.js` — the same in-memory sliding-window limiter, once per workspace
 - `collab-code-editor/app/api/execute/route.ts` — server-side proxy to Piston; also where the sandbox-side execution limits live
-- `server/yjsConnection.js` — the only place that speaks the Yjs wire protocol; also the gate that refuses connections to rooms that don't exist
-- `server/rooms.js` — the one authority on whether a room exists, and the only thing that ever deletes one
+- `server/yjsConnection.js` — the only place that speaks the Yjs wire protocol; also the gate that refuses connections to rooms that don't exist, and where a `?token=` becomes a member session
+- `server/rooms.js` — the one authority on whether a room exists, and the only thing that ever deletes one. `destroyRoom()` is the single destroy site and therefore the one place a snapshot is taken
+- `server/roomState.js` — what a room *was*, as opposed to whether it exists: `created_at`, the verified-member set with its connected-time and did-edit accounting, the accumulated participant list, and `buildSnapshot()`
+- `server/clerkAuth.js` — the one place a Clerk token becomes a user ID. Never refuses a socket
 - `collab-code-editor/prisma/schema.prisma` — the authority on the `dead_rooms` table's shape, and the only place it is described declaratively
-- `collab-code-editor/prisma/migrations/` — the applied SQL history, committed. One migration, `20260729084725_init_dead_rooms`, which replays from an empty database
+- `collab-code-editor/prisma/migrations/` — the applied SQL history, committed. Two migrations: `20260729084725_init_dead_rooms` and `20260729122125_dead_room_members` (which drops `owner_user_id` and its index), replaying from an empty database
 - `collab-code-editor/prisma.config.ts` — Prisma **CLI** config (migrate/generate/studio). Loads `.env.local` by hand and points migrations at `DIRECT_URL`
 - `collab-code-editor/app/lib/db.ts` — the one place the app learns about Postgres; server-only, never imported from a `"use client"` module
 - `server/db.js` — the sync server's whole database surface: one `pg` pool and one INSERT, no ORM
@@ -262,9 +264,9 @@ is never touched; only the rendered copy shifts, and only while the collision la
 
 ## Accounts (Clerk)
 
-Signing in is **optional and additive**: every guest path from v1 works untouched, and the
-only thing an account currently buys is that the identity record carries a `clerkUserId`
-(`tasks.md` 7.1). Nothing is persisted yet — that is 7.2/7.3.
+Signing in is **optional and additive**: every guest path from v1 works untouched. Since 7.3 an
+account also buys persistence — a room you worked in is snapshotted to `dead_rooms` when it
+dies (see "Dead-room snapshots"). Guests still store nothing at all.
 
 **It is `proxy.ts`, not `middleware.ts`.** Next 16 renamed the convention
 (`node_modules/next/dist/docs/01-app/03-api-reference/03-file-conventions/proxy.md`: *"the
@@ -286,11 +288,33 @@ to sessionStorage via `setActiveUser`, and stops there. The awareness payload in
 peer-controlled, so a broadcast account ID is a claim anyone can forge, and 7.3 keys saved
 room snapshots on an account. Sourcing that from awareness would let a passing guest write a
 room's code into a stranger's profile — the same class of hole as the CSS-colour injection
-`readPeers` guards, but the blast radius is another user's stored data. **7.3 must get the
-signed-in user from a verified Clerk token instead**, either via `await auth()` in a Next
-route handler that tells `server/` server-to-server, or `verifyToken` from `@clerk/backend`
-on the socket. Note `server/yjsConnection.js` already discards the query string
-(`req.url.slice(1).split("?")[0]`), so a `?token=` can be added without changing the doc name.
+`readPeers` guards, but the blast radius is another user's stored data.
+
+**7.3 resolved this with `verifyToken` from `@clerk/backend` on the socket.** The client appends
+`?token=` (built by `useClerkToken()` in `lib/clerkIdentity.ts`), and `server/clerkAuth.js`
+verifies it. `server/yjsConnection.js` already discarded the query string
+(`req.url.slice(1).split("?")[0]`), which is the same derivation `setupWSConnection` uses by
+default, so the doc name was unaffected. Two rules hold that design up:
+
+- **Verification never refuses the socket.** A bad, expired or missing token, an unset
+  `CLERK_SECRET_KEY`, and a Clerk outage all mean the same thing: no membership recorded, room
+  otherwise untouched. Gating the socket on Clerk would repeat, one layer down, the bug this
+  section already documents — a deep-linked room that could not be joined at all. A missing
+  token costs a profile entry; a missing socket costs the room.
+- **Verification starts only after the room gate passes**, so a probe loop against dead room
+  IDs cannot force a JWKS round trip per attempt. The WebSocket path is not covered by
+  `POST /rooms`' rate limiter.
+
+**Never log `req.url`.** Since 7.3 it carries a Clerk session token. Log `docName` instead, and
+log verification failures as `err.reason ?? err.message` — never the input.
+
+**A Clerk session token lives ~60s, and y-websocket freezes the URL at construction.**
+`params` are serialised into `this.url` once, in the constructor, but `setupWS` re-reads
+`provider.url` on every dial. So `useCollabRoom` rewrites `provider.url` with a fresh token on
+`status === "disconnected"`; without that, every reconnect after the first minute carries a
+dead token and that user's connected time silently stops accruing mid-session. The base is
+taken from `provider.url.split("?")[0]` rather than rebuilt from `WS_URL`, so it agrees with
+y-websocket's own construction (trailing-slash stripping included).
 
 **Signing in prefills the identity dialog; it does not replace it.** The Clerk session is a
 cookie (browser-wide) while `CollabUser` is sessionStorage (per-tab) — different scopes on
@@ -317,6 +341,25 @@ from a fresh browser profile still stops at `signIn.status === "needs_client_tru
 signing in from a new device"), which wants an emailed code — a `+clerk_test@example.com`
 address accepts the fixed code `424242` and sends no mail. Clerk's OTP control is a row of
 **unnamed** single-character inputs, so match it on `input[inputmode="numeric"]`, not a name.
+
+**Clerk loads on `localhost` and silently does not on `127.0.0.1`.** They are the same server
+but not the same origin, and the dev instance only allows the former. The failure has no error
+banner: `window.Clerk` exists with `loaded: false` forever, `useClerkIdentity()` stays
+`{ready: false}`, and the landing page simply renders without its Sign in / Sign up buttons —
+which reads as a broken page rather than a hostname problem. Always drive the app at
+`http://localhost:<port>`.
+
+**Clerk session tokens can be minted server-side, which makes the sync server testable without
+a browser at all.** `POST /v1/sessions` with `{user_id}` then
+`POST /v1/sessions/{id}/tokens` yields a real JWT that `verifyToken` accepts. That is how 7.3's
+membership rules were verified headlessly; the browser pass then only had to confirm the client
+actually sends one.
+
+**The identity dialog opens *before* the room exists.** "Create a new room" opens the dialog,
+and `createRoom()` only runs when it is submitted, so the navigation to `/room/<id>` comes after
+"Create & Enter" — not before. Its inputs carry **no `id` or `name`**; match them on
+`autocomplete="given-name"` / `"family-name"`. And Monaco renders spaces as non-breaking
+spaces, so assertions against editor text must normalise ` ` first.
 
 **Monaco's AMD loader broke Clerk, and this is why `app/lib/monacoLoader.ts` exists.**
 `@monaco-editor/react` defaults to fetching Monaco from a CDN with an AMD loader, which
@@ -361,6 +404,17 @@ still holds its old code, and memory is unbounded. `scheduleEviction()` owns tha
 instead, and re-checks `conns.size === 0` *when the timer fires* rather than trusting the
 cancel path — a reconnect landing inside the grace window must not lose its doc to a timer
 that was already queued.
+
+**`destroyRoom()` is the single destroy site, and therefore the only place a snapshot can be
+taken** (see "Dead-room snapshots" for what it writes and the ordering constraints that make it
+safe). Both the grace-expiry timer and the shutdown flush funnel through it. A fourth stage is
+now implicit in the diagram above: **shutdown**, which destroys every room in `docs` regardless
+of stage, because the process is about to take the registry with it.
+
+**An `Awareness` holds a 3s `setInterval` that is *not* `unref()`'d** (`awareness.cjs`,
+`floor(outdatedTimeout / 10)`). That is why the sync server never exits on its own, and why
+destroying every doc during shutdown is also what lets Node drain and exit naturally — which is
+preferable to `process.exit`, since that truncates pending stdout writes on Railway.
 
 **Connecting to a room is what creates it, so the gate has to be server-side.**
 `setupWSConnection` calls `map.setIfUndefined(docs, docName, …)`. A client-side check alone
@@ -488,6 +542,125 @@ and says nothing about memory. `noticeFor()` turns it into a plain sentence and
 `raise ValueError` comes back as `status: "RE", code: 1` — stderr and the exit code already
 say that, and an amber "Exited with error status 1" over the top is pure noise. Only
 `code === 137` (128 + SIGKILL) earns a notice.
+
+## Dead-room snapshots (task 7.3)
+
+When a room is destroyed, its final text is written **once** to `dead_rooms`, plus one
+`dead_room_members` row per person who earned a copy. `server/rooms.js`'s `destroyRoom()` is
+the single site; `server/roomState.js` decides what and for whom. Guest-only rooms — still the
+common case — write nothing at all, exactly as in v1.
+
+**Who a dead room belongs to.** Every verified signed-in participant who **stayed 60s**
+(`MEMBER_MIN_CONNECTED_MS`) **and actually edited the document**. There is no owner and no
+ownership transfer. The two halves do different jobs and neither is redundant: the timer stops
+a drive-by, and **the edit check is the only thing that stops a lurker**, since anyone who
+leaves a tab open passes 60s. `tasks.md` §6.1 originally said "connected while the document was
+non-empty" instead — that is unimplementable here, because `useCollabRoom` seeds `DEFAULT_CODE`
+on `sync`, so every room is non-empty milliseconds after the *first* client arrives and the
+clause filters nothing.
+
+**Yjs hands you the WebSocket as the transaction origin, and that is what makes "did they
+edit" cheap.** y-websocket's `messageListener` calls
+`syncProtocol.readSyncMessage(decoder, encoder, doc, conn)` — the 4th argument is the origin —
+so `doc.on("update", (_u, origin) => …)` identifies the sending socket, and a `conn -> userId`
+map turns it into attribution. Use `doc.on("update")` rather than a `Y.Text` observer: `Doc.destroy`
+calls `super.destroy()`, which removes the Doc's own observers, while a `Y.Text` handler
+survives destruction — and the origin is only available on the Doc event anyway.
+
+**Verification is asynchronous, so early edits arrive unattributed. This silently lost
+snapshots.** The first `verifyToken` of a process fetches Clerk's JWKS (~200ms measured; ~1ms
+once cached), while a client syncs and starts typing in ~50ms. Every edit in that window found
+no entry in `connUsers`, so `didEdit` stayed false and the user failed the threshold. It
+reproduced **consistently for the first signed-in user after every restart** and vanished for
+everyone afterwards, which makes it look like flakiness rather than a bug. `roomState.js`
+therefore keeps a `pendingEdits` set of sockets that edited before their token resolved, and
+`beginMemberSession` drains it. `forgetConn` clears it for *every* closing socket, verified or
+not, because a guest's entry would otherwise sit there for the room's whole life.
+
+**`doc.destroy()` synchronously re-fires the awareness `update` handler one last time.**
+`y-protocols` registers `doc.on('destroy', () => this.destroy())`, and `Awareness.destroy()`
+calls `setLocalState(null)` — which emits `update` — **before** `super.destroy()` drops
+listeners. Two consequences: every handler in `roomState.js` is **lookup-only** and bails on a
+missing room (a get-or-create there resurrects state for a room that was just destroyed, and
+nothing would ever delete it again), and `deleteRoomState()` runs **after** `doc.destroy()`,
+never before.
+
+**Awareness is already empty when a room dies, so `participants` must be accumulated.**
+y-websocket's `closeConn` calls `removeAwarenessStates()` for every socket that closes, so by
+eviction time `getStates()` returns nothing. There is no later moment at which "who was here"
+is recoverable. The accumulator dedupes on **`name|color`, never `clientID`** — a refresh
+inside the grace window mints a new `Y.Doc` and therefore a new clientID, so one person who
+refreshed twice would appear three times. It also walks only the `{added, updated}` clientIDs
+the event carries: awareness `update` fires on *every cursor move of every peer*, so a full
+`getStates()` rescan would re-walk the participants map on every keystroke in the room.
+
+**Two tabs are two collaborators but one member.** The client-side sessionStorage split (see
+"Identity storage is split on purpose") deliberately makes a second tab a separate
+collaborator with its own cursor and colour; server-side, both sockets verify to the same Clerk
+ID and reference-count into one member. Seeing two chips in the user bar and one
+`dead_room_members` row is correct, not a bug.
+
+**The member refcount has three ways to corrupt itself, and each loses data silently.**
+`sessionStartedAt` is set only on the 0→1 transition (otherwise a second tab opening at t=90s
+resets the clock); it uses `Math.min` because verification resolves *out of socket order* —
+the first connection pays the JWKS round trip and later ones hit the cache, so a socket opened
+at t=0 can register after one opened at t=100ms; and `endMemberSession` must run at most once
+per socket, guarded by an `ended` flag at the call site rather than `Math.max(0, …)`, which
+would hide a negative count while still stranding that user's time for the room's life.
+
+**Never read `connectedMs` directly — go through `elapsedMs(member, now)`.** At the SIGTERM
+flush every member is still connected, so `connectedMs` is missing the entire live session.
+Reading it raw fails every member on every deploy — precisely the case the flush exists for.
+
+**The shutdown flush destroys live rooms too, and that is the point.** Documents are in-memory
+only and the registry dies with the process, so at SIGTERM a live room *is* a dead room that
+has not noticed. Flushing only rooms already inside their grace window would save the rooms
+nobody was using and lose every room someone was working in, on every deploy. Shutdown closes
+sockets with **1012 (Service Restart), not 4404** — the client treats 4404 as permanent and
+stops retrying, which is exactly wrong for a redeploy — and `/health` answers 503 while
+draining so Railway stops routing.
+
+**`destroyRoom` must not be `async`, and nothing may be awaited before `docs.delete()`.** An
+await there leaves a window in which `roomExists()` still answers true, so a client can
+reconnect into a room whose snapshot is already committed — a live room whose `room_id` is
+burned by the `UNIQUE` constraint, meaning its real snapshot is later swallowed by
+`ON CONFLICT DO NOTHING`. That same synchronous `docs.delete()` is what makes the function
+idempotent against the eviction timer racing the flush.
+
+**Destruction is unconditional; snapshotting is best-effort.** An uncaught throw inside the
+eviction `setTimeout` is an uncaught exception that kills the process and every other live
+room. Snapshot building is wrapped in `try/catch`, and `doc.destroy()` + `deleteRoomState()`
+sit in a `finally`.
+
+**Two ways the snapshot text can silently poison the INSERT.** A **NUL byte** (`\u0000`) cannot be stored in a
+Postgres `text` or `jsonb` value at all — Monaco will not type one but a paste can carry it —
+so it is stripped. And truncation must go through `Buffer.subarray(...).toString("utf8")`,
+never a byte index into the JS string: a hand-rolled slice can cut a surrogate pair in half,
+`JSON.stringify` then emits a lone `"\ud83d"`, and Postgres rejects the whole statement with
+`unsupported Unicode escape sequence`. Node's decoder substitutes `U+FFFD` instead. Only
+reachable with emoji or CJK near the 256 KB cap — i.e. never by accident in testing.
+
+**`pool.query("BEGIN")` is not a transaction.** With `max: 3` the BEGIN, the INSERTs and the
+COMMIT can each land on a *different* pooled connection, so the inserts run outside the
+transaction and the COMMIT commits nothing. It fails silently, because the rows still appear.
+`saveDeadRoom` checks out a client with `pool.connect()`, and `client.release()` in a `finally`
+is mandatory — a leaked client out of a pool of three blocks the next two snapshots for
+`connectionTimeoutMillis` and then fails them.
+
+**Read `RETURNING id`, not `rowCount`.** With `ON CONFLICT DO NOTHING` a conflict yields an
+empty `rows` array, and the id is what the members insert needs anyway. On a conflict the
+members are deliberately **not** topped up: the first write is authoritative and a snapshot is
+never updated (§6.1).
+
+**`DB_CONNECT_TIMEOUT_MS` has to cover a Neon cold start, not just a TLS handshake.** The pool
+is always cold at SIGTERM (the process is idle between evictions, `idleTimeoutMillis` is 30s)
+and Neon autosuspends an idle branch. Measured ~750–900ms warm, but **over 5s against a
+suspended branch** — a 5s ceiling was observed failing outright with `Connection terminated due
+to connection timeout`. Hence 10s, under a 20s flush budget.
+
+**`jsonb` does not preserve object key order.** It normalises to shortest-key-first, so
+`{filename, content}` reads back as `{content, filename}`. Harmless, but any test comparing
+serialised JSON must compare structurally instead.
 
 ## Rate limiting and payload size
 
@@ -631,12 +804,20 @@ already on Next 16's built-in `serverExternalPackages` list.
 
 ### The sync server does not use Prisma
 
-`server/db.js` is a plain `pg` pool and one hand-written INSERT. The sync server writes one
-row per room in its entire life and never reads or updates one, so a second `schema.prisma`, a
-`prisma generate` step, and the query engine in the Railway image would all be overhead for a
-single statement. This is the same deliberate duplication as `rateLimit.js` / `rateLimit.ts`:
-**a column renamed in `schema.prisma` must be renamed in that INSERT by hand — nothing checks
-it.**
+`server/db.js` is a plain `pg` pool and two hand-written INSERTs in one transaction. The sync
+server writes one room's worth of rows in its entire life and never reads or updates one, so a
+second `schema.prisma`, a `prisma generate` step, and the query engine in the Railway image
+would all be overhead. This is the same deliberate duplication as `rateLimit.js` /
+`rateLimit.ts`: **a column renamed in `schema.prisma` must be renamed in those statements by
+hand — nothing checks it.** The only thing that catches a rename is running `saveDeadRoom()`
+for real and reading both tables back, which is why that acceptance check exists.
+
+**`server/roomState.js` is now the third instance of this cross-workspace duplication**, after
+`rateLimit.js`/`rateLimit.ts` and `CLOSE_ROOM_NOT_FOUND`. It carries its own copies of
+`sanitizeName` (from `app/lib/user.ts`) and `HEX_COLOR` (from `app/lib/awareness.ts`), because
+`participants` is peer-supplied data that will be rendered on `/profile` and the server has no
+way to import either. Keep the values in step by hand; the alternative — trusting awareness —
+is a hole, not a simplification.
 
 Two things there are load-bearing. `pool.on("error", …)` is mandatory, not defensive: an idle
 connection dropped by Neon's pooler emits an `error` event on the pool, and unhandled that is
@@ -683,17 +864,19 @@ that value as a *filename* and will try to open a file called `system`.
 
 ### Two deliberate departures from `tasks.md` §6
 
-- **`room_id` is `UNIQUE`, and there is an index on `(owner_user_id, died_at DESC)`.** The
-  first makes the database enforce "written once, never updated" instead of trusting the
-  writer; the second was meant to serve the `/profile` query. **The index and the column it
-  covers are both scheduled for removal in 7.3** — `tasks.md` §6.1 replaced creator-owns with
-  a `dead_room_members` join table, so the profile listing becomes a join and this index
-  serves nothing. It is described here because it is what is *currently in the database*, not
-  what the finished feature uses.
+- **`room_id` is `UNIQUE`.** This makes the database enforce "written once, never updated"
+  instead of trusting the writer, and it is what `ON CONFLICT (room_id) DO NOTHING` rests on.
+  7.2 also shipped an index on `(owner_user_id, died_at DESC)` for the `/profile` query;
+  **7.3's migration dropped both that index and the column**, because §6.1 replaced
+  creator-owns with `dead_room_members`. That table's composite primary key
+  `(user_id, dead_room_id)` — `user_id` leading, so one user's rows are contiguous — is now the
+  index the profile listing uses, and the listing is a join.
 - **`language` is nullable**, where §6 writes plain `text`. This is forced, not stylistic: the
   language dropdown is a per-user editing preference kept deliberately off the shared `Y.Doc`
   (see "Saving"), so **the server has no language to record** until §10.1 moves the selector to
-  room creation. `NOT NULL` would make the 7.3 snapshot unwritable before 10.1 lands.
+  room creation. It is written as `null` today, and the snapshot's single file is named
+  `main.txt` for the same reason — there is no room-wide language from which to derive an
+  extension.
 
 ## Environment variables
 
@@ -708,6 +891,10 @@ that value as a *filename* and will try to open a file called `system`.
 | `ROOM_RESERVATION_MS` | `server/.env` | How long a created-but-never-entered room stays claimable. Defaults to `300000`. |
 | `DATABASE_URL` | `collab-code-editor/.env.local` **and** `server/.env` | Neon's **pooled** connection string (host contains `-pooler`). Used at runtime by `app/lib/db.ts` and `server/db.js`. **Optional in `server/`** — unset, `db.js` opens no pool and `saveDeadRoom()` is a no-op, so the sync server boots and serves rooms exactly as in v1. |
 | `DIRECT_URL` | `collab-code-editor/.env.local` only | Neon's **unpooled** string, used by `prisma migrate` alone. Not interchangeable with `DATABASE_URL` — see "Persistence (Postgres)". The sync server has no counterpart because it never migrates. |
+| `CLERK_SECRET_KEY` | `collab-code-editor/.env.local` **and** `server/.env` | In the app, Clerk's usual server key. In `server/`, used *only* by `verifyToken` on the WebSocket. **Optional in `server/`** — unset, no token is verified, no room has members and nothing is written, so the guest flow never depends on auth infrastructure. Must be the **same Clerk instance** as the frontend's publishable key: a mismatched key fails every token with no visible symptom at all (rooms work; snapshots simply never appear), which is why `clerkAuth.js` warns once per process. |
+| `MEMBER_MIN_CONNECTED_MS` | `server/.env` | How long a signed-in participant must be connected before they can earn a `dead_room_members` row. Defaults to `60000`. Only half the threshold — see "Who a dead room belongs to". |
+| `SNAPSHOT_FLUSH_MS` | `server/.env` | Ceiling on how long a shutdown waits for in-flight snapshot writes. Defaults to `20000`. A ceiling, not a delay: a healthy shutdown takes about half a second. |
+| `DB_CONNECT_TIMEOUT_MS` | `server/.env` | Per-attempt Postgres connect timeout. Defaults to `10000`. Must stay **under** `SNAPSHOT_FLUSH_MS` and **over** a Neon cold start — see "Dead-room snapshots". |
 
 ## Production execution path
 
@@ -742,43 +929,32 @@ image is **amd64-only** (single-arch manifest) — ARM free tiers cannot host it
 
 ## Not built yet
 
-**Sections 7.1 (Clerk auth) and 7.2 (Postgres) are done** — see "Accounts (Clerk)" and
-"Persistence (Postgres)" above, which replace older notes here claiming neither existed. **What
-remains unticked:** 7.3 (the dead-room snapshot write), 7.4 (`/profile`), 7.5 (guardrails),
-and all of section 10 — no multi-file, no chat, no room passwords. Redis pub/sub for horizontal
-scaling is *not* a v2 item at all — section 8 puts it explicitly out of scope, so it stays
-deferred past v2.
+**Sections 7.1 (Clerk auth), 7.2 (Postgres) and 7.3 (the dead-room snapshot) are done** — see
+"Accounts (Clerk)", "Persistence (Postgres)" and "Dead-room snapshots" above, which replace
+older notes here claiming none of them existed. **What remains unticked:** 7.4 (`/profile`),
+7.5 (guardrails), and all of section 10 — no multi-file, no chat, no room passwords. Redis
+pub/sub for horizontal scaling is *not* a v2 item at all — section 8 puts it explicitly out of
+scope, so it stays deferred past v2.
 
-7.2 built the table and both connections; **nothing in the running app writes to it yet.** So
-an account still changes nothing that outlives the tab: `clerkUserId` reaches sessionStorage
-and no further, `dead_rooms` stays empty, and `saveDeadRoom()` in `server/db.js` has no caller
-— it has been exercised only by a standalone acceptance script, never by `rooms.js`. Do not add
-UI promising a signed-in user that a room will be saved to their profile until 7.3 actually
-writes the snapshot.
+`dead_rooms` is now written by `server/rooms.js`'s `destroyRoom()`, so a signed-in user's work
+does outlive the tab. **Nothing reads it yet** — that is 7.4. Until `/profile` exists there is
+no way for a user to see a snapshot, so do not add UI pointing at one.
 
-**7.3 has three inputs that do not exist yet**, and they are the real work in it — the columns
-are the easy part:
-- **The member set.** `tasks.md` §6.1 decides a dead room belongs to *every* verified
-  signed-in participant who met a contribution threshold — not to its creator, and not to
-  whoever left last. So the room object needs a set of verified Clerk user IDs (with first
-  connect times, to apply the threshold), where `server/rooms.js` today records nothing about
-  a room but a timer and a `crypto.randomUUID()`. The IDs must come from a **verified Clerk
-  token**, never from awareness — see "Accounts (Clerk)", where forging one means writing a
-  stranger's code into someone else's profile. There is deliberately **no owner and no
-  ownership transfer**: creator-owns leaves guest-created rooms with no owner at all, and
-  hands the snapshot to someone who left an hour before the person who wrote the code.
-- **`created_at`.** Nothing currently records when a room was created.
-- **`language`.** Per-user and off the shared doc, hence the nullable column.
+**7.5 is partly satisfied already, but do not tick it on that basis.** Its first two bullets —
+a dead room's `room_id` can never be reused, and `/room/<old-dead-id>` sends you home — have
+been true since v1 (see "Room lifetime") and were re-verified during 7.3, including with a
+valid Clerk token attached. Its third, rate-limiting DB writes, is not built: the write is
+bounded indirectly by room creation's 10/min/IP limit and by the fact that one room produces at
+most one row, but there is no limiter on the write itself.
 
-That decision costs a **second migration**: 7.2 already shipped `dead_rooms.owner_user_id` and
-its `(owner_user_id, died_at DESC)` index, and §6.1 replaces both with a `dead_room_members`
-join table keyed `(user_id, dead_room_id)`. The paragraph below describing that index as "the
-`/profile` query" was written before the rule changed and is true only of the shipped schema,
-not of the one 7.3 will build against.
+Two things 7.4 should know before it starts:
 
-Also note the eviction timer in `server/rooms.js` is `unref()`'d, so it never keeps the process
-alive: on a Railway SIGTERM a queued eviction simply never fires, and with it the snapshot.
-7.3 needs a shutdown flush or it will silently lose rooms on every deploy.
+- **The listing is a join, not a column filter.** `dead_room_members` joined to `dead_rooms`,
+  ordered by `died_at` — a room legitimately appears on several people's profiles. The
+  composite primary key `(user_id, dead_room_id)` is the index that serves it.
+- **`language` is null and every file is called `main.txt`.** Both are real values the profile
+  UI has to render around, not placeholders that will be backfilled — they only become
+  meaningful when §10.1 moves the language selector to room creation.
 
 **Documents are in-memory only — room state does not survive a WebSocket server restart**, and
 since a restart wipes the room registry too, every client still in a room gets its reconnect

@@ -124,9 +124,9 @@ dead_room_members            -- who can see this snapshot on /profile
 > Note: `code` (single string) from earlier drafts is replaced by `files` (an array) so multi-file rooms save cleanly. A single-file room is just a `files` array with one entry.
 
 > **`owner_user_id` and its `(owner_user_id, died_at DESC)` index are gone**, replaced by
-> `dead_room_members`. See Section 6.1 for why. 7.2 already migrated the old shape, so this
-> costs a **second migration** that drops the column and the index and creates the new table —
-> cheap now, painful once `/profile` reads the old shape.
+> `dead_room_members`. See Section 6.1 for why. 7.2 had already migrated the old shape, so this
+> cost a **second migration** — `20260729122125_dead_room_members`, applied to both Neon
+> branches during 7.3, while `dead_rooms` was still empty and nothing read it.
 
 > The `/profile` listing is `dead_room_members` joined to `dead_rooms`, ordered by `died_at`.
 > The composite primary key `(user_id, dead_room_id)` is the index that serves it — `user_id`
@@ -174,12 +174,25 @@ is the thing that would take extra work, not keeping it.
 
 **The contribution threshold, and the trade it exists to blunt.** Under this rule, a signed-in
 stranger who clicks a shared link, lurks for thirty seconds and leaves keeps a permanent
-private copy of the code. So a participant earns a `dead_room_members` row only if they were
-connected **while the document was non-empty** and for **more than a trivial moment** (the
-server already tracks connection times for the grace timer; a threshold on the order of the
-grace window is the natural choice). Section 10.3's room passwords carry the rest of the
-weight: a password-protected room is the "this is not public" signal, so an unprotected room
-being copyable by the people who worked in it is the expected behaviour.
+private copy of the code. So a participant earns a `dead_room_members` row only if they
+**stayed more than a trivial moment** *and* **actually edited the document** — 60s of
+accumulated connected time (`MEMBER_MIN_CONNECTED_MS`) plus at least one document update sent
+over one of their sockets. Section 10.3's room passwords carry the rest of the weight: a
+password-protected room is the "this is not public" signal, so an unprotected room being
+copyable by the people who worked in it is the expected behaviour.
+
+> **Both halves of this were rewritten during 7.3, against the original draft.**
+>
+> The draft said "connected **while the document was non-empty**". That cannot work:
+> `useCollabRoom` seeds `DEFAULT_CODE` on the provider's `sync` event, so a room is non-empty
+> within milliseconds of the *first* client connecting, and the clause filters nothing at all.
+> What it was reaching for is "did this person contribute", which is directly answerable —
+> y-websocket passes the WebSocket as the Yjs transaction origin, so the server knows which
+> socket sent each edit. **Edits alone are what exclude the lurker**; the timer does not, since
+> anyone who leaves a tab open passes it.
+>
+> The draft also suggested a threshold "on the order of the grace window" (10s), which
+> contradicts the scenario table below — 10s cannot make a 30s lurker get nothing. 60s does.
 
 **Deleting.** Because several accounts can hold one snapshot, "delete this from my profile"
 means deleting that user's `dead_room_members` row, not the `dead_rooms` row. (Not a v2
@@ -198,15 +211,18 @@ A creates the room, B joins later.
 | Both signed in, both leave together | Both see it. |
 | B joins as a guest, signs in mid-session | B sees it, provided the server verified them before the room died. |
 | Signed-in stranger lurks 30s and leaves | Nothing for them — blocked by the contribution threshold. |
+| Signed-in stranger leaves a tab open for an hour but never types | Nothing for them. The 60s timer alone would not catch this; the "actually edited" half does. |
 | Someone reloads the page | Nothing happens. A reload reconnects inside the grace window, so the room never died. |
 | Everyone leaves, someone returns 40s later | Room is gone; `/room/<id>` sends them home. The snapshot is on `/profile` instead, read-only. |
 | Room evicted twice (retry, restart) | Only the first write lands — `ON CONFLICT (room_id) DO NOTHING`, already built in 7.2. |
-| Server restarts / Railway redeploys mid-room | **Snapshot is lost** unless 7.3 adds a shutdown flush: the eviction timer in `server/rooms.js` is `unref()`'d, so it never fires on SIGTERM. Invisible locally, guaranteed in production. |
+| Server restarts / Railway redeploys mid-room | **Saved.** 7.3's shutdown flush destroys every remaining room — live ones included — and awaits the writes, because the `unref()`'d eviction timer would otherwise never fire on SIGTERM. |
 
 > **Corrected during 7.2, against the draft above.** `room_id` is `UNIQUE` so the database
 > enforces the write-once rule below rather than trusting the writer (it also backs 7.5's
-> "can never be reused"), and the index is what keeps 7.4's profile listing off a full table
-> scan. `language` is **nullable** because the language dropdown is a per-user editing
+> "can never be reused"). 7.2 also added a `(owner_user_id, died_at DESC)` index for 7.4's
+> listing; **7.3 dropped both that index and the column**, because §6.1 replaced creator-owns
+> with `dead_room_members`, whose composite primary key `(user_id, dead_room_id)` is now the
+> index that serves /profile. `language` is **nullable** because the language dropdown is a per-user editing
 > preference kept deliberately off the shared Yjs doc — the server has nothing to record until
 > §10.1 moves the selector to room creation, so `NOT NULL` would make 7.3 unbuildable before
 > then.
@@ -262,6 +278,7 @@ Shipped alongside 7.1, not originally listed here:
       — `prisma/migrations/20260729084725_init_dead_rooms/`. Verified applied: the table,
       the `room_id` UNIQUE index and the `(owner_user_id, died_at DESC)` index all exist,
       and `EXPLAIN` shows 7.4's profile query using that second index rather than scanning.
+      (**Superseded by 7.3**: the second migration dropped that column and index — see §6.)
 
 Shipped alongside 7.2, not originally listed here:
 
@@ -285,7 +302,8 @@ Shipped alongside 7.2, not originally listed here:
 - [x] `app/lib/db.ts` — the one place the app learns about Postgres, server-only, with the
       client cached on `globalThis` so Next's dev HMR does not open a new pool per edit.
 - [x] Schema hardening beyond §6's draft: `UNIQUE` on `room_id` and an index on
-      `(owner_user_id, died_at DESC)`. See the note in Section 6.
+      `(owner_user_id, died_at DESC)`. See the note in Section 6. (The index and column were
+      dropped again by 7.3's migration; the `room_id` UNIQUE survives and is load-bearing.)
 - [x] **The Neon database had to be reset before it could be migrated.** It already held a
       `Room` table (42 rows of `ydocState bytea`) and a `_prisma_migrations` row
       `20260706083131_init`, left over from an abandoned experiment that persisted live Yjs
@@ -315,35 +333,100 @@ Shipped alongside 7.2, not originally listed here:
 Implements Section 6.1. Read it first — the ownership rule is the design work here; the
 columns are the easy part.
 
-- [ ] **Verify a Clerk token on connect** and record the resulting user ID on the in-memory
-      room. Either `verifyToken` from `@clerk/backend` on the socket (note
-      `server/yjsConnection.js` already discards the query string, so a `?token=` needs no doc-name
-      change) or a server-to-server call from a Next route handler that did `await auth()`.
-      **Never take the ID from awareness or any client-supplied field** — CLAUDE.md,
-      "Accounts (Clerk)".
-- [ ] **Track a member set, not an owner**, on the room object: verified user ID → first
-      connect time. A room has no owner and needs no ownership transfer.
-- [ ] **Apply the contribution threshold** from 6.1 — a user earns membership only if they
-      were connected while the document was non-empty, for more than a trivial moment.
-- [ ] **Record `created_at`.** `reserveRoom()` currently stores only a `crypto.randomUUID()`
-      and a timer; nothing anywhere knows when a room was created.
-- [ ] On last-user-disconnect (same trigger point as v1's room cleanup), write **one**
+- [x] **Verify a Clerk token on connect** and record the resulting user ID on the in-memory
+      room. Chose `verifyToken` from `@clerk/backend` on the socket: the client sends
+      `?token=`, and `server/yjsConnection.js` already discarded the query string so the
+      doc-name derivation needed no change. **Never take the ID from awareness or any
+      client-supplied field** — CLAUDE.md, "Accounts (Clerk)". `server/clerkAuth.js` is the one
+      place a token becomes a user ID.
+- [x] **Track a member set, not an owner**, on the room object: verified user ID → connect
+      time, accumulated connected time, and whether they edited. `server/roomState.js`.
+      A room has no owner and needs no ownership transfer.
+- [x] **Apply the contribution threshold** from 6.1 — 60s of accumulated connected time **and**
+      at least one document update sent over one of that user's sockets. See the correction
+      below: the "document was non-empty" half of the original wording could not work.
+- [x] **Record `created_at`.** `reserveRoom()` now calls `createRoomState()`, which stamps it;
+      it is the only thing in the process that knows when a room was created.
+- [x] On last-user-disconnect (same trigger point as v1's room cleanup), write **one**
       `dead_rooms` row plus **one `dead_room_members` row per qualifying user**, in a single
       transaction. `language` stays null until 10.1 (see Section 6's note).
-- [ ] If the member set is empty (all guests, or nobody cleared the threshold): skip the DB
-      write entirely — behave exactly like v1.
-- [ ] **Cap the snapshot size.** `MAX_CODE_BYTES` guards only what is *sent to Piston*;
-      nothing bounds how large a room's `Y.Text` grows, and an unbounded jsonb write is the
-      one new resource risk this section adds.
-- [ ] **Flush on shutdown.** The eviction timer in `server/rooms.js` is `unref()`'d, so a
-      Railway SIGTERM means queued evictions never fire and their snapshots are silently lost
-      on every deploy. Invisible locally; guaranteed in production.
-- [ ] Destroy the in-memory Yjs doc exactly as v1 already does, regardless of whether a
-      snapshot was saved
-- [ ] **Second migration**: drop `dead_rooms.owner_user_id` and its
-      `(owner_user_id, died_at DESC)` index, create `dead_room_members`. Update
-      `server/db.js`'s hand-written INSERT to match — nothing in the build compares it to
-      `schema.prisma` (see 7.2's acceptance-test note).
+- [x] If the member set is empty (all guests, or nobody cleared the threshold): skip the DB
+      write entirely — behave exactly like v1. `buildSnapshot()` returns null *before* reading
+      the `Y.Text`, so the common guest case never materialises the document at all.
+- [x] **Cap the snapshot size.** 256 KB of UTF-8, truncated with a visible marker rather than
+      dropped — losing a large room silently is worse than keeping most of it.
+- [x] **Flush on shutdown.** `flushAndDestroyAll()` on SIGTERM/SIGINT destroys **every** room,
+      live ones included, and awaits the writes. A live room at SIGTERM *is* a dead room that
+      has not noticed: the registry dies with the process, so flushing only in-grace rooms
+      would save the rooms nobody was using and lose every room someone was working in.
+- [x] Destroy the in-memory Yjs doc exactly as v1 already does, regardless of whether a
+      snapshot was saved — snapshot building is wrapped in `try/catch` and the destroy is in a
+      `finally`, because an uncaught throw inside the eviction `setTimeout` would kill the
+      process and every other live room.
+- [x] **Second migration**: `20260729122125_dead_room_members` drops `dead_rooms.owner_user_id`
+      and its `(owner_user_id, died_at DESC)` index and creates `dead_room_members`.
+      `server/db.js`'s hand-written INSERT was updated to match — nothing in the build compares
+      it to `schema.prisma` (see 7.2's acceptance-test note), so it was re-verified by running
+      it and reading both tables back.
+
+**Corrected while building 7.3 — the checklist above was wrong twice:**
+
+- [x] **The contribution threshold's "document was non-empty" clause was unimplementable.**
+      `useCollabRoom` seeds `DEFAULT_CODE` on the provider's `sync` event, so every room is
+      non-empty within milliseconds of the *first* client connecting. The clause therefore
+      filtered nothing — and what it was filtering on was boilerplate nobody wrote. Replaced
+      with "actually edited", which is what it was reaching for and which is what genuinely
+      excludes the lurker: y-websocket passes the WebSocket as the Yjs transaction origin
+      (`readSyncMessage(decoder, encoder, doc, conn)`), so `doc.on("update")` identifies who
+      sent each edit. Section 6.1's prose was updated to match.
+- [x] **§6.1's threshold prose contradicted its own scenario table.** The prose suggested "on
+      the order of the grace window" (10s) while the table requires a 30s lurker to get
+      nothing. 60s (`MEMBER_MIN_CONNECTED_MS`) satisfies the table; the prose was rewritten.
+
+Shipped alongside 7.3, not originally listed here:
+
+- [x] **Verification never refuses a socket.** A bad, expired or missing token, an unset
+      `CLERK_SECRET_KEY` and a Clerk outage all mean the same thing: no membership recorded,
+      room otherwise untouched. CLAUDE.md already documents what gating on Clerk costs — a
+      deep-linked room that could not be joined at all — and gating the *socket* would be the
+      same bug one layer down. A missing token costs a profile entry; a missing socket costs
+      the room.
+- [x] **`CLERK_SECRET_KEY` is optional in `server/`**, exactly like `DATABASE_URL`: unset, no
+      token is verified, no room has members, nothing is written, and the guest flow — which
+      is the whole of v1 — runs without auth infrastructure it never touches.
+- [x] **A `pendingEdits` set, to close a race that silently lost snapshots.** Verification is
+      asynchronous and the first call of a process fetches Clerk's JWKS (~200ms measured),
+      while a client syncs and starts typing in ~50ms. Every edit in that window was
+      attributed to nobody, so the user failed the `didEdit` half of the threshold and lost
+      their snapshot. It reproduced consistently for the **first signed-in user after every
+      restart** and vanished for everyone after, because the JWKS cache then wins the race.
+- [x] **Shutdown closes sockets with 1012 (Service Restart), not 4404.** The client treats 4404
+      as permanent — it calls `provider.disconnect()` and shows the closed screen forever —
+      which is exactly wrong for a redeploy. Every other close code keeps y-websocket retrying.
+      No client change was needed.
+- [x] **`GET /health` answers 503 once shutting down**, so Railway stops routing to a draining
+      container (`railway.json` already points its healthcheck there).
+- [x] **The token is refreshed on reconnect.** y-websocket serialises `params` into
+      `this.url` **once, in its constructor**, but `setupWS` re-reads `provider.url` on every
+      dial. A Clerk session token lives ~60s, so without rewriting that url every reconnect
+      after the first minute would carry a dead token and the user's connected time would
+      silently stop accruing mid-session.
+- [x] **`participants` is populated**, accumulated from awareness over the room's life and
+      sanitized server-side. It cannot be read at eviction: y-websocket's `closeConn` strips
+      awareness state per socket, so a dying room's awareness is already empty.
+- [x] **`server/db.js`'s write is a real transaction.** `pool.query("BEGIN")` is *not* one —
+      with `max: 3` the BEGIN, the INSERTs and the COMMIT can land on three different pooled
+      connections, so the inserts run outside the transaction and the COMMIT commits nothing.
+      It fails silently, because the rows still appear.
+- [x] **End-to-end verification**, 40 assertions headless plus a real-browser pass: guest-only
+      rooms store nothing; a signed-in editor gets a row and a member row; a lurker is excluded
+      while the editor is still saved; a sub-threshold session is excluded; two tabs on one
+      account produce one member row; a refresh inside the grace window writes nothing and
+      keeps membership; a 300 KB document with emoji at the cut truncates without corrupting
+      jsonb; SIGTERM flushes a live room in ~500ms; both degraded configs still serve rooms;
+      and the 4404 path, the always-200 `GET /rooms/:id` and the no-socket `RoomGate` invariant
+      all still hold. The browser pass drove a real Clerk sign-in and confirmed the socket URL
+      carries a token and the resulting member row is the verified Clerk user ID.
 
 ### 7.4 Profile page
 - [ ] New route: `/profile`
