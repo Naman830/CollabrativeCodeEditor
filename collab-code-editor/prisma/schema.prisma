@@ -1,0 +1,68 @@
+// The one description of what outlives a room.
+//
+// v1 stored nothing at all. v2 relaxes that in exactly one place: when a room
+// dies, its final files are written *once* to `dead_rooms` — and only if at
+// least one participant was signed in. Fully-guest rooms still save nothing.
+// The row is never updated afterwards; a snapshot is read-only forever.
+//
+// This schema is the authority for the table's shape. `server/db.js` writes to
+// it with a hand-written INSERT rather than Prisma (the sync server runs one
+// statement in its whole life and deploys with no build step), so a column
+// renamed here must be renamed there too — the same deliberate duplication as
+// `server/rateLimit.js` / `app/lib/rateLimit.ts`.
+
+generator client {
+  // Prisma 7 renamed this generator: `prisma-client-js` is deprecated, and
+  // `output` is now required. The client is imported from that path, NOT from
+  // `@prisma/client` — see `app/lib/db.ts`.
+  provider = "prisma-client"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  // The URL deliberately does not live here. Prisma 7 takes it from
+  // `prisma.config.ts` for CLI/migration work, and `app/lib/db.ts` passes the
+  // pooled URL at runtime — the two are different connection strings on Neon.
+  provider = "postgresql"
+}
+
+/// One dead room. Written once by the sync server, read only by /profile.
+model DeadRoom {
+  id String @id @default(uuid()) @db.Uuid
+
+  /// The original ephemeral room ID. Unique because tasks.md §6 says a snapshot
+  /// is written once and never updated — this makes the database enforce that
+  /// rather than trusting the writer, and backs §7.5's "a dead room's ID can
+  /// never be reused".
+  roomId String @unique @map("room_id")
+
+  /// Clerk user ID. Must come from a verified token, never from awareness —
+  /// awareness is peer-controlled, so a forged ID here would write a stranger's
+  /// room into someone else's profile. See CLAUDE.md, "Accounts (Clerk)".
+  ownerUserId String @map("owner_user_id")
+
+  /// Array of { filename, content }. An array even for single-file rooms, so
+  /// §10.1's multi-file rooms need no migration.
+  files Json
+
+  /// Nullable, unlike tasks.md §6's plain `text`: the language dropdown is a
+  /// per-user editing preference kept deliberately off the shared Y.Doc, so the
+  /// server has nothing to record until §10.1 moves the selector to room
+  /// creation. NOT NULL would make the 7.3 snapshot unwritable before then.
+  language String?
+
+  /// Was the room password-protected (§10.3). Display only — the password
+  /// itself lives in the in-memory room object and is never stored.
+  isPrivate Boolean @default(false) @map("is_private")
+
+  /// Names/colours of everyone who was in the room. Optional per §6.
+  participants Json?
+
+  createdAt DateTime @map("created_at") @db.Timestamptz(3)
+  diedAt    DateTime @default(now()) @map("died_at") @db.Timestamptz(3)
+
+  /// The /profile query, exactly: this user's rooms, newest first. Without it
+  /// that page is a full table scan.
+  @@index([ownerUserId, diedAt(sort: Desc)])
+  @@map("dead_rooms")
+}

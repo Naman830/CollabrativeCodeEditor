@@ -42,6 +42,12 @@ yarn-error.log*
 /.clerk
 /clerk.lock
 
+# prisma — the generated client, rebuilt by `prisma generate`. It is committed
+# nowhere because it is regenerated on every install and every build (see the
+# `postinstall` and `build` scripts); checking it in only creates diff noise and
+# a copy that can drift from schema.prisma.
+/generated
+
 # vercel
 .vercel
 
