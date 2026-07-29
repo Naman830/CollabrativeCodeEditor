@@ -9,6 +9,7 @@ import ActivityToasts, { type ActivityToast } from "./ActivityToasts";
 import IdentityDialog from "./IdentityDialog";
 import UserBar from "./UserBar";
 import { readPeers, type Peer } from "../lib/awareness";
+import { useClerkIdentity } from "../lib/clerkIdentity";
 import { MAX_CODE_BYTES, TOO_LARGE_MESSAGE, codeByteLength } from "../lib/execution";
 import { LANGUAGES, downloadFileName } from "../lib/languages";
 import { WS_URL } from "../lib/rooms";
@@ -292,6 +293,11 @@ export default function CodeEditor({ roomId, onRoomClosed }: CodeEditorProps) {
   );
   const user = identity.status === "present" ? identity.user : null;
 
+  // Only consulted to prefill the join dialog below. It deliberately has no
+  // bearing on the Yjs effect: a tab that already has an identity connects
+  // without ever waiting on Clerk.
+  const clerk = useClerkIdentity();
+
   // Owns the whole Yjs lifecycle: doc, provider, awareness and binding are all
   // created and torn down here, so switching rooms (or React's StrictMode
   // remount) rebuilds the stack instead of destroying a doc nothing recreates.
@@ -372,6 +378,14 @@ export default function CodeEditor({ roomId, onRoomClosed }: CodeEditorProps) {
 
       // Publish this user as local presence. `name` is the short caret label;
       // the raw parts ride along for the user bar's initials.
+      //
+      // Fields are listed one by one and must never become `{...user}`:
+      // `CollabUser` now carries `clerkUserId`, and awareness is peer-controlled
+      // (see `lib/awareness.ts`), so a broadcast account ID is a claim any
+      // client can forge. Task 7.3 keys saved room snapshots on an account —
+      // sourcing that from awareness would let a passing guest write a room's
+      // code into a stranger's profile. The spread is a one-character change
+      // with no visible symptom, which is exactly why this comment is here.
       const { awareness } = provider;
       awareness.setLocalStateField("user", {
         name: displayName(user),
@@ -761,13 +775,30 @@ export default function CodeEditor({ roomId, onRoomClosed }: CodeEditorProps) {
 
       {/* Deep links and the landing page's Join button both arrive without an
           identity. No onCancel: there is nowhere to fall back to, and the room
-          stays disconnected until a name is entered. */}
+          stays disconnected until a name is entered.
+
+          The dialog must NEVER wait on Clerk. Gating it on `isLoaded` looks
+          right — the prefill is read in a lazy initializer that runs once — but
+          it makes joining a room depend on a third-party script: verified by
+          deep-linking into a room from a fresh browser profile, where the
+          prompt never appeared and the room could not be joined at all.
+          Instead the dialog renders immediately and the `key` remounts it once
+          if a signed-in session resolves later. A guest's key never changes, so
+          the common path never remounts and nothing typed is ever lost. */}
       {identity.status === "absent" && (
         <IdentityDialog
+          key={clerk.ready && clerk.signedIn ? "clerk" : "guest"}
           title="Join this room"
           description="Pick a name so everyone can tell your cursor apart."
           submitLabel="Join Room"
           onSubmit={setActiveUser}
+          clerkUserId={clerk.signedIn ? clerk.clerkUserId : undefined}
+          clerkPrefill={
+            clerk.signedIn
+              ? { firstName: clerk.firstName, lastName: clerk.lastName }
+              : null
+          }
+          signedInAs={clerk.signedIn ? clerk.label : undefined}
         />
       )}
     </div>

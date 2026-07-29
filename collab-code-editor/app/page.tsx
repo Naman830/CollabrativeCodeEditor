@@ -2,14 +2,22 @@
 
 import { useState, type SubmitEventHandler } from "react";
 import { useRouter } from "next/navigation";
+import { SignInButton, SignUpButton, UserButton } from "@clerk/nextjs";
 import IdentityDialog from "./components/IdentityDialog";
+import { useClerkIdentity } from "./lib/clerkIdentity";
 import { RoomCreateError, createRoom } from "./lib/rooms";
 import { setActiveUser, type CollabUser } from "./lib/user";
 
-const FEATURES = ["Live cursors", "Sandboxed runs", "No sign-up"];
+// "No sign-up" was true in v1 and stopped being true the moment Clerk landed.
+// Signing in is optional, not absent — which is the claim worth making.
+const FEATURES = ["Live cursors", "Sandboxed runs", "Sign-in optional"];
 
 export default function Home() {
   const router = useRouter();
+  // Clerk's `Show` control component is an async *server* component, so it
+  // cannot be used on this page — the whole landing page is "use client".
+  // Branching on the hook keeps one source of auth truth in the client tree.
+  const clerk = useClerkIdentity();
   const [roomId, setRoomId] = useState("");
   // The identity dialog for a new room is open. The ID isn't known until submit
   // — the server mints it, so an ID it never handed out can be refused later.
@@ -91,6 +99,41 @@ export default function Home() {
           </div>
         </div>
 
+        {/* Signing in is an offer, never a gate: the create and join flows below
+            work identically either way. The contents wait for Clerk to resolve
+            so the buttons don't flash at someone already signed in — but the
+            row keeps its height while waiting, or the card below jumps out from
+            under the pointer the moment Clerk lands. */}
+        <div className="mt-6 flex h-8 items-center justify-center gap-3">
+          {clerk.ready && (
+            clerk.signedIn ? (
+              <>
+                <UserButton />
+                <span className="text-xs text-zinc-500">Signed in as {clerk.label}</span>
+              </>
+            ) : (
+              <>
+                <SignInButton mode="modal">
+                  <button
+                    type="button"
+                    className="rounded-lg border border-edge bg-panel/60 px-3.5 py-1.5 text-xs font-medium text-zinc-200 transition-colors hover:border-zinc-600 hover:bg-raised"
+                  >
+                    Sign in
+                  </button>
+                </SignInButton>
+                <SignUpButton mode="modal">
+                  <button
+                    type="button"
+                    className="rounded-lg border border-edge bg-panel/60 px-3.5 py-1.5 text-xs font-medium text-zinc-200 transition-colors hover:border-zinc-600 hover:bg-raised"
+                  >
+                    Sign up
+                  </button>
+                </SignUpButton>
+              </>
+            )
+          )}
+        </div>
+
         <div className="mt-8 rounded-2xl border border-edge bg-panel/80 p-6 shadow-2xl shadow-black/40 backdrop-blur">
           <form onSubmit={handleJoin} className="flex flex-col gap-2">
             <label htmlFor="room-id" className="text-xs font-medium text-zinc-400">
@@ -126,6 +169,15 @@ export default function Home() {
             Create a new room
           </button>
 
+          {/* tasks.md 7.1 item 3: the guest path stays *visible*, not merely
+              implied by the buttons above happening to work. Static on purpose
+              — it is equally true signed in or out (the room identity is
+              per-tab either way), and a line that appeared a beat after Clerk
+              resolved would shift the card mid-click. */}
+          <p className="mt-4 text-center text-xs text-zinc-500">
+            Both work as a <span className="text-zinc-300">guest</span> — no account needed.
+          </p>
+
           {createError && (
             <p
               role="alert"
@@ -148,14 +200,27 @@ export default function Home() {
         </ul>
       </div>
 
+      {/* Never gated on Clerk — see the matching comment in `CodeEditor.tsx`.
+          The prefill is read in lazy useState initializers that run once, so
+          the `key` remounts the dialog if a signed-in session resolves after it
+          opened. A guest's key never changes, so the common path never
+          remounts and nothing typed is lost. */}
       {creating && (
         <IdentityDialog
+          key={clerk.ready && clerk.signedIn ? "clerk" : "guest"}
           title="Create a room"
           description="Pick a name so everyone can tell your cursor apart."
           submitLabel="Create & Enter"
           onSubmit={handleIdentitySubmit}
           onCancel={reserving ? undefined : () => setCreating(false)}
           busy={reserving}
+          clerkUserId={clerk.signedIn ? clerk.clerkUserId : undefined}
+          clerkPrefill={
+            clerk.signedIn
+              ? { firstName: clerk.firstName, lastName: clerk.lastName }
+              : null
+          }
+          signedInAs={clerk.signedIn ? clerk.label : undefined}
         />
       )}
     </main>

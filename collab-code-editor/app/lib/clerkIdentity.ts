@@ -29,6 +29,21 @@ export type ClerkIdentity =
       label: string;
     };
 
+/** The signed-in case on its own, for callers that only care about the prefill. */
+export type SignedInClerkUser = Extract<ClerkIdentity, { signedIn: true }>;
+
+/**
+ * Narrows to the signed-in case, or null for "guest, or Clerk hasn't answered".
+ *
+ * Collapsing those two into one null is deliberate: no caller may treat "not
+ * loaded yet" as a reason to withhold UI. Blocking the identity dialog on Clerk
+ * made a deep-linked room unjoinable when the script was slow — the prompt
+ * never rendered and there was no way in.
+ */
+export function signedInUser(identity: ClerkIdentity): SignedInClerkUser | null {
+  return identity.ready && identity.signedIn ? identity : null;
+}
+
 export function useClerkIdentity(): ClerkIdentity {
   const { isLoaded, isSignedIn, user } = useUser();
 

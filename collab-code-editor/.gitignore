@@ -34,9 +34,20 @@ yarn-error.log*
 .env*
 !.env.example
 
+# clerk — scratch files for "keyless" mode, which @clerk/nextjs falls back to in
+# development when no publishable key is set. It provisions a throwaway Clerk
+# instance and writes its credentials here; Clerk's own warning is "Avoid
+# committing the `.clerk/` directory as it includes the secret key of the
+# unclaimed instance."
+/.clerk
+/clerk.lock
+
 # vercel
 .vercel
 
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# clerk configuration (can include secrets)
+/.clerk/
