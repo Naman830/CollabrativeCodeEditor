@@ -1,12 +1,36 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
-import CodeEditor from "./CodeEditor";
 import { checkRoom } from "../lib/rooms";
+import { card, primaryButton, secondaryButton } from "../lib/ui";
+import { LockIcon, WifiOffIcon } from "./icons";
 
 // Long enough to read why you were bounced, short enough not to feel stuck.
 const REDIRECT_SECONDS = 3;
+
+// `ssr: false` for two reasons, one old and one new.
+//
+// Old: `CodeEditor` calls `configureMonacoLoader()` at module scope, which
+// imports `monaco-editor`, which touches `window` at import time. Server
+// rendering this route has therefore always thrown — `/room/<id>` answered HTTP
+// 500 on every request and the browser silently recovered. This turns a
+// 500-and-recover into an ordinary client-side chunk load, so the route finally
+// server-renders, and the root layout's no-flash theme script actually ships
+// with it.
+//
+// New: `useRoomLayout` restores the split from localStorage. With no server
+// render there is no first paint for a restored 30/70 to disagree with, so the
+// panels' inline flex-grow can never hydrate-mismatch.
+//
+// `ssr: false` is only legal in a Client Component, which this file is —
+// `room/[roomId]/page.tsx` is a Server Component and would error. Declared at
+// module scope so the reference is stable and never remounts the editor.
+const CodeEditor = dynamic(() => import("./CodeEditor"), {
+  ssr: false,
+  loading: () => <GateSpinner label="Loading the editor…" />,
+});
 
 type GateState = "checking" | "open" | "missing" | "unreachable";
 
@@ -14,22 +38,44 @@ type RoomGateProps = {
   roomId: string;
 };
 
+function GateSpinner({ label }: { label: string }) {
+  return (
+    <div className="relative flex h-full flex-col items-center justify-center gap-3">
+      <span className="h-7 w-7 animate-spin rounded-full border-2 border-edge border-t-accent" />
+      <p className="text-sm text-fg-muted">{label}</p>
+    </div>
+  );
+}
+
 function GateIcon({ children }: { children: React.ReactNode }) {
   return (
-    <span className="grid h-11 w-11 place-items-center rounded-xl border border-edge bg-raised text-zinc-400">
-      <svg
-        aria-hidden
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        className="h-5 w-5"
-      >
-        {children}
-      </svg>
+    <span className="grid h-11 w-11 place-items-center rounded-xl border border-edge bg-raised text-fg-muted">
+      {children}
     </span>
+  );
+}
+
+function GateCard({
+  icon,
+  title,
+  children,
+  actions,
+  footer,
+}: {
+  icon: React.ReactNode;
+  title: string;
+  children: React.ReactNode;
+  actions: React.ReactNode;
+  footer?: React.ReactNode;
+}) {
+  return (
+    <div className={`relative flex max-w-sm flex-col items-center gap-4 p-8 ${card}`}>
+      <GateIcon>{icon}</GateIcon>
+      <h1 className="text-xl font-semibold text-fg">{title}</h1>
+      <p className="text-sm text-fg-muted">{children}</p>
+      <div className="flex items-center gap-2">{actions}</div>
+      {footer}
+    </div>
   );
 }
 
@@ -90,71 +136,49 @@ export default function RoomGate({ roomId }: RoomGateProps) {
     return <CodeEditor roomId={roomId} onRoomClosed={handleRoomClosed} />;
   }
 
-  const primaryButton =
-    "rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white shadow-lg shadow-accent/20 transition-colors hover:bg-accent-strong";
-  const secondaryButton =
-    "rounded-lg border border-edge bg-raised px-4 py-2 text-sm font-medium text-zinc-200 transition-colors hover:border-zinc-600 hover:bg-[#2c2c2c]";
-
   return (
-    <div className="relative flex h-full flex-col items-center justify-center px-6 text-center text-zinc-300">
-      <div
-        aria-hidden
-        className="pointer-events-none absolute inset-0 bg-[radial-gradient(45rem_30rem_at_50%_0%,rgba(76,141,255,0.10),transparent_70%)]"
-      />
-
-      {state === "checking" && (
-        <div className="relative flex flex-col items-center gap-3">
-          <span className="h-7 w-7 animate-spin rounded-full border-2 border-edge border-t-accent" />
-          <p className="text-sm text-zinc-400">Checking room…</p>
-        </div>
-      )}
+    <div className="wash relative flex h-full flex-col items-center justify-center px-6 text-center text-fg-muted">
+      {state === "checking" && <GateSpinner label="Checking room…" />}
 
       {state === "missing" && (
-        <div className="relative flex max-w-sm flex-col items-center gap-4 rounded-2xl border border-edge bg-panel/80 p-8 shadow-2xl shadow-black/40 backdrop-blur">
-          <GateIcon>
-            <rect x="4" y="10" width="16" height="10" rx="2" />
-            <path d="M8 10V7a4 4 0 0 1 8 0v3" />
-          </GateIcon>
-          <h1 className="text-xl font-semibold text-zinc-50">This room has closed</h1>
-          <p className="text-sm text-zinc-400">
-            Rooms live only while someone is in them — this one disappeared when the last
-            person left. Create a new room to start again.
-          </p>
-          <button type="button" onClick={goHome} className={primaryButton}>
-            Back to home
-          </button>
-          <p className="text-xs text-zinc-500" aria-live="polite">
-            Redirecting in {secondsLeft}s…
-          </p>
-        </div>
+        <GateCard
+          icon={<LockIcon className="h-5 w-5" />}
+          title="This room has closed"
+          actions={
+            <button type="button" onClick={goHome} className={primaryButton}>
+              Back to home
+            </button>
+          }
+          footer={
+            <p className="text-xs text-fg-subtle" aria-live="polite">
+              Redirecting in {secondsLeft}s…
+            </p>
+          }
+        >
+          Rooms live only while someone is in them — this one disappeared when the last person
+          left. Create a new room to start again.
+        </GateCard>
       )}
 
       {/* Not the screen above: the room may be alive and simply unverifiable, so
           this offers a retry instead of sending someone away from it. */}
       {state === "unreachable" && (
-        <div className="relative flex max-w-sm flex-col items-center gap-4 rounded-2xl border border-edge bg-panel/80 p-8 shadow-2xl shadow-black/40 backdrop-blur">
-          <GateIcon>
-            <path d="M5 12.5a7 7 0 0 1 14 0" />
-            <path d="M8.5 15.5a3.5 3.5 0 0 1 7 0" />
-            <path d="M12 19h.01" />
-            <path d="m4 4 16 16" />
-          </GateIcon>
-          <h1 className="text-xl font-semibold text-zinc-50">
-            Couldn&apos;t reach the sync server
-          </h1>
-          <p className="text-sm text-zinc-400">
-            We can&apos;t tell whether this room is still open. Check your connection and try
-            again.
-          </p>
-          <div className="flex items-center gap-2">
-            <button type="button" onClick={retry} className={primaryButton}>
-              Retry
-            </button>
-            <button type="button" onClick={goHome} className={secondaryButton}>
-              Back to home
-            </button>
-          </div>
-        </div>
+        <GateCard
+          icon={<WifiOffIcon className="h-5 w-5" />}
+          title="Couldn't reach the sync server"
+          actions={
+            <>
+              <button type="button" onClick={retry} className={primaryButton}>
+                Retry
+              </button>
+              <button type="button" onClick={goHome} className={secondaryButton}>
+                Back to home
+              </button>
+            </>
+          }
+        >
+          We can&apos;t tell whether this room is still open. Check your connection and try again.
+        </GateCard>
       )}
     </div>
   );
