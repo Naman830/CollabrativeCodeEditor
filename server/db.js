@@ -11,8 +11,7 @@
 // the two workspaces share no code, so a column renamed in schema.prisma must
 // be renamed in the INSERT below. There is no build step that would catch it.
 //
-// Nothing here is called yet — task 7.3 wires it into the eviction path in
-// rooms.js. 7.2 only proves the connection works.
+// Called from the single destroy site in rooms.js (task 7.3).
 
 const { Pool } = require("pg");
 

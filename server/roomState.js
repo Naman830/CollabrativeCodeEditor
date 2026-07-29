@@ -1,0 +1,352 @@
+// What a room was, as opposed to whether it exists.
+//
+// `rooms.js` answers one question — does this room exist — and answered it with
+// nothing but two maps of timers. Task 7.3 needs four things it never recorded:
+// when the room was created, which *verified* Clerk users were in it, how long
+// each stayed, and whether they actually edited anything. That bookkeeping lives
+// here so `rooms.js` keeps its single, narrow job.
+//
+// ---------------------------------------------------------------------------
+// HARD RULE: every function here is lookup-only. Nothing may create room state
+// as a side effect of an observer.
+//
+// `doc.destroy()` synchronously re-fires the awareness `update` handler one last
+// time. y-protocols registers `doc.on('destroy', () => this.destroy())`, and
+// `Awareness.destroy()` is:
+//
+//     destroy () {
+//       this.emit('destroy', [this])
+//       this.setLocalState(null)   // <- emits 'update' with removed:[clientID]
+//       super.destroy()            // <- only NOW are our listeners dropped
+//       clearInterval(this._checkInterval)
+//     }
+//
+// So a get-or-create inside that handler would resurrect the entry for a room
+// that was just destroyed, and nothing would ever delete it again: one leaked
+// entry per dead room, forever. Handlers call `getRoomState()` and bail on null.
+// ---------------------------------------------------------------------------
+
+// tasks.md §6.1 asks for "more than a trivial moment". Its prose suggests the
+// grace window (10s), but its own scenario table says a signed-in stranger who
+// lurks 30s gets nothing — 10s cannot deliver that, so the table wins. Paired
+// with `didEdit` below, which is what actually kills the lurker case: 60s alone
+// is passed by anyone who leaves a tab open.
+const MEMBER_MIN_CONNECTED_MS = Number(process.env.MEMBER_MIN_CONNECTED_MS) || 60_000;
+
+// A snapshot is the one new unbounded write v2 adds: MAX_CODE_BYTES caps what is
+// *sent to Piston*, but nothing bounds how large a room's Y.Text grows. 256 KB is
+// 4x that cap, so no runnable program trips this.
+const MAX_SNAPSHOT_BYTES = 256 * 1024;
+const TRUNCATION_MARKER = "\n\n/* --- snapshot truncated: room exceeded 256 KB --- */\n";
+
+// Both are ceilings on peer-supplied data accumulated over a room's life, and a
+// room can live for hours.
+const MAX_MEMBERS = 200;
+const MAX_PARTICIPANTS = 50;
+
+// The third copy of these rules, after server/rateLimit.js mirroring
+// app/lib/rateLimit.ts and CLOSE_ROOM_NOT_FOUND living in two files. The two
+// workspaces share no code and this one has no build step, so importing
+// app/lib/user.ts and app/lib/awareness.ts is not an option — but the values must
+// stay in step by hand.
+const MAX_NAME_LENGTH = 24; // == app/lib/user.ts
+const HEX_COLOR = /^#[0-9a-f]{6}$/i; // == app/lib/awareness.ts
+const FALLBACK_COLOR = "#9e9e9e"; // == app/lib/awareness.ts
+
+/**
+ * roomId -> room state. Only `createRoomState` ever adds a key.
+ *
+ * @typedef {{
+ *   connectedMs: number,
+ *   openCount: number,
+ *   sessionStartedAt: number,
+ *   lastActiveAt: number,
+ *   didEdit: boolean,
+ * }} Member
+ *
+ * @type {Map<string, {
+ *   createdAt: number,
+ *   members: Map<string, Member>,
+ *   participants: Map<string, {name: string, color: string}>,
+ *   connUsers: Map<object, string>,
+ *   updateBound: boolean,
+ *   awarenessBound: boolean,
+ * }>}
+ */
+const states = new Map();
+
+/** Called from `reserveRoom` — this is the only thing that knows `created_at`. */
+function createRoomState(roomId) {
+  const existing = states.get(roomId);
+  if (existing) return existing;
+
+  const state = {
+    createdAt: Date.now(),
+    members: new Map(),
+    participants: new Map(),
+    // Socket -> verified user ID. Needed because Yjs hands us the *socket* as a
+    // transaction origin, which is how `didEdit` is attributed at all.
+    connUsers: new Map(),
+    updateBound: false,
+    awarenessBound: false,
+  };
+  states.set(roomId, state);
+  return state;
+}
+
+function getRoomState(roomId) {
+  return states.get(roomId) ?? null;
+}
+
+function deleteRoomState(roomId) {
+  states.delete(roomId);
+}
+
+/**
+ * Total time a member has been connected, including any session still open.
+ *
+ * The one accessor: never read `connectedMs` directly. At the SIGTERM flush every
+ * member is still connected, so `connectedMs` is missing the entire live session
+ * — reading it raw would fail every member on every deploy, which is exactly the
+ * case the shutdown flush exists to save.
+ */
+function elapsedMs(member, now) {
+  return member.connectedMs + (member.openCount > 0 ? now - member.sessionStartedAt : 0);
+}
+
+/**
+ * A verified user opened a socket on this room. Reference-counted: one user can
+ * hold several sockets (two tabs, or a reconnect overlapping its predecessor).
+ */
+function beginMemberSession(roomId, userId, at, conn) {
+  const state = getRoomState(roomId);
+  if (!state) return; // room already destroyed
+
+  let member = state.members.get(userId);
+  if (!member) {
+    if (state.members.size >= MAX_MEMBERS) return;
+    member = {
+      connectedMs: 0,
+      openCount: 0,
+      sessionStartedAt: at,
+      lastActiveAt: 0,
+      didEdit: false,
+    };
+    state.members.set(userId, member);
+  }
+
+  // Only on the 0 -> 1 transition, or a second tab opening at t=90s would reset
+  // the clock and the user would never reach the threshold while both stay open.
+  //
+  // Math.min because verification resolves out of socket order: the first
+  // connection of the process pays a JWKS round trip (~200-800ms) and later ones
+  // hit the cache, so a socket opened at t=0 can land here *after* one opened at
+  // t=100ms. Without the min, the earlier connect time is silently discarded.
+  member.sessionStartedAt =
+    member.openCount === 0 ? at : Math.min(member.sessionStartedAt, at);
+  member.openCount += 1;
+
+  if (conn) state.connUsers.set(conn, userId);
+}
+
+/**
+ * One of that user's sockets closed. Callers must guarantee this runs at most
+ * once per socket — see the `ended` flag in yjsConnection.js. A double decrement
+ * strands `openCount` below zero, the `=== 0` branch never fires again, and that
+ * user's time stops accruing for the rest of the room's life.
+ */
+function endMemberSession(roomId, userId, at, conn) {
+  const state = getRoomState(roomId);
+  if (!state) return;
+
+  if (conn) state.connUsers.delete(conn);
+
+  const member = state.members.get(userId);
+  if (!member || member.openCount === 0) return;
+
+  member.openCount -= 1;
+  if (member.openCount === 0) {
+    member.connectedMs += at - member.sessionStartedAt;
+    member.lastActiveAt = at;
+  }
+}
+
+/** Names end up rendered on /profile, so they get the same treatment as any peer name. */
+function sanitizeName(raw) {
+  if (typeof raw !== "string") return "";
+  return raw
+    .replace(/[\u0000-\u001F\u007F]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, MAX_NAME_LENGTH);
+}
+
+/**
+ * Binds the two per-room observers. Idempotent — called on every connection, but
+ * each handler is registered once per room.
+ *
+ * Both handlers are lookup-only. See the HARD RULE at the top of this file.
+ */
+function bindRoomObservers(roomId, doc) {
+  const state = getRoomState(roomId);
+  if (!state || !doc) return;
+
+  if (!state.awarenessBound) {
+    state.awarenessBound = true;
+
+    // Participants have to be *accumulated*, not read at eviction: y-websocket's
+    // `closeConn` calls `removeAwarenessStates()` for every socket that closes,
+    // so by the time a room is destroyed its awareness is empty. There is no
+    // later moment at which "who was here" can be recovered.
+    doc.awareness.on("update", ({ added, updated }) => {
+      const current = getRoomState(roomId);
+      if (!current || current.participants.size >= MAX_PARTICIPANTS) return;
+
+      // This fires on every cursor move of every peer — Monaco emits one per
+      // caret change. Walk only the clientIDs the payload says changed; a full
+      // `getStates()` rescan would re-walk the participants map on every
+      // keystroke of every user in the room.
+      const stateMap = doc.awareness.getStates();
+      for (const clientID of added.concat(updated)) {
+        const user = stateMap.get(clientID)?.user;
+        if (!user || typeof user !== "object") continue;
+
+        const first = sanitizeName(user.firstName);
+        const last = sanitizeName(user.lastName);
+        const name = sanitizeName(user.name) || [first, last].filter(Boolean).join(" ");
+        if (!name) continue;
+
+        // Untrusted: a peer sets its own colour, and one that fails HEX_COLOR
+        // would reach an inline style on /profile. Same guard as readPeers.
+        const color =
+          typeof user.color === "string" && HEX_COLOR.test(user.color)
+            ? user.color
+            : FALLBACK_COLOR;
+
+        // Keyed on name|color, never clientID: a refresh inside the grace window
+        // mints a fresh Y.Doc and therefore a fresh clientID, so one person who
+        // refreshed twice would otherwise appear three times.
+        const key = `${name.toLowerCase()}|${color.toLowerCase()}`;
+        if (current.participants.has(key)) continue;
+        if (current.participants.size >= MAX_PARTICIPANTS) break;
+        current.participants.set(key, { name, color });
+      }
+    });
+  }
+
+  if (!state.updateBound) {
+    state.updateBound = true;
+
+    // The contribution threshold's second half. y-websocket's `messageListener`
+    // calls `readSyncMessage(decoder, encoder, doc, conn)` — the 4th argument is
+    // the transaction origin — so Yjs hands us the exact socket that sent each
+    // edit. That is what makes "did this person actually write anything" cost ten
+    // lines instead of a new protocol message.
+    //
+    // Deliberately `doc.on("update")` rather than a Y.Text observer: `Doc.destroy`
+    // calls `super.destroy()`, which clears the Doc's own observers, whereas a
+    // Y.Text handler survives destruction. The origin is only available here
+    // anyway.
+    doc.on("update", (_update, origin) => {
+      const current = getRoomState(roomId);
+      if (!current) return;
+      const userId = current.connUsers.get(origin);
+      if (!userId) return;
+      const member = current.members.get(userId);
+      if (member) member.didEdit = true;
+    });
+  }
+}
+
+/** Clerk user IDs that earned a `dead_room_members` row (tasks.md §6.1). */
+function qualifyingMembers(state, now) {
+  const userIds = [];
+  state.members.forEach((member, userId) => {
+    if (elapsedMs(member, now) >= MEMBER_MIN_CONNECTED_MS && member.didEdit) {
+      userIds.push(userId);
+    }
+  });
+  return userIds;
+}
+
+/**
+ * The room's text, capped.
+ *
+ * Two silent corruptions live in this function, and both only reproduce on
+ * documents nobody writes by hand:
+ *
+ *  - NUL cannot be stored in a Postgres `text` or `jsonb` value at all. Monaco
+ *    will not type one, but a paste can carry it and Y.Text stores it happily.
+ *  - The cut must go through Buffer, not a byte index into the JS string. A
+ *    hand-rolled slice can cut a surrogate pair in half; JSON.stringify then
+ *    emits a lone "\ud83d" and Postgres rejects the whole INSERT with
+ *    "unsupported Unicode escape sequence", losing the snapshot. Node's decoder
+ *    substitutes U+FFFD instead. Only reachable with emoji or CJK near the cap.
+ */
+function snapshotText(yText) {
+  const raw = yText.toString().replace(/\u0000/g, "");
+  const buf = Buffer.from(raw, "utf8");
+  if (buf.byteLength <= MAX_SNAPSHOT_BYTES) return raw;
+
+  const room = MAX_SNAPSHOT_BYTES - Buffer.byteLength(TRUNCATION_MARKER, "utf8");
+  return buf.subarray(0, room).toString("utf8") + TRUNCATION_MARKER;
+}
+
+/**
+ * Builds the dead-room snapshot, or returns null when there is nothing to write.
+ *
+ * Ordering is deliberate: the overwhelmingly common case is a fully-guest room,
+ * where §6.1 says nothing is written at all. Deciding that *before* calling
+ * `toString()` on the Y.Text means the normal path never materialises the
+ * document at all.
+ *
+ * @returns {null | {
+ *   roomId: string,
+ *   userIds: string[],
+ *   files: Array<{filename: string, content: string}>,
+ *   language: null,
+ *   isPrivate: boolean,
+ *   participants: Array<{name: string, color: string}> | null,
+ *   createdAt: Date,
+ * }}
+ */
+function buildSnapshot(roomId, doc, now) {
+  const state = getRoomState(roomId);
+  if (!state) return null;
+
+  const userIds = qualifyingMembers(state, now);
+  if (userIds.length === 0) return null;
+
+  return {
+    roomId,
+    userIds,
+    files: [
+      {
+        // A placeholder until §10.1 moves the language selector to room creation.
+        // The extension cannot be derived today: the dropdown is a per-user
+        // editing preference kept deliberately off the shared Y.Doc, so two peers
+        // in one room can legitimately be on different languages and the server
+        // has no single answer. Same reason `language` below is null.
+        filename: "main.txt",
+        content: snapshotText(doc.getText("monaco")),
+      },
+    ],
+    language: null,
+    isPrivate: false, // until §10.3 adds room passwords
+    participants: state.participants.size > 0 ? [...state.participants.values()] : null,
+    // `created_at` is NOT NULL in the migration, so no path may pass null here.
+    createdAt: new Date(state.createdAt ?? now),
+  };
+}
+
+module.exports = {
+  MEMBER_MIN_CONNECTED_MS,
+  MAX_SNAPSHOT_BYTES,
+  createRoomState,
+  getRoomState,
+  deleteRoomState,
+  beginMemberSession,
+  endMemberSession,
+  bindRoomObservers,
+  buildSnapshot,
+};
