@@ -9,6 +9,7 @@
     "start": "node index.js"
   },
   "dependencies": {
+    "@clerk/backend": "^3.13.2",
     "dotenv": "^16.4.5",
     "pg": "^8.22.0",
     "ws": "^8.18.0",

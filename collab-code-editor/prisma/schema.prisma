@@ -36,11 +36,6 @@ model DeadRoom {
   /// never be reused".
   roomId String @unique @map("room_id")
 
-  /// Clerk user ID. Must come from a verified token, never from awareness —
-  /// awareness is peer-controlled, so a forged ID here would write a stranger's
-  /// room into someone else's profile. See CLAUDE.md, "Accounts (Clerk)".
-  ownerUserId String @map("owner_user_id")
-
   /// Array of { filename, content }. An array even for single-file rooms, so
   /// §10.1's multi-file rooms need no migration.
   files Json
@@ -61,8 +56,33 @@ model DeadRoom {
   createdAt DateTime @map("created_at") @db.Timestamptz(3)
   diedAt    DateTime @default(now()) @map("died_at") @db.Timestamptz(3)
 
-  /// The /profile query, exactly: this user's rooms, newest first. Without it
-  /// that page is a full table scan.
-  @@index([ownerUserId, diedAt(sort: Desc)])
+  /// Who may see this snapshot on /profile. A room legitimately belongs to
+  /// several people — see tasks.md §6.1.
+  members DeadRoomMember[]
+
   @@map("dead_rooms")
+}
+
+/// One person's claim on one dead room. There is deliberately no owner and no
+/// ownership transfer: tasks.md §6.1 gives a copy to *every* verified signed-in
+/// participant who met the contribution threshold, because creator-owns leaves
+/// guest-created rooms ownerless and hands the snapshot to whoever happened to
+/// arrive first rather than to whoever wrote the code.
+///
+/// `user_id` is a Clerk user ID that the *sync server* verified against a Clerk
+/// token. It must never come from awareness: awareness is peer-controlled, so a
+/// forged ID here would write a stranger's code into someone else's profile.
+/// See CLAUDE.md, "Accounts (Clerk)".
+model DeadRoomMember {
+  deadRoomId String @map("dead_room_id") @db.Uuid
+  userId     String @map("user_id")
+
+  deadRoom DeadRoom @relation(fields: [deadRoomId], references: [id], onDelete: Cascade)
+
+  /// `user_id` leads on purpose: this composite primary key *is* the index that
+  /// serves /profile, so one user's rows are contiguous and the listing needs no
+  /// second index. Deleting a room from your profile is deleting this row, never
+  /// the DeadRoom — several accounts can hold the same snapshot.
+  @@id([userId, deadRoomId])
+  @@map("dead_room_members")
 }
