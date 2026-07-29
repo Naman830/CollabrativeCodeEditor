@@ -6,7 +6,8 @@
 // `useClerkIdentity` and never touches `useUser` directly, so the shape Clerk
 // hands us is normalised exactly once.
 
-import { useUser } from "@clerk/nextjs";
+import { useAuth, useUser } from "@clerk/nextjs";
+import { useCallback } from "react";
 import { sanitizeName } from "./user";
 
 export type ClerkIdentity =
@@ -42,6 +43,46 @@ export type SignedInClerkUser = Extract<ClerkIdentity, { signedIn: true }>;
  */
 export function signedInUser(identity: ClerkIdentity): SignedInClerkUser | null {
   return identity.ready && identity.signedIn ? identity : null;
+}
+
+/**
+ * How long a caller may wait for Clerk to produce a token before giving up.
+ *
+ * There is always a "no token" answer, so nothing this gates can fail — see
+ * `useClerkToken` below.
+ */
+const TOKEN_TIMEOUT_MS = 2000;
+
+/**
+ * Returns a stable getter for the current Clerk session token, or null.
+ *
+ * This is the sanctioned way for the sync server to learn who is signed in.
+ * `clerkUserId` deliberately never enters awareness (see `hooks/useCollabRoom.ts`)
+ * because awareness is peer-controlled and an account ID broadcast there is a
+ * claim anyone can forge — and task 7.3 keys saved room snapshots on an account,
+ * so a forged one would write a room's code into a stranger's profile. A token
+ * the server verifies is the only trustworthy channel.
+ *
+ * **It never rejects and never hangs.** A guest, a signed-in user whose Clerk
+ * script has not loaded, a network failure and a slow response all resolve to
+ * null within {@link TOKEN_TIMEOUT_MS}. That matters because the caller opens the
+ * WebSocket: this file already learned once — see `signedInUser` above — that
+ * gating UI on Clerk resolving left a deep-linked room unjoinable, and gating the
+ * *socket* on it would be the same bug one layer down.
+ */
+export function useClerkToken(): () => Promise<string | null> {
+  const { getToken } = useAuth();
+
+  return useCallback(async () => {
+    try {
+      return await Promise.race([
+        getToken(),
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), TOKEN_TIMEOUT_MS)),
+      ]);
+    } catch {
+      return null;
+    }
+  }, [getToken]);
 }
 
 export function useClerkIdentity(): ClerkIdentity {

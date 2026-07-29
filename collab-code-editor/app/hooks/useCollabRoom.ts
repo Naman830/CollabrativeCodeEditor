@@ -13,6 +13,7 @@ import type { MonacoBinding } from "y-monaco";
 import type { WebsocketProvider } from "y-websocket";
 import type { ActivityToast } from "../components/ActivityToasts";
 import { readPeers, type Peer } from "../lib/awareness";
+import { useClerkToken } from "../lib/clerkIdentity";
 import { removeAwarenessStyles, renderAwarenessStyles } from "../lib/cursorStyles";
 import {
   EXECUTION_KEY,
@@ -90,6 +91,16 @@ export function useCollabRoom({
     onRoomClosedRef.current = onRoomClosed;
   });
 
+  // Also a ref, for a stronger reason than convenience: a Clerk session token
+  // lives about 60 seconds, so anything derived from it changes constantly. In
+  // the effect's dependency array that would tear down and rebuild the entire
+  // Yjs stack — doc, provider, awareness, binding, toasts — every single minute.
+  const getToken = useClerkToken();
+  const getTokenRef = useRef(getToken);
+  useEffect(() => {
+    getTokenRef.current = getToken;
+  });
+
   // Owns the whole Yjs lifecycle: doc, provider, awareness and binding are all
   // created and torn down here, so switching rooms (or React's StrictMode
   // remount) rebuilds the stack instead of destroying a doc nothing recreates.
@@ -150,12 +161,49 @@ export function useCollabRoom({
       ]);
       if (cancelled) return;
 
+      // The sync server records who was in a room from a Clerk token it verifies
+      // itself (task 7.3) — never from awareness, which any peer can forge. This
+      // is the only channel that carries an account ID to the server.
+      //
+      // `useClerkToken` never rejects and never hangs: a guest, an unloaded Clerk
+      // and a network failure all resolve to null within two seconds. That
+      // property is load-bearing, not defensive — holding the socket open on
+      // Clerk would repeat the bug documented in `lib/clerkIdentity.ts`, where
+      // gating on Clerk left a deep-linked room with no way in at all. A missing
+      // token costs a profile entry; a missing socket costs the whole room.
+      const token = await getTokenRef.current();
+      if (cancelled) return;
+
       // `disableBc` turns off y-websocket's cross-tab BroadcastChannel. Two tabs
       // are meant to be two collaborators, and BC resurrects a closed tab in its
       // siblings' awareness — the user bar would then never drop anyone.
-      provider = new WebsocketProvider(WS_URL, roomId, yDoc, { disableBc: true });
+      provider = new WebsocketProvider(WS_URL, roomId, yDoc, {
+        disableBc: true,
+        params: token ? { token } : {},
+      });
+
+      // y-websocket serialises `params` into `this.url` exactly once, in its
+      // constructor — but `setupWS` re-reads `provider.url` on every dial. Since
+      // a Clerk token expires in about a minute, every reconnect after the first
+      // would otherwise carry a dead token, the server would record nothing, and
+      // that user's connected time would silently stop accruing mid-session.
+      //
+      // Taking the base from `provider.url` rather than rebuilding it from
+      // WS_URL guarantees this agrees with y-websocket's own URL construction
+      // (trailing-slash stripping included).
+      const baseUrl = provider.url.split("?")[0];
+      const tokenProvider = provider;
       provider.on("status", ({ status }: { status: SyncStatus }) => {
         setSyncStatus(status);
+        if (status !== "disconnected") return;
+        // Refresh ahead of the next backoff dial. Failure is fine: the URL just
+        // keeps whatever it had, and the socket still reconnects.
+        void getTokenRef.current().then((fresh) => {
+          if (cancelled) return;
+          tokenProvider.url = fresh
+            ? `${baseUrl}?token=${encodeURIComponent(fresh)}`
+            : baseUrl;
+        });
       });
 
       // A room can die during a session, and the reconnect is then refused with
