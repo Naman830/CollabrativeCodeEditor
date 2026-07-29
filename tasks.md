@@ -429,15 +429,101 @@ Shipped alongside 7.3, not originally listed here:
       carries a token and the resulting member row is the verified Clerk user ID.
 
 ### 7.4 Profile page
-- [ ] New route: `/profile`
-- [ ] Protected — only accessible to logged-in users
-- [ ] List every `dead_rooms` row the current user has a `dead_room_members` row for,
+- [x] New route: `/profile` — `app/profile/page.tsx`, an async Server Component. Plus
+      `app/profile/[deadRoomId]/page.tsx` for one snapshot, with its own `not-found.tsx`
+      and a shared `error.tsx`.
+- [x] Protected — only accessible to logged-in users. `await auth()` **in the page**, not in
+      `proxy.ts`: `clerkMiddleware()` stays callback-free so the guest flow keeps reaching
+      `/`, `/room/*` and `/api/execute`, and Clerk deprecates `createRouteMatcher` in favour
+      of exactly this. A signed-out visitor gets an in-page gate with a `SignInButton`, not a
+      redirect — see the correction below.
+- [x] List every `dead_rooms` row the current user has a `dead_room_members` row for,
       newest `died_at` first (Section 6.1 — a room can legitimately appear on more than one
-      person's profile)
-- [ ] Show room name/date/language for each
-- [ ] Clicking a room opens a **read-only** code view
-- [ ] Add a "Copy code" button
-- [ ] Explicitly disable/hide any "Run" or "Rejoin" button on dead rooms — make it visually clear the room is closed
+      person's profile). It is a join from `dead_room_members`, never a filter on
+      `dead_rooms`; see the security note below.
+- [x] Show room name/date/language for each — **as far as the schema allows**. See the
+      correction below: there is no room name, and `language` is null on every row.
+- [x] Clicking a room opens a **read-only** code view — a static `<pre>` with a sticky
+      line-number gutter, not a read-only Monaco. See the correction below.
+- [x] Add a "Copy code" button — `app/components/SnapshotActions.tsx`, reusing
+      `hooks/useCopyToClipboard.ts` and the copied-tick + `aria-live` pattern from
+      `EditorToolbar`'s room-ID chip.
+- [x] Explicitly disable/hide any "Run" or "Rejoin" button on dead rooms — make it visually
+      clear the room is closed. Both are rendered **disabled**, not hidden: a control that is
+      visibly off with a reason in its `title` says "this room is dead", where an absent one
+      is indistinguishable from a feature nobody built. Reinforced by a "Closed room ·
+      read-only snapshot" badge and a padlock on every card.
+
+**Corrected while building 7.4 — three of the bullets above could not be built as written:**
+
+- [x] **There is no room name to show.** `dead_rooms` has no name column and never had one:
+      a room is minted by `POST /rooms` as a bare UUID and nobody ever titles it. The
+      original `room_id` is therefore the name, rendered in mono so it is recognisable
+      against a link someone still has open. Naming rooms is not a v2 item; if it becomes
+      one, §10 is where it belongs.
+- [x] **`language` is null on 100% of rows, so the listing says "not recorded".** Not a
+      placeholder to backfill — the language dropdown is a per-user editing preference kept
+      deliberately off the shared `Y.Doc`, so the server has no single answer until §10.1
+      moves the selector to room creation. `is_private` is likewise `false` on every row
+      until §10.3, and is not rendered at all rather than shown as a meaningless "public".
+- [x] **The read-only view is a `<pre>`, not a read-only Monaco.** Three reasons, in order:
+      an editor is the one widget on this site that means "you can type here", which is the
+      opposite of what the last bullet above asks for; there is nothing to highlight while
+      `language` is null, so Monaco would load ~5 MB to render plaintext; and
+      `lib/monacoLoader.ts` imports `monaco-editor` at module scope, which is why
+      `/room/[roomId]` returns HTTP 500 from the server on every request — keeping it out of
+      this route's import graph is what lets `/profile` actually server-render. Verified:
+      `/profile` answers 200 where `/room/<id>` answers 500.
+
+Shipped alongside 7.4, not originally listed here:
+
+- [x] **`app/lib/deadRooms.ts` — the read boundary, with one hard rule: a `DeadRoom` is never
+      fetched by its id.** Both queries start from `deadRoomMember` keyed on the *viewer's*
+      Clerk user ID and reach the room through the relation, so a snapshot the viewer holds
+      no membership row for is not "hidden by a filter we remembered to add" — it is
+      unfetchable. §6.1 puts one room on several profiles, so there is no ownership column
+      that could do this job instead. The detail lookup is `findUnique` on the composite
+      primary key `(user_id, dead_room_id)`, which makes the authorization check and the
+      index lookup the same query.
+- [x] **`readSnapshotFiles()` narrows the `files` column**, the same way `lib/awareness.ts`'s
+      `readPeers` narrows peer state. Prisma types `files` as `JsonValue` and guarantees
+      nothing; filenames are additionally reduced to a safe basename because one is handed to
+      an `<a download>`.
+- [x] **The detail URL carries `dead_rooms.id`, not `room_id`** — it makes the membership key
+      and the URL the same value, and a `/profile/<id>` sharing its id with a live
+      `/room/<id>` would invite exactly the confusion the page exists to prevent. A malformed
+      UUID is rejected by a regex *before* the query, because `id` is a Postgres `uuid` and
+      would otherwise 500 on `invalid input syntax for type uuid`.
+- [x] **"No such saved room" is one answer for two causes** — no such row, and not yours — so
+      the URL cannot be used to probe which snapshot ids exist.
+- [x] **A "My rooms" link on the landing page**, shown next to `<UserButton>` when signed in.
+      Without it `/profile` is reachable only by typing the URL.
+- [x] **A Download button** beside Copy, reusing `lib/download.ts`. It is the same promise v1
+      made about Save — "saving a file means downloading it to your device" — and is neither
+      a Run nor a Rejoin, so it fits §8's read-only rule.
+- [x] **A truncation notice.** A snapshot cut at the 256 KB cap ends with a C-style marker
+      that would otherwise appear as a mystery comment in someone's Python. The content is
+      still rendered and copied *verbatim*, so what you see is what you copy.
+- [x] **`error.tsx` distinguishes "database unreachable" from "you have no rooms"** — the
+      same `missing` vs `unreachable` split `RoomGate` draws for a room, and a live case
+      because Neon autosuspends an idle branch. It uses Next 16.2's **`unstable_retry`**, not
+      `reset`, which was demoted to "re-render without re-fetching".
+- [x] **No `loading.tsx`, deliberately.** A Suspense boundary in `app/profile/` would also
+      wrap `[deadRoomId]`, and once a response starts streaming its status is already sent —
+      `notFound()` would then render the 404 UI under a 200. Verified: the not-found route
+      answers a real 404.
+- [x] **The listing is capped at 100 rows and says so when the cap bites**, and it does not
+      select `files`: a snapshot is up to 256 KB, so a full page of them would pull ~25 MB out
+      of Neon to render metadata cards. That is also why the cards carry no code preview.
+- [x] **End-to-end verification**: 15 browser assertions through a real Clerk sign-in
+      (listing contents and order, another account's room absent and its snapshot URL a 404,
+      code byte-identical, clipboard contents, downloaded file name and bytes, both dead
+      controls disabled with no enabled Run/Rejoin anywhere, the truncation notice); 4 more
+      driving a **real room to death** at the real 60s threshold and 10s grace, confirming it
+      lands at the top of `/profile` with the text that was actually typed while a
+      simultaneous guest room stored nothing; 5 more forcing an unreachable database to prove
+      `error.tsx` renders and retries; plus `/profile` 200 vs `/room/<id>` 500, a malformed
+      UUID 404, and `lint`/`tsc`/`build` clean.
 
 ### 7.5 Guardrails
 - [ ] A dead room's original `room_id` can never be reused to rejoin a live session

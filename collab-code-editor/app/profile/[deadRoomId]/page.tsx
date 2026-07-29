@@ -98,19 +98,21 @@ export default async function SnapshotPage(props: PageProps<"/profile/[deadRoomI
           </div>
         </dl>
 
-        <div className="flex flex-wrap items-center gap-2 rounded-xl border border-edge bg-panel/60 px-4 py-3">
-          <DeadControl label="Run" reason="A closed room's code can never be run again." />
-          <DeadControl label="Rejoin" reason="This room no longer exists on the server." />
+        <div className="flex flex-col gap-2 rounded-xl border border-edge bg-panel/60 px-4 py-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <DeadControl label="Run" reason="A closed room's code can never be run again." />
+            <DeadControl label="Rejoin" reason="This room no longer exists on the server." />
+            <Link
+              href="/"
+              className="ml-auto rounded-lg border border-edge bg-raised px-3 py-1.5 text-xs font-medium text-zinc-200 transition-colors hover:border-zinc-600 hover:bg-[#2c2c2c]"
+            >
+              New room
+            </Link>
+          </div>
           <p className="text-xs text-zinc-500">
             The room was destroyed when the last person left. Copy the code into a new room to
             keep working on it.
           </p>
-          <Link
-            href="/"
-            className="ml-auto rounded-lg border border-edge bg-raised px-3 py-1.5 text-xs font-medium text-zinc-200 transition-colors hover:border-zinc-600 hover:bg-[#2c2c2c]"
-          >
-            New room
-          </Link>
         </div>
       </div>
 
