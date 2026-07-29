@@ -76,7 +76,11 @@ Key files:
 - `collab-code-editor/app/lib/executionState.ts` — the `ExecutionState` union, the map/key names, `STALE_RUN_MS`, and `isFailedRun()`; imported by the hooks *and* the output panel
 - `collab-code-editor/app/lib/cursorStyles.ts` — the remote-cursor `<style>` block; the only thing that writes a peer colour into CSS
 - `collab-code-editor/app/lib/download.ts` — Save, in full: a Blob and a throwaway `<a download>`, nothing else. Shared with `/profile`'s Download button since 7.4
-- `collab-code-editor/app/components/EditorToolbar.tsx` / `OutputPanel.tsx` / `icons.tsx` — the chrome around Monaco; presentational, no Yjs
+- `collab-code-editor/app/components/RoomChrome.tsx` — the room's single chrome bar (room id + sync dot, presence, theme, Save, Run). Replaced `EditorToolbar.tsx` and `UserBar.tsx`, which were two full-width rows
+- `collab-code-editor/app/components/EditorPane.tsx` — Monaco, and only Monaco. `memo`'d, and the file that documents why it must never be keyed, conditionally rendered, or moved between parents
+- `collab-code-editor/app/components/EditorTabBar.tsx` / `OutputPanel.tsx` / `PanelStrip.tsx` / `icons.tsx` — the chrome around Monaco; presentational, no Yjs. `PanelStrip` is the shared tab strip and exports `PANEL_STRIP_HEIGHT`
+- `collab-code-editor/app/components/ResizeHandle.tsx` — the drag divider; wraps `react-resizable-panels`' `Separator`
+- `collab-code-editor/app/hooks/useRoomLayout.ts` — split orientation, persisted sizes, output-collapsed state, and the narrow-screen override
 - `collab-code-editor/app/components/JoinRoomPrompt.tsx` — the room's name prompt, and the only room-side reader of Clerk
 - `collab-code-editor/app/room/[roomId]/page.tsx` — dynamic room route; `roomId` is the Yjs document name
 - `collab-code-editor/app/components/RoomGate.tsx` — decides whether a room may be entered at all, *before* the editor (and therefore the socket) exists
@@ -84,8 +88,17 @@ Key files:
 - `collab-code-editor/app/lib/user.ts` — the entire user model: palette, name sanitizing, and identity as an external store
 - `collab-code-editor/app/lib/awareness.ts` — `readPeers()`, the one boundary that turns hostile remote awareness state into values the UI may render
 - `collab-code-editor/app/lib/languages.ts` — the one supported-language enumeration: dropdown labels, file extensions, and the Save filename; shared by the editor and the execute route
-- `collab-code-editor/app/components/UserBar.tsx` — presence chips; renders only what `readPeers` returned
+- `collab-code-editor/app/components/PresenceStack.tsx` — presence as an overlapping avatar stack; renders only what `readPeers` returned
 - `collab-code-editor/app/components/IdentityDialog.tsx` — the name/colour prompt, shared by the create and join flows
+- `collab-code-editor/app/globals.css` — the whole design system: the light and dark token values, and the `@theme inline` block that turns them into Tailwind utilities
+- `collab-code-editor/app/lib/ui.ts` — the shared button/card/input class strings. The one place a button style is written; safe to import from both server and client components
+- `collab-code-editor/app/lib/theme.ts` — the `Theme` union, the storage key, and `THEME_SCRIPT`, the no-flash inline script
+- `collab-code-editor/app/lib/monacoThemes.ts` — `collab-light` / `collab-dark`, whose backgrounds match `--code-bg`
+- `collab-code-editor/app/components/ThemeProvider.tsx` / `ThemeToggle.tsx` — theme as an external store, and the three-way Light/System/Dark control
+- `collab-code-editor/app/components/AppProviders.tsx` — `ThemeProvider` wrapping `ClerkProvider`, so Clerk's `appearance` can follow the theme
+- `collab-code-editor/app/components/SiteNav.tsx` — the top bar for every screen that is not the room
+- `collab-code-editor/app/not-found.tsx` / `error.tsx` / `global-error.tsx` — the root 404, the root error boundary, and the layout-failed page that renders its own `<html>`
+- `collab-code-editor/app/icon.svg` — the favicon, via Next's file convention
 - `collab-code-editor/app/lib/execution.ts` — the cap on what may be *sent* for execution (`MAX_CODE_BYTES`), shared by the client's pre-flight check and the route's 413
 - `collab-code-editor/app/lib/rateLimit.ts` / `server/rateLimit.js` — the same in-memory sliding-window limiter, once per workspace
 - `collab-code-editor/app/api/execute/route.ts` — server-side proxy to Piston; also where the sandbox-side execution limits live
@@ -202,24 +215,30 @@ the obvious `useEffect(() => setUser(load()))` version, so this is not merely a 
 preference. `IdentityDialog` reads storage in lazy `useState` initializers, which is only
 safe because callers keep it out of the server-rendered tree.
 
-**`/room/[roomId]` returns HTTP 500 on every request, and always has.** `lib/monacoLoader.ts`
-imports `monaco-editor` at module scope, which touches `window`; the import chain
-`RoomGate.tsx → CodeEditor.tsx → monacoLoader.ts` therefore throws
-`ReferenceError: window is not defined` while rendering the route on the server. The page
-still *works* — React recovers on the client and every feature (sync, presence, Run, Save)
-behaves normally — so it is invisible from a browser and easy to mistake for a refactor you
-just made. It is not: verified against the pre-refactor commit and against a production
-`next build && next start`, both of which 500 identically. Check it with
-`curl -o /dev/null -w '%{http_code}' localhost:3000/room/<id>`, not with a browser. The cost
-is real anyway (no SSR HTML, an error document served to crawlers and to anything that reads
-the status code), and fixing it means keeping Monaco off the server — a
-`dynamic(..., { ssr: false })` boundary around `CodeEditor` — **without** reintroducing the
-CDN AMD loader the file exists to avoid (see "Accounts (Clerk)" below). Note `ssr: false` is
-**illegal in a Server Component** in Next 16 (`lazy-loading.md`: *"you will see an error if you
-try to use it in Server Components"*), so that boundary belongs in `RoomGate.tsx`, which is
-already `"use client"` — not in `app/room/[roomId]/page.tsx`. `/profile` sidesteps the whole
-problem by never importing Monaco, and answers 200 where this route answers 500; that pair of
-status codes is the cheapest check that nothing has dragged the editor into a server graph.
+**`/room/[roomId]` used to return HTTP 500 on every request. It no longer does — but the
+mechanism that caused it is still live, so keep the guard.** `lib/monacoLoader.ts` imports
+`monaco-editor` at module scope, which touches `window`, so the chain
+`RoomGate.tsx → CodeEditor.tsx → monacoLoader.ts` threw
+`ReferenceError: window is not defined` whenever the route was server-rendered. React
+recovered on the client, so every feature worked and the fault was invisible from a browser.
+The UI redesign fixed it the sanctioned way: `RoomGate.tsx` now loads the editor through
+`dynamic(() => import("./CodeEditor"), { ssr: false })` at module scope, which keeps Monaco
+off the server **without** reintroducing the CDN AMD loader that file exists to avoid (see
+"Accounts (Clerk)"). `ssr: false` is **illegal in a Server Component** in Next 16
+(`lazy-loading.md`: *"you will see an error if you try to use it in Server Components"*),
+which is exactly why the boundary lives in `RoomGate.tsx` — already `"use client"` — and not
+in `app/room/[roomId]/page.tsx`.
+
+Two things follow, and both are cheap regression tests:
+
+- `curl -o /dev/null -w '%{http_code}' localhost:3000/room/<id>` must answer **200**, as must
+  `/profile`. A 500 means something dragged Monaco back into a server graph — check for a new
+  static `import` of `CodeEditor`, `monacoLoader` or `monacoThemes` from a Server Component.
+- `curl -s localhost:3000/room/<id> | grep -c monaco` must be **0**. The status code alone
+  stopped being sufficient the moment the route started succeeding.
+
+That fix is also what makes the no-flash theme script work on this route: the script lives in
+the root layout's `<head>`, and a route that 500s never ships one.
 
 ## Architecture invariant
 
@@ -392,6 +411,144 @@ itself, need no second bundle, and reproduce the palette from `globals.css`. (Al
 knowing: `Show` exported from `@clerk/nextjs` is an **async server component**, so it cannot
 be used in the `"use client"` landing page — branch on `useClerkIdentity()` instead. And
 `SignedIn`/`SignedOut` no longer exist in v7 at all.)
+
+**`ClerkProvider` lives in `components/AppProviders.tsx` (a Client Component), not in
+`app/layout.tsx`, and `appearance.variables` must be literal hex strings.** Both halves of
+that are forced by the light/dark theme. Clerk *parses* these colours at runtime to derive
+its own shades and alpha variants (`@clerk/shared/dist/color.mjs` exports
+`stringToHslaColor` / `hexStringToRgbaColor`), so a `var(--panel)` reference is not a
+parseable colour and Clerk falls back to broken defaults — which means the values have to
+change with the theme, which means only the client can supply them.
+
+**Moving the provider client-side costs nothing here, and that is measured rather than
+assumed.** `@clerk/nextjs`'s *server* `ClerkProvider`
+(`dist/esm/app-router/server/ClerkProvider.js`) computes `initialState` **only when passed a
+`dynamic` prop**, which this app has never done — so `initialState` was already `undefined`
+and the server provider already delegated straight to `ClientClerkProvider`. There is no SSR
+auth state to lose. Keyless mode is handled on the client path too
+(`LazyCreateKeylessApplication`). `app/layout.tsx` stays a Server Component and just renders
+`<AppProviders>`. Keep `CLERK_DARK`/`CLERK_LIGHT` in that file in step with `globals.css`.
+
+## Design system and theming
+
+`app/globals.css` holds the whole system: raw token values on `:root` (light) and `.dark`,
+surfaced to Tailwind through **`@theme inline`**. `app/lib/ui.ts` holds the class strings
+built from them.
+
+**`@theme inline` is load-bearing, not stylistic.** A plain `@theme` copies each value into
+the generated utilities at build time, so `bg-panel` would bake in the light hex and the
+toggle would do nothing. `inline` makes the utility emit `var(--panel)` instead, so flipping
+one class on `<html>` re-resolves every utility at once. This is why the tokens are declared
+twice: raw custom properties for the values, `@theme inline` for the Tailwind names.
+
+**Tailwind v4's `dark:` variant follows `prefers-color-scheme` by default, which is wrong for
+a manual toggle** — someone who picks light on a dark OS would still get every `dark:` rule.
+`@custom-variant dark (&:where(.dark, .dark *))` re-points it at the class. `"system"` is
+resolved to a concrete class in JS rather than left to CSS, so there is exactly one source of
+truth. There is very little `dark:` in the codebase as a result: components use semantic
+tokens (`bg-panel`, `text-fg-muted`) and get both themes for free. Reach for `dark:` only
+where a value genuinely is not a token — the modal scrim in `IdentityDialog` is the one case.
+
+**The no-flash script must be an inline `<script>` in `<head>`, and nothing React does can
+replace it.** By the time hydration runs the browser has already painted the body once, so a
+provider-based fix flashes the wrong theme at everyone who chose the non-default. This is the
+pattern Next documents for exactly this problem
+(`node_modules/next/dist/docs/01-app/02-guides/preventing-flash-before-hydration.md`,
+"Themes"). `suppressHydrationWarning` on `<html>` is **required** rather than cosmetic: the
+script writes `class="dark"` before React hydrates, and without it React treats that as a
+mismatch, re-renders from the nearest boundary and undoes it.
+
+**Theme state is an external store, for the same two reasons identity is** (see "Identity is
+read via `useSyncExternalStore`"): the server cannot know what is in `localStorage`, so the
+server and client snapshots must legitimately differ; and React 19's
+`react-hooks/set-state-in-effect` rule rejects the obvious
+`useEffect(() => setTheme(readStoredTheme()))`. The store is module scope, so one
+`matchMedia` listener serves every consumer and `"system"` keeps tracking the OS live.
+
+**Monaco is themed by prop, never by remount.** `lib/monacoThemes.ts` registers
+`collab-light`/`collab-dark` in `<Editor beforeMount>`, and `EditorPane` switches the `theme`
+prop; `@monaco-editor/react` turns that into `monaco.editor.setTheme()`. The custom themes
+exist because the built-in `vs`/`vs-dark` backgrounds (`#ffffff`, `#1e1e1e`) match neither
+`--code-bg`, so the editor would sit as a visibly different shade inside its own panel.
+
+**A colour that is *not* a token, on purpose:** the `#141414` avatar text in `PresenceStack`
+and `IdentityDialog`. It is dark text on the peer's own pastel from `CURSOR_COLORS`, which
+are Material 300/400 mid-tones legible in both themes — so it must not follow the theme.
+`lib/cursorStyles.ts` needs no theme work for the same reason.
+
+## The resizable room layout
+
+`react-resizable-panels` **v4**, which is a different library from the v2/v3 API almost every
+recipe online describes: it exports `Group` / `Panel` / `Separator`, not
+`PanelGroup` / `Panel` / `PanelResizeHandle`; the prop is `orientation`, not `direction`;
+`autoSaveId` **does not exist**; and a layout is `{ [panelId]: number }`, not `number[]`.
+
+**The one invariant that matters: `<Editor>` must never unmount.** `useCollabRoom`'s master
+effect is keyed on the Monaco instance, so a remount destroys the `Y.Doc`, the provider, the
+awareness handler and the `MonacoBinding` — wiping the room's shared output *for everyone*,
+re-firing every join toast, and orphaning y-monaco's cursor decorations. Verified against the
+v4.12.2 source: `Group` and `Panel` both render `children` unconditionally, `orientation` only
+flips the container's flex-direction, and collapsing a panel changes nothing but inline
+`flex-grow`/`flex-basis`. Nothing the library does can unmount the editor. What *would*:
+
+- two `<Group>`s behind a ternary (`orientation === "horizontal" ? <Group…> : <Group…>`),
+- any `key` on the path from `CodeEditor` down to `EditorPane`,
+- conditionally rendering a pane — which is why the phone layout collapses a panel instead of
+  switching tabs.
+
+**Test it by asserting the shared output survives, not by looking at the layout.** Run
+something, then drag, flip orientation, collapse and expand. If the output panel resets to
+"Output will appear here…" or a join toast re-fires, the editor remounted. Checking a second
+tab is what makes it unambiguous.
+
+**`Panel`'s `className` lands on its *inner* div, and that div ships an inline
+`overflow: auto`.** No Tailwind class beats an inline style, so suppressing it needs
+`style={{ overflow: "hidden" }}` — otherwise the panel grows its own scrollbar next to
+Monaco's.
+
+**`min-h-0` twice, for two different reasons.** On the panel root it is what lets the pane
+shrink below its content when the split is dragged small. On `OutputPanel`'s scroll body it is
+what makes `overflow-auto` engage at all: `flex-1` alone leaves `min-height: auto`, i.e. the
+content's height, so a long stack trace pushes the panel open instead of scrolling inside it.
+
+**Sizes are deliberately not React state.** `Group` exposes `onLayoutChange` (every
+pointermove) and `onLayoutChanged` (once, on release); only the second is wired up, and it
+writes through a ref. A re-render of `CodeEditor` mid-drag would hand `<Editor>` a fresh
+element and defeat `Panel`'s child bailout. For the same reason `handleRun` and `handleSave` —
+both new functions on every keystroke, since they close over `code` — travel only *up* into
+`RoomChrome`, never down into the editor panel.
+
+**Numeric sizes are pixels; bare-string sizes are percentages.** `minSize="25"` is 25%,
+`collapsedSize={36}` would be 36px. The output panel collapses to `PANEL_STRIP_HEIGHT`
+(`"2.25rem"`) when stacked, so the collapsed panel *is* its own tab strip and keeps its own
+restore button. Side by side there is nothing legible to leave in a 36px column, so it
+collapses to `"0"` and `CodeEditor` lends it a restore button in the editor's tab strip.
+Change `PANEL_STRIP_HEIGHT` and the collapsed height must change with it, or collapsing hides
+the only control that undoes it.
+
+**Free from `Separator`, so do not rebuild any of it:** `role="separator"`, `tabIndex=0`, the
+full `aria-value*` set, arrow keys (±5%), Home/End, Enter to collapse or expand a collapsible
+neighbour, F6 to cycle handles, and double-click to reset. Drag state arrives on the
+`data-separator` attribute — `inactive | hover | active | focus | disabled` — which is what
+the styling keys off. The library also owns the drag cursor (it injects a global `!important`
+rule) and inflates the hit rect via `Group`'s `resizeTargetMinimumSize`, so a 1px divider is
+already grabbable on a touchscreen and needs no padding-span trick.
+
+**Do not use the `useDefaultLayout` hook.** Its `storage` parameter defaults to a bare
+`localStorage` reference evaluated during render, so it throws outright on the server, and its
+`getServerSnapshot` is literally the same function as `getSnapshot`, which guarantees a
+hydration mismatch on every panel at once. `useRoomLayout` persists one JSON blob itself.
+
+**Phones get a forced stack, not a tab switcher.** `useRoomLayout` watches
+`(max-width: 767px)` and overrides the orientation while leaving the stored *preference*
+untouched, so rotating back to landscape restores the real choice; the orientation control is
+not rendered at that width. A tab switcher was rejected because it either unmounts the editor
+or hides it with `display: none`, which reports 0×0 to `automaticLayout`'s ResizeObserver and
+can bring Monaco back blank.
+
+**The room page is `h-dvh`, not `h-screen`.** `100vh` on mobile excludes the URL bar, which
+used to clip a corner off a fixed-height output strip and would now hide the collapsed output
+bar — the one control that brings the output back.
 
 ## Room lifetime
 
