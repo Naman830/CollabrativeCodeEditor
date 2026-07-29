@@ -3,23 +3,58 @@
 A multiplayer code editor: Yjs CRDT sync over WebSockets, plus sandboxed multi-language
 execution via a self-hosted Piston instance.
 
-## Scope of work: follow `V1_Tasks.md`
+## Scope of work: follow `tasks.md`
 
-`V1_Tasks.md` at the repo root is the **authoritative feature checklist for v1**. Read it
-before starting any feature work — the user prompts against those items, so "build the user
-bar" means the user-bar line in that file, not a fresh interpretation.
+`tasks.md` at the repo root is the **authoritative feature checklist for v2**, and the only
+checklist left in the repo — v1 shipped complete and `V1_Tasks.md` was deleted once every box
+was ticked (commit `dfbaf1b`). Read `tasks.md` before starting any feature work: the user
+prompts against its items, so "build the profile page" means the `/profile` lines in section
+7.4, not a fresh interpretation.
 
 Rules:
-- Work in the order given by its *Suggested build order* section unless the user names a
-  specific item.
+- Work in the order given by its *Suggested build order for v2* section (section 9) unless
+  the user names a specific item. The extras in section 10 (multi-file, chat, room password)
+  come after the six numbered steps unless the user says otherwise.
 - Tick a box (`- [ ]` → `- [x]`) **only after** the feature is implemented and verified
   running, in the same change that implements it. Never tick ahead of the code.
 - A parent bullet stays unticked until every one of its sub-bullets is ticked.
-- Respect its *Explicitly out of scope for v1* list: **no database, no Redis, no auth, no
-  server-side persistence.** Do not add them even as a convenience — see the
-  "Not built yet" section below for what is deliberately deferred.
+- Respect its *Explicitly out of scope for v2* list (section 8): **Postgres is the only data
+  store — no Redis, no cache, no session store**; a dead room is never re-run, re-joined, or
+  edited in place; no horizontal scaling. Do not add them even as a convenience.
 - If a task turns out to be wrong or impossible as written, say so and update the checklist
   text rather than silently ticking or skipping it.
+
+### Every completed task updates the docs in the same change
+
+Before reporting any task done, do all three of these — not in a follow-up commit:
+
+1. **Tick the box in `tasks.md`.** Same change as the code, never before it.
+2. **Update this file (`CLAUDE.md`).** Add or revise whatever section the change makes true:
+   a new key file in the *Repo layout* table, a new env var in the *Environment variables*
+   table, a new invariant, and — importantly — anything that bit you while building it. This
+   file's value is the gotchas, not the feature list; if a limit, ordering, or lifecycle
+   detail was non-obvious enough to cost you a debugging session, write it down.
+3. **Write down features that were not in `tasks.md`.** If you build something the checklist
+   never listed — an extra guardrail, a helper endpoint, a UI affordance the user asked for
+   mid-task — add it to `tasks.md` as a new, already-ticked line under the nearest matching
+   section (or a new subsection if none fits), so the checklist keeps describing what actually
+   shipped. A checklist that omits shipped work is worse than no checklist.
+
+The same rule applies to anything that turns out to be *false*: when a change contradicts a
+paragraph in this file, rewrite that paragraph rather than appending a correction next to it.
+
+## What v2 adds (`tasks.md` in one paragraph)
+
+v1's defining constraint was **zero persistence** — a room and everything in it vanished when
+the last person left. v2 keeps that for the live room and relaxes it in exactly one place:
+**Clerk** adds real accounts alongside the unchanged guest flow, and when a room dies its final
+files are written **once** to a `dead_rooms` table in **PostgreSQL** — but only if at least one
+participant was signed in. Fully-guest rooms still save nothing at all. The snapshot is
+read-only forever: a `/profile` page lists a signed-in user's past rooms and lets them view and
+copy the code, never run or rejoin it. Sync, awareness, room lifetime, and Piston execution are
+all **unchanged** from v1. Three extras ride along (section 10): multi-file rooms with the
+language chosen once at creation and a starred entry file, an ephemeral in-room chat over the
+existing WebSocket, and optional room passwords held only in the in-memory room object.
 
 ## Repo layout
 
@@ -142,6 +177,15 @@ preference. `IdentityDialog` reads storage in lazy `useState` initializers, whic
 safe because callers keep it out of the server-rendered tree.
 
 ## Architecture invariant
+
+**`tasks.md`'s section-5 sequence diagram draws execution wrong — do not implement it as
+drawn.** It shows `FE → WS → Piston`, i.e. the code travelling to the WebSocket server, which
+then calls Piston and broadcasts the result. That is not how v1 works and must not become how
+v2 works: the browser posts to the Next.js route `/api/execute`, which proxies to Piston, and
+the *result* is shared through the Yjs `execution` map (see "Shared code execution" below).
+The diagram's intent — everyone in the room sees the run — is already satisfied. Routing runs
+through the sync server would put an untrusted, resource-heavy, 18-second-timeout request on
+the same process and event loop as live editing, which the next paragraph exists to prevent.
 
 Editing sync and code execution are deliberately **separate systems**. Editing is low-latency
 and always-on; execution is bursty, resource-heavy, and handles untrusted input. Coupling
@@ -367,8 +411,12 @@ oversized document never crosses the wire, and it writes the failure into the sh
 
 Save is the mirror image of Run: **entirely local**, and deliberately so. It builds a `Blob`
 from the editor's current text, clicks a throwaway `<a download>`, and revokes the object URL
-— no Yjs write, no request to the server, nothing stored anywhere (V1_Tasks.md's core
-principle: "saving a file means downloading it to the user's device").
+— no Yjs write, no request to the server, nothing stored anywhere (v1's core principle:
+"saving a file means downloading it to the user's device"). v2 keeps Save local; the only
+thing that ever reaches Postgres is the automatic dead-room snapshot, never a Save click. Note
+section 10.1 of `tasks.md` changes *what* Save produces once multi-file lands — one file
+downloads directly as today, 2+ files zip into `project.zip` via JSZip — but not where it
+goes.
 
 It must stay off the shared `Y.Doc`. The language dropdown is a per-user editing preference,
 so two peers looking at the same text can be on different languages, and each has to get
@@ -436,10 +484,18 @@ image is **amd64-only** (single-arch manifest) — ARM free tiers cannot host it
 
 ## Not built yet
 
-Postgres persistence and Redis pub/sub for horizontal scaling are on the roadmap but
-unimplemented. **Documents are in-memory only — room state does not survive a WebSocket
-server restart**, and since a restart wipes the room registry too, every client still in a
-room gets its reconnect refused and is sent home (see "Room lifetime"). Hosting Piston
+**Nothing in `tasks.md` (v2) is implemented yet — every box in it is still unticked.** No
+Clerk, no Postgres, no `dead_rooms` table, no `/profile`, no multi-file, no chat, no room
+passwords. The repo as it stands is v1 complete. Redis pub/sub for horizontal scaling is *not*
+a v2 item at all — section 8 puts it explicitly out of scope, so it stays deferred past v2.
+
+**Documents are in-memory only — room state does not survive a WebSocket server restart**, and
+since a restart wipes the room registry too, every client still in a room gets its reconnect
+refused and is sent home (see "Room lifetime"). v2's dead-room snapshots do not change this:
+they are written when a room dies normally, and a crashed server still loses whatever was
+open.
+
+Hosting Piston
 somewhere always-on (a VPS permitting privileged containers) is the one roadmap item that
 would make execution independent of a developer machine — see "Production execution path"
 above, which replaces an older note here claiming execution simply does not work in
@@ -448,10 +504,13 @@ production.
 Room eviction *is* implemented — see "Room lifetime" above; that section replaces an older
 note here claiming rooms are never evicted. Execution resource limits and rate limiting are
 likewise implemented now — see "Execution limits" and "Rate limiting and payload size"; those
-sections replace older notes here calling both unbuilt. **Every V1_Tasks.md box is ticked.**
+sections replace older notes here calling both unbuilt. **Every v1 box was ticked before
+`V1_Tasks.md` was removed.**
 
 The one thing missing Redis genuinely costs: the frontend's rate limiter counts per
 serverless instance rather than globally. That is a documented approximation, not a gap to
-close inside v1's constraints.
+close inside v1's constraints — and **v2 does not close it either**, since Redis stays out of
+scope. Adding Postgres does not make it a candidate fix: a per-request DB round trip on the
+hot execute path is a worse trade than the approximation.
 
 @collab-code-editor/AGENTS.md
