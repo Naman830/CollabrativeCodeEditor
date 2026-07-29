@@ -230,6 +230,77 @@ ordering every connected client agrees on, so all viewers independently compute 
 winner for a contested name or colour. The user's originally-chosen colour in `sessionStorage`
 is never touched; only the rendered copy shifts, and only while the collision lasts.
 
+## Accounts (Clerk)
+
+Signing in is **optional and additive**: every guest path from v1 works untouched, and the
+only thing an account currently buys is that the identity record carries a `clerkUserId`
+(`tasks.md` 7.1). Nothing is persisted yet — that is 7.2/7.3.
+
+**It is `proxy.ts`, not `middleware.ts`.** Next 16 renamed the convention
+(`node_modules/next/dist/docs/01-app/03-api-reference/03-file-conventions/proxy.md`: *"the
+`middleware` file convention is deprecated and has been renamed to `proxy`"*). The contents
+are identical, so every Clerk recipe written for Next ≤15 is right about the code and wrong
+about the filename — and a `middleware.ts` here is simply never loaded, silently. Confirm it
+is wired by looking for `ƒ Proxy (Middleware)` in `next build` output, or the `proxy.ts: Nms`
+segment in a dev request log.
+
+**`clerkMiddleware()` is called with no callback, and must stay that way.** It attaches the
+session and protects nothing. `/`, `/room/*` and `/api/execute` are all public by design —
+`/api/execute` especially, since adding `auth.protect()` there would break the Run button for
+every guest. Route protection belongs in the resource (`await auth()` in the page), which is
+also what replaced the now-deprecated `createRouteMatcher`.
+
+**`clerkUserId` is client-only and must never enter awareness.** It rides inside `CollabUser`
+to sessionStorage via `setActiveUser`, and stops there. The awareness payload in
+`CodeEditor.tsx` lists its fields one by one and must never become `{...user}`: awareness is
+peer-controlled, so a broadcast account ID is a claim anyone can forge, and 7.3 keys saved
+room snapshots on an account. Sourcing that from awareness would let a passing guest write a
+room's code into a stranger's profile — the same class of hole as the CSS-colour injection
+`readPeers` guards, but the blast radius is another user's stored data. **7.3 must get the
+signed-in user from a verified Clerk token instead**, either via `await auth()` in a Next
+route handler that tells `server/` server-to-server, or `verifyToken` from `@clerk/backend`
+on the socket. Note `server/yjsConnection.js` already discards the query string
+(`req.url.slice(1).split("?")[0]`), so a `?token=` can be added without changing the doc name.
+
+**Signing in prefills the identity dialog; it does not replace it.** The Clerk session is a
+cookie (browser-wide) while `CollabUser` is sessionStorage (per-tab) — different scopes on
+purpose. Deriving the collaborator from Clerk and skipping the prompt looks like the obvious
+win and breaks two things: Clerk's `lastName` is nullable while `isValidUser` requires both
+names, and two tabs would become one collaborator, which is exactly the local-multiplayer
+test story the storage split exists to protect. Verified: two tabs signed into one account
+still show as two people with two colours.
+
+**The dialog must never wait on Clerk.** `useUser()` reports `isLoaded: false` first, and the
+dialog reads its prefill in lazy `useState` initializers that run once — so the tempting fix
+is to hold the dialog until Clerk resolves. Don't: verified by deep-linking into a room from
+a fresh browser profile, where the prompt never rendered and **the room could not be joined
+at all**. Instead the dialog renders immediately and a `key` remounts it once if a signed-in
+session arrives late. A guest's key never changes, so the common path never remounts and
+nothing typed is lost. `signedInUser()` in `lib/clerkIdentity.ts` collapses "guest" and "not
+loaded yet" into one `null` precisely so no caller can reintroduce that gate.
+
+**Monaco's AMD loader broke Clerk, and this is why `app/lib/monacoLoader.ts` exists.**
+`@monaco-editor/react` defaults to fetching Monaco from a CDN with an AMD loader, which
+installs a global `define` carrying `define.amd`. Any UMD bundle loaded afterwards then
+registers itself as an AMD module instead of executing — and Clerk's UI bundle is one, so it
+failed with `failed_to_load_clerk_ui` and Clerk never finished loading **on the room route
+only**. The symptom was a signed-in user deep-linking into a room silently having no session
+and no `clerkUserId`. It is a race between two CDN fetches, so it reproduced intermittently;
+the controlled experiment that pinned it was visiting a *dead* room ID, where `RoomGate` shows
+the closed screen and never mounts Monaco — there Clerk resolved fine on the very same route.
+The fix points the loader at the `monaco-editor` package (now a direct dependency), so no AMD
+loader is ever installed and Monaco stops being a runtime CDN dependency too. `loader.config`
+runs at module scope in `CodeEditor.tsx`, because it must happen before the first `<Editor>`
+mounts.
+
+**Clerk components are themed with `appearance.variables`, deliberately not `@clerk/ui`.**
+The `dark` theme lives in a separate `@clerk/ui` package whose bundle Clerk fetches at
+runtime — the very bundle the AMD conflict above breaks. The variables ship inside clerk-js
+itself, need no second bundle, and reproduce the palette from `globals.css`. (Also worth
+knowing: `Show` exported from `@clerk/nextjs` is an **async server component**, so it cannot
+be used in the `"use client"` landing page — branch on `useClerkIdentity()` instead. And
+`SignedIn`/`SignedOut` no longer exist in v7 at all.)
+
 ## Room lifetime
 
 A room has three stages, and `server/rooms.js` is the only module that knows about any of
@@ -488,10 +559,15 @@ image is **amd64-only** (single-arch manifest) — ARM free tiers cannot host it
 
 ## Not built yet
 
-**Nothing in `tasks.md` (v2) is implemented yet — every box in it is still unticked.** No
-Clerk, no Postgres, no `dead_rooms` table, no `/profile`, no multi-file, no chat, no room
-passwords. The repo as it stands is v1 complete. Redis pub/sub for horizontal scaling is *not*
-a v2 item at all — section 8 puts it explicitly out of scope, so it stays deferred past v2.
+**Section 7.1 (Clerk auth) is done — see "Accounts (Clerk)" above, which replaces an older
+note here claiming no Clerk existed. Everything else in `tasks.md` (v2) is still unticked:**
+no Postgres, no `dead_rooms` table, no `/profile`, no multi-file, no chat, no room passwords.
+Redis pub/sub for horizontal scaling is *not* a v2 item at all — section 8 puts it explicitly
+out of scope, so it stays deferred past v2.
+
+Because 7.2 (Postgres) is not built, **an account currently changes nothing that outlives the
+tab**: `clerkUserId` reaches sessionStorage and no further. Do not add UI promising a signed-in
+user that a room will be saved to their profile until 7.3 actually writes the snapshot.
 
 **Documents are in-memory only — room state does not survive a WebSocket server restart**, and
 since a restart wipes the room registry too, every client still in a room gets its reconnect
