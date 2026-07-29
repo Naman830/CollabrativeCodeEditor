@@ -4,7 +4,12 @@
 const { setupWSConnection, docs } = require("y-websocket/bin/utils");
 const { roomExists, claimRoom, scheduleEviction, isShuttingDown } = require("./rooms");
 const { verifyClerkToken } = require("./clerkAuth");
-const { beginMemberSession, endMemberSession, bindRoomObservers } = require("./roomState");
+const {
+  beginMemberSession,
+  endMemberSession,
+  forgetConn,
+  bindRoomObservers,
+} = require("./roomState");
 
 // Private-use close code for "this room is gone". The client keys its
 // closed-room screen off this exact number, which is why the connection is
@@ -50,7 +55,13 @@ function handleYjsConnection(ws, req) {
 
   // Registered after setupWSConnection so it runs after y-websocket has already
   // removed this connection — the eviction check sees the true remaining count.
-  ws.on("close", () => scheduleEviction(docName));
+  //
+  // `forgetConn` runs for every socket, not just verified ones: a guest's edits
+  // sit unattributed by design, and a room outlives many joins and leaves.
+  ws.on("close", () => {
+    forgetConn(docName, ws);
+    scheduleEviction(docName);
+  });
 
   // Only now, after the room gate has passed. A probe loop against dead room IDs
   // must not cost a JWKS round trip each — the WebSocket path is not covered by

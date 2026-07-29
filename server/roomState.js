@@ -43,6 +43,9 @@ const TRUNCATION_MARKER = "\n\n/* --- snapshot truncated: room exceeded 256 KB -
 // room can live for hours.
 const MAX_MEMBERS = 200;
 const MAX_PARTICIPANTS = 50;
+// Sockets awaiting attribution. Bounded by concurrent connections in practice;
+// the cap only matters if `forgetConn` were ever missed.
+const MAX_PENDING_EDITS = 500;
 
 // The third copy of these rules, after server/rateLimit.js mirroring
 // app/lib/rateLimit.ts and CLOSE_ROOM_NOT_FOUND living in two files. The two
@@ -87,6 +90,16 @@ function createRoomState(roomId) {
     // Socket -> verified user ID. Needed because Yjs hands us the *socket* as a
     // transaction origin, which is how `didEdit` is attributed at all.
     connUsers: new Map(),
+    // Sockets that edited *before* their token finished verifying.
+    //
+    // Verification is asynchronous and the first call of the process fetches
+    // Clerk's JWKS (~200ms measured), while a client syncs and starts typing in
+    // ~50ms. Without this, every edit in that window is attributed to nobody and
+    // the user fails the `didEdit` half of the threshold — silently losing their
+    // snapshot. It reproduced consistently for the first signed-in user after a
+    // restart, and disappeared for every user after, because the JWKS cache then
+    // wins the race. Drained by `beginMemberSession`.
+    pendingEdits: new Set(),
     updateBound: false,
     awarenessBound: false,
   };
@@ -146,7 +159,21 @@ function beginMemberSession(roomId, userId, at, conn) {
     member.openCount === 0 ? at : Math.min(member.sessionStartedAt, at);
   member.openCount += 1;
 
-  if (conn) state.connUsers.set(conn, userId);
+  if (conn) {
+    state.connUsers.set(conn, userId);
+    // Claim anything this socket wrote while its token was still being verified.
+    if (state.pendingEdits.delete(conn)) member.didEdit = true;
+  }
+}
+
+/**
+ * Drops a socket's unattributed-edit record. Called for *every* closing socket,
+ * verified or not — a guest's entry would otherwise sit in `pendingEdits` for
+ * the room's whole life, and a room can outlive many joins and leaves.
+ */
+function forgetConn(roomId, conn) {
+  const state = getRoomState(roomId);
+  if (state) state.pendingEdits.delete(conn);
 }
 
 /**
@@ -250,8 +277,18 @@ function bindRoomObservers(roomId, doc) {
     doc.on("update", (_update, origin) => {
       const current = getRoomState(roomId);
       if (!current) return;
+
       const userId = current.connUsers.get(origin);
-      if (!userId) return;
+      if (!userId) {
+        // Either a guest (harmless — nothing ever drains this for them, and
+        // `forgetConn` clears it on close) or a signed-in user whose token is
+        // still in flight. `beginMemberSession` claims it a moment later.
+        if (origin && current.pendingEdits.size < MAX_PENDING_EDITS) {
+          current.pendingEdits.add(origin);
+        }
+        return;
+      }
+
       const member = current.members.get(userId);
       if (member) member.didEdit = true;
     });
@@ -347,6 +384,7 @@ module.exports = {
   deleteRoomState,
   beginMemberSession,
   endMemberSession,
+  forgetConn,
   bindRoomObservers,
   buildSnapshot,
 };
