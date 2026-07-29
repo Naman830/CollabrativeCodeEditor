@@ -2,9 +2,17 @@ require("dotenv").config();
 
 const http = require("http");
 const { WebSocketServer } = require("ws");
-const { handleYjsConnection } = require("./yjsConnection");
-const { reserveRoom, roomExists, GRACE_MS } = require("./rooms");
+const { handleYjsConnection, CLOSE_SERVICE_RESTART } = require("./yjsConnection");
+const {
+  reserveRoom,
+  roomExists,
+  GRACE_MS,
+  FLUSH_DEADLINE_MS,
+  flushAndDestroyAll,
+  isShuttingDown,
+} = require("./rooms");
 const { createRateLimiter, clientKey } = require("./rateLimit");
+const db = require("./db");
 
 const PORT = process.env.PORT || 8080;
 
@@ -54,6 +62,10 @@ const server = http.createServer((req, res) => {
   if (req.method === "GET" && path === "/health") {
     // Also how the client tells "server is down" from "room is gone" — those
     // two must never produce the same message.
+    //
+    // 503 while draining so Railway stops routing to this container during the
+    // snapshot flush (railway.json already points its healthcheck here).
+    if (isShuttingDown()) return json(res, 503, { ok: false, shuttingDown: true });
     return json(res, 200, { ok: true });
   }
 
@@ -98,3 +110,38 @@ server.listen(PORT, () => {
   console.log(`Yjs sync WebSocket server listening on port ${PORT}`);
   console.log(`Rooms are destroyed ${GRACE_MS}ms after the last client leaves`);
 });
+
+// Without this, a Railway redeploy silently loses every dead-room snapshot: the
+// eviction timers in rooms.js are unref'd, so a queued eviction never fires on
+// SIGTERM, and a room someone was actively working in is never even queued.
+// Invisible locally, guaranteed in production.
+let shutdownStarted = false;
+
+async function shutdown(signal) {
+  if (shutdownStarted) {
+    // A second signal means "stop waiting". Honour it.
+    console.warn(`${signal} received again; exiting immediately`);
+    process.exit(1);
+  }
+  shutdownStarted = true;
+  console.log(`${signal} received; flushing dead-room snapshots (up to ${FLUSH_DEADLINE_MS}ms)`);
+
+  server.close();
+  await flushAndDestroyAll();
+
+  // After the rooms, so their close handlers cannot perturb a flush in progress.
+  for (const client of wss.clients) client.close(CLOSE_SERVICE_RESTART, "server-restart");
+  await db.close();
+
+  console.log("Shutdown complete");
+  // Destroying every doc cleared each Awareness's 3s `_checkInterval` — which is
+  // NOT unref'd, and is the reason this process never exits on its own — plus
+  // every per-connection ping timer, so the event loop drains and Node exits
+  // naturally with stdout flushed. `process.exit` truncates pending pipe writes
+  // on Railway, so it is only the backstop.
+  const backstop = setTimeout(() => process.exit(0), 2_000);
+  if (typeof backstop.unref === "function") backstop.unref();
+}
+
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));
