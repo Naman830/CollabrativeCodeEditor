@@ -41,16 +41,34 @@ export function randomColor(): string {
 }
 
 /**
+ * Anything that cannot survive a trip into Postgres. Kept in step by hand with
+ * `UNSTORABLE` in `server/roomState.js`, which is the copy that matters: a
+ * participant name reaches `dead_room_members`' sibling `participants` column,
+ * and one unpaired surrogate there makes `JSON.stringify` emit a bare `\ud83d`,
+ * which Postgres rejects with `unsupported Unicode escape sequence` — taking
+ * the room's whole snapshot with it. Stripped here too so the two copies do not
+ * drift, and because a lone surrogate in a cursor label renders as a stray
+ * replacement character anyway.
+ */
+const UNSTORABLE =
+  /\u0000|[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
+
+/**
  * Names end up in a CSS `content:` string above a caret, so keep them to one
  * line of printable text. A UX guard, not the security boundary — remote names
  * never pass through here, so `lib/awareness.ts` is what has to hold.
+ *
+ * The cut is by code *point*: `.slice(0, 24)` counts UTF-16 code units and can
+ * halve a surrogate pair, which is the one way this function could manufacture
+ * the character {@link UNSTORABLE} exists to remove.
  */
 export function sanitizeName(raw: string): string {
-  return raw
+  const cleaned = raw
+    .replace(UNSTORABLE, "")
     .replace(/[\u0000-\u001F\u007F]/g, " ")
     .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, MAX_NAME_LENGTH);
+    .trim();
+  return [...cleaned].slice(0, MAX_NAME_LENGTH).join("");
 }
 
 /** "Naman Gupta" -> "Naman G." — short enough to sit above a caret. */

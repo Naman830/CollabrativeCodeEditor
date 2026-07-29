@@ -57,6 +57,31 @@ const HEX_COLOR = /^#[0-9a-f]{6}$/i; // == app/lib/awareness.ts
 const FALLBACK_COLOR = "#9e9e9e"; // == app/lib/awareness.ts
 
 /**
+ * Characters that cannot survive the trip into Postgres, and take the whole
+ * snapshot with them if they try.
+ *
+ *  - **NUL** cannot be stored in a `text` or `jsonb` value at all.
+ *  - An **unpaired surrogate** is worse, because it fails loudly and late:
+ *    `JSON.stringify` happily emits `"\ud83d"`, and Postgres rejects the entire
+ *    statement with `unsupported Unicode escape sequence`. One bad character in
+ *    one participant's name therefore loses the room's code as well.
+ *
+ * Both are stripped from *everything* that reaches a column. Neither is typeable
+ * in Monaco, but both are trivially reachable: awareness is peer-supplied (a
+ * client sets its own `user.name`), and a paste or a raw Yjs client can put
+ * either into the document. `snapshotText` used to be protected only on its
+ * truncation branch, where `Buffer.toString("utf8")` substitutes U+FFFD — so a
+ * document *under* the cap skipped the guard entirely.
+ */
+const UNSTORABLE =
+  /\u0000|[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
+
+/** Drops anything Postgres cannot store. See {@link UNSTORABLE}. */
+function stripUnstorable(raw) {
+  return raw.replace(UNSTORABLE, "");
+}
+
+/**
  * roomId -> room state. Only `createRoomState` ever adds a key.
  *
  * @typedef {{
@@ -198,14 +223,23 @@ function endMemberSession(roomId, userId, at, conn) {
   }
 }
 
-/** Names end up rendered on /profile, so they get the same treatment as any peer name. */
+/**
+ * Names end up rendered on /profile, so they get the same treatment as any peer name.
+ *
+ * The cut is by **code point**, not `String.prototype.slice`. A 24-code-*unit*
+ * slice can land in the middle of a surrogate pair, so a name with an emoji
+ * straddling that boundary would leave a lone surrogate — and one participant's
+ * name would then take the room's entire snapshot down with it (see
+ * {@link UNSTORABLE}). `stripUnstorable` covers surrogates that arrive already
+ * unpaired; the code-point cut covers the ones this function would create.
+ */
 function sanitizeName(raw) {
   if (typeof raw !== "string") return "";
-  return raw
+  const cleaned = stripUnstorable(raw)
     .replace(/[\u0000-\u001F\u007F]/g, " ")
     .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, MAX_NAME_LENGTH);
+    .trim();
+  return [...cleaned].slice(0, MAX_NAME_LENGTH).join("");
 }
 
 /**
@@ -312,8 +346,13 @@ function qualifyingMembers(state, now) {
  * Two silent corruptions live in this function, and both only reproduce on
  * documents nobody writes by hand:
  *
- *  - NUL cannot be stored in a Postgres `text` or `jsonb` value at all. Monaco
- *    will not type one, but a paste can carry it and Y.Text stores it happily.
+ *  - NUL and unpaired surrogates cannot reach a Postgres column at all — see
+ *    {@link UNSTORABLE}. `stripUnstorable` runs on *every* path, not only the
+ *    truncating one: a document under the cap used to be returned raw, so a
+ *    lone surrogate in a small file lost the whole snapshot while the very same
+ *    character in a 300 KB file was quietly repaired by the Buffer round-trip
+ *    below. Monaco types neither, but a paste or a raw Yjs client can carry
+ *    both, and Y.Text stores them happily.
  *  - The cut must go through Buffer, not a byte index into the JS string. A
  *    hand-rolled slice can cut a surrogate pair in half; JSON.stringify then
  *    emits a lone "\ud83d" and Postgres rejects the whole INSERT with
@@ -321,7 +360,7 @@ function qualifyingMembers(state, now) {
  *    substitutes U+FFFD instead. Only reachable with emoji or CJK near the cap.
  */
 function snapshotText(yText) {
-  const raw = yText.toString().replace(/\u0000/g, "");
+  const raw = stripUnstorable(yText.toString());
   const buf = Buffer.from(raw, "utf8");
   if (buf.byteLength <= MAX_SNAPSHOT_BYTES) return raw;
 
