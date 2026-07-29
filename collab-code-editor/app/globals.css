@@ -175,23 +175,18 @@ body {
   animation: toast-in 180ms ease-out;
 }
 
-/* Applied to the panel group while a resize handle is being dragged. Without it
-   the pointer selects editor text the moment it leaves the 6px handle, and the
-   cursor flickers between `col-resize` and `text`. */
-.is-resizing,
-.is-resizing * {
-  user-select: none !important;
-  cursor: var(--resize-cursor, col-resize) !important;
-}
-
 @media (prefers-reduced-motion: reduce) {
   .animate-toast-in {
     animation: none;
   }
 
-  /* Panel size is driven by inline flex-grow, so a transition on it is the one
-     resize-related animation there is to switch off. */
-  [data-panel] {
-    transition: none !important;
+  /* The collapse chevron's flip and the separator's colour fade are the only
+     motion in the panel chrome. Panel *sizes* are deliberately never
+     transitioned: a CSS transition on flex-grow lags behind the library's
+     per-frame drag updates and makes the divider feel detached from the
+     pointer. Collapse is instant, which is what VS Code and Replit do too. */
+  [data-separator],
+  .panel-chevron {
+    transition: none;
   }
 }
