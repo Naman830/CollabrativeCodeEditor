@@ -685,7 +685,11 @@ that value as a *filename* and will try to open a file called `system`.
 
 - **`room_id` is `UNIQUE`, and there is an index on `(owner_user_id, died_at DESC)`.** The
   first makes the database enforce "written once, never updated" instead of trusting the
-  writer; the second is exactly the `/profile` query and keeps it off a full table scan.
+  writer; the second was meant to serve the `/profile` query. **The index and the column it
+  covers are both scheduled for removal in 7.3** — `tasks.md` §6.1 replaced creator-owns with
+  a `dead_room_members` join table, so the profile listing becomes a join and this index
+  serves nothing. It is described here because it is what is *currently in the database*, not
+  what the finished feature uses.
 - **`language` is nullable**, where §6 writes plain `text`. This is forced, not stylistic: the
   language dropdown is a per-user editing preference kept deliberately off the shared `Y.Doc`
   (see "Saving"), so **the server has no language to record** until §10.1 moves the selector to
@@ -754,12 +758,23 @@ writes the snapshot.
 
 **7.3 has three inputs that do not exist yet**, and they are the real work in it — the columns
 are the easy part:
-- **`owner_user_id`.** `server/rooms.js` records nothing about a room but a timer;
-  `reserveRoom()` stores only a `crypto.randomUUID()`. The ID must come from a **verified
-  Clerk token**, never from awareness — see "Accounts (Clerk)", where forging it means writing
-  a stranger's code into someone else's profile.
+- **The member set.** `tasks.md` §6.1 decides a dead room belongs to *every* verified
+  signed-in participant who met a contribution threshold — not to its creator, and not to
+  whoever left last. So the room object needs a set of verified Clerk user IDs (with first
+  connect times, to apply the threshold), where `server/rooms.js` today records nothing about
+  a room but a timer and a `crypto.randomUUID()`. The IDs must come from a **verified Clerk
+  token**, never from awareness — see "Accounts (Clerk)", where forging one means writing a
+  stranger's code into someone else's profile. There is deliberately **no owner and no
+  ownership transfer**: creator-owns leaves guest-created rooms with no owner at all, and
+  hands the snapshot to someone who left an hour before the person who wrote the code.
 - **`created_at`.** Nothing currently records when a room was created.
 - **`language`.** Per-user and off the shared doc, hence the nullable column.
+
+That decision costs a **second migration**: 7.2 already shipped `dead_rooms.owner_user_id` and
+its `(owner_user_id, died_at DESC)` index, and §6.1 replaces both with a `dead_room_members`
+join table keyed `(user_id, dead_room_id)`. The paragraph below describing that index as "the
+`/profile` query" was written before the rule changed and is true only of the shipped schema,
+not of the one 7.3 will build against.
 
 Also note the eviction timer in `server/rooms.js` is `unref()`'d, so it never keeps the process
 alive: on a Railway SIGTERM a queued eviction simply never fires, and with it the snapshot.

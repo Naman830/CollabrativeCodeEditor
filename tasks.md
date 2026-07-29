@@ -102,13 +102,12 @@ sequenceDiagram
 
 ## 6. Database schema (Postgres)
 
-Keep it minimal — one table is enough for v2.
+Keep it minimal — two tables: the snapshot itself, and who may read it.
 
 ```
 dead_rooms
 ├── id              (uuid, primary key)
 ├── room_id         (text, UNIQUE — the original ephemeral room ID)
-├── owner_user_id   (text — Clerk user ID of the creator)
 ├── files           (jsonb — array of { filename, content }, supports multi-file rooms)
 ├── language        (text, NULLABLE — the room's single language, see Section 10.1)
 ├── is_private      (boolean — was this room password-protected)
@@ -116,10 +115,93 @@ dead_rooms
 ├── created_at      (timestamptz — when the room was first created)
 └── died_at         (timestamptz — when the last person left)
 
-INDEX on (owner_user_id, died_at DESC)   -- the /profile query in 7.4
+dead_room_members            -- who can see this snapshot on /profile
+├── dead_room_id    (uuid, FK -> dead_rooms.id, ON DELETE CASCADE)
+├── user_id         (text — a *verified* Clerk user ID, never a self-reported one)
+└── PRIMARY KEY (user_id, dead_room_id)
 ```
 
 > Note: `code` (single string) from earlier drafts is replaced by `files` (an array) so multi-file rooms save cleanly. A single-file room is just a `files` array with one entry.
+
+> **`owner_user_id` and its `(owner_user_id, died_at DESC)` index are gone**, replaced by
+> `dead_room_members`. See Section 6.1 for why. 7.2 already migrated the old shape, so this
+> costs a **second migration** that drops the column and the index and creates the new table —
+> cheap now, painful once `/profile` reads the old shape.
+
+> The `/profile` listing is `dead_room_members` joined to `dead_rooms`, ordered by `died_at`.
+> The composite primary key `(user_id, dead_room_id)` is the index that serves it — `user_id`
+> leading, so one user's rows are contiguous. Sorting happens after the join, which is fine at
+> v2's scale; if it ever isn't, copy `died_at` onto the member row and index
+> `(user_id, died_at DESC)`.
+
+---
+
+### 6.1 Who a dead room belongs to
+
+**The rule, in one line: every signed-in person who really took part gets to keep a copy;
+guests keep nothing; the room itself still dies exactly like v1.**
+
+Longer, as four rules:
+
+1. **One snapshot per room, written once**, at the moment the room is destroyed (last socket
+   closed, grace window elapsed, nobody reconnected). Never updated afterwards.
+2. **A snapshot is written only if at least one participant was a verified Clerk user.** All
+   guests → nothing is written at all, exactly like v1.
+3. **Every verified signed-in participant who met the contribution threshold gets a
+   `dead_room_members` row**, and therefore sees the room on their `/profile`. Not just the
+   creator, and not just whoever left last.
+4. **"Verified" means a Clerk token the *server* checked.** Never awareness state and never a
+   client-supplied ID — see CLAUDE.md, "Accounts (Clerk)": a forged ID would write a
+   stranger's code into someone else's profile.
+
+**Why not "the creator owns it"** (the original draft of this section):
+
+- The creator is frequently a guest who made the room and shared the link, which leaves the
+  row with no owner at all and forces a fallback rule anyway.
+- Ownership is wrong exactly when it matters most: A creates a room, leaves after two minutes,
+  B works in it for an hour. A gets the snapshot; B — the person who wrote the code and will
+  go looking for it — gets nothing.
+- There is no such thing as an owner in `server/rooms.js` today; it records nothing about a
+  room but timers. Inventing one, plus a transfer rule for when the owner leaves, is real
+  complexity for behaviour no user can see or predict.
+
+**Why not "whoever left last owns it":** it makes keeping your own work depend on tab-close
+order. Close your laptop first and an hour of work silently goes to somebody else.
+
+Membership costs nothing extra to compute: 7.3 has to verify a Clerk token per connection
+regardless, which yields a *set* of signed-in users per room. Collapsing that set to one person
+is the thing that would take extra work, not keeping it.
+
+**The contribution threshold, and the trade it exists to blunt.** Under this rule, a signed-in
+stranger who clicks a shared link, lurks for thirty seconds and leaves keeps a permanent
+private copy of the code. So a participant earns a `dead_room_members` row only if they were
+connected **while the document was non-empty** and for **more than a trivial moment** (the
+server already tracks connection times for the grace timer; a threshold on the order of the
+grace window is the natural choice). Section 10.3's room passwords carry the rest of the
+weight: a password-protected room is the "this is not public" signal, so an unprotected room
+being copyable by the people who worked in it is the expected behaviour.
+
+**Deleting.** Because several accounts can hold one snapshot, "delete this from my profile"
+means deleting that user's `dead_room_members` row, not the `dead_rooms` row. (Not a v2
+checklist item; recorded so it isn't designed wrong later.)
+
+#### Every scenario, in a table
+
+A creates the room, B joins later.
+
+| Situation | What happens |
+| --- | --- |
+| A signed in, B guest | A sees it on `/profile`. B gets nothing. |
+| A guest, B signed in | B sees it. The guest creator needs no special case. |
+| Both guests | Nothing written. Room vanishes exactly like v1. |
+| Both signed in, A leaves early, B works on | **Both** see it. This is the case creator-owns gets wrong. |
+| Both signed in, both leave together | Both see it. |
+| B joins as a guest, signs in mid-session | B sees it, provided the server verified them before the room died. |
+| Signed-in stranger lurks 30s and leaves | Nothing for them — blocked by the contribution threshold. |
+| Someone reloads the page | Nothing happens. A reload reconnects inside the grace window, so the room never died. |
+| Everyone leaves, someone returns 40s later | Room is gone; `/room/<id>` sends them home. The snapshot is on `/profile` instead, read-only. |
+| Room evicted twice (retry, restart) | Only the first write lands — `ON CONFLICT (room_id) DO NOTHING`, already built in 7.2. |
+| Server restarts / Railway redeploys mid-room | **Snapshot is lost** unless 7.3 adds a shutdown flush: the eviction timer in `server/rooms.js` is `unref()`'d, so it never fires on SIGTERM. Invisible locally, guaranteed in production. |
 
 > **Corrected during 7.2, against the draft above.** `room_id` is `UNIQUE` so the database
 > enforces the write-once rule below rather than trusting the writer (it also backs 7.5's
@@ -133,6 +215,7 @@ Rules:
 - Only written to **once**, when the last user disconnects.
 - Never updated again after that — a dead room snapshot is final and read-only.
 - Only saved if at least one participant was logged in via Clerk. Fully-guest rooms behave exactly like v1 (nothing saved).
+- Who may read it afterwards is Section 6.1's rule, not "the creator".
 
 ---
 
@@ -228,15 +311,46 @@ Shipped alongside 7.2, not originally listed here:
       the only thing that would catch a rename.
 
 ### 7.3 Dead room snapshot logic
-- [ ] On last-user-disconnect (same trigger point as v1's room cleanup), check if any participant was a logged-in (Clerk) user
-- [ ] If yes: write one row to `dead_rooms` with the final code, language, and participant list
-- [ ] If no (all guests): skip DB write entirely — behave exactly like v1
-- [ ] Destroy the in-memory Yjs doc exactly as v1 already does, regardless of whether a snapshot was saved
+
+Implements Section 6.1. Read it first — the ownership rule is the design work here; the
+columns are the easy part.
+
+- [ ] **Verify a Clerk token on connect** and record the resulting user ID on the in-memory
+      room. Either `verifyToken` from `@clerk/backend` on the socket (note
+      `server/yjsConnection.js` already discards the query string, so a `?token=` needs no doc-name
+      change) or a server-to-server call from a Next route handler that did `await auth()`.
+      **Never take the ID from awareness or any client-supplied field** — CLAUDE.md,
+      "Accounts (Clerk)".
+- [ ] **Track a member set, not an owner**, on the room object: verified user ID → first
+      connect time. A room has no owner and needs no ownership transfer.
+- [ ] **Apply the contribution threshold** from 6.1 — a user earns membership only if they
+      were connected while the document was non-empty, for more than a trivial moment.
+- [ ] **Record `created_at`.** `reserveRoom()` currently stores only a `crypto.randomUUID()`
+      and a timer; nothing anywhere knows when a room was created.
+- [ ] On last-user-disconnect (same trigger point as v1's room cleanup), write **one**
+      `dead_rooms` row plus **one `dead_room_members` row per qualifying user**, in a single
+      transaction. `language` stays null until 10.1 (see Section 6's note).
+- [ ] If the member set is empty (all guests, or nobody cleared the threshold): skip the DB
+      write entirely — behave exactly like v1.
+- [ ] **Cap the snapshot size.** `MAX_CODE_BYTES` guards only what is *sent to Piston*;
+      nothing bounds how large a room's `Y.Text` grows, and an unbounded jsonb write is the
+      one new resource risk this section adds.
+- [ ] **Flush on shutdown.** The eviction timer in `server/rooms.js` is `unref()`'d, so a
+      Railway SIGTERM means queued evictions never fire and their snapshots are silently lost
+      on every deploy. Invisible locally; guaranteed in production.
+- [ ] Destroy the in-memory Yjs doc exactly as v1 already does, regardless of whether a
+      snapshot was saved
+- [ ] **Second migration**: drop `dead_rooms.owner_user_id` and its
+      `(owner_user_id, died_at DESC)` index, create `dead_room_members`. Update
+      `server/db.js`'s hand-written INSERT to match — nothing in the build compares it to
+      `schema.prisma` (see 7.2's acceptance-test note).
 
 ### 7.4 Profile page
 - [ ] New route: `/profile`
 - [ ] Protected — only accessible to logged-in users
-- [ ] List all `dead_rooms` rows where `owner_user_id` matches the current user
+- [ ] List every `dead_rooms` row the current user has a `dead_room_members` row for,
+      newest `died_at` first (Section 6.1 — a room can legitimately appear on more than one
+      person's profile)
 - [ ] Show room name/date/language for each
 - [ ] Clicking a room opens a **read-only** code view
 - [ ] Add a "Copy code" button
