@@ -54,7 +54,12 @@ export default function ActivityToasts({ toasts, onDismiss }: ActivityToastsProp
   if (toasts.length === 0) return null;
 
   return (
-    <ul className="pointer-events-none fixed bottom-4 right-4 z-50 flex flex-col gap-2">
+    // `env(safe-area-inset-bottom)` because a plain `bottom-4` puts these under
+    // the browser's own bottom chrome on iOS, where the toast is half-hidden
+    // behind the tab bar. `max()` keeps the 1rem gap everywhere else.
+    <ul
+      className="pointer-events-none fixed inset-x-4 bottom-[max(1rem,env(safe-area-inset-bottom))] z-50 flex flex-col items-end gap-2 sm:inset-x-auto sm:right-4"
+    >
       {toasts.map((toast) => (
         <ToastRow key={toast.id} toast={toast} onDismiss={onDismiss} />
       ))}

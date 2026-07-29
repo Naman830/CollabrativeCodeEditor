@@ -17,7 +17,7 @@ import { LockIcon } from "../../components/icons";
 import { absoluteTime, getDeadRoomForUser, lifetime, relativeTime } from "../../lib/deadRooms";
 
 export const metadata: Metadata = {
-  title: "Saved room · Collaborative Code Editor",
+  title: "Saved room",
   description: "A read-only snapshot of a room that has closed.",
 };
 

@@ -193,35 +193,67 @@ export default function IdentityDialog({
             </label>
           </div>
 
-          <div className="flex items-center justify-between rounded-xl border border-edge bg-raised/60 p-3">
+          <div className="flex flex-col gap-3 rounded-xl border border-edge bg-raised/60 p-3">
             <div className="flex items-center gap-3">
               <span
                 aria-hidden
-                className="grid h-9 w-9 place-items-center rounded-full text-xs font-bold text-[#141414]"
+                // #141414 rather than a token: this is dark text on the chosen
+                // pastel, and CURSOR_COLORS are mid-tones that carry dark text
+                // in either theme. It must not follow the theme.
+                className="grid h-9 w-9 shrink-0 place-items-center rounded-full text-xs font-bold text-[#141414]"
                 style={{ backgroundColor: color }}
               >
                 {preview}
               </span>
-              <span className="flex flex-col">
+              <span className="flex min-w-0 flex-col">
                 <span className="text-sm text-fg">Your cursor colour</span>
                 <span className="text-xs text-fg-muted">
                   Others see this next to your caret.
                 </span>
               </span>
             </div>
-            <button
-              type="button"
-              onClick={() => setColor(randomColor())}
-              className="rounded-lg border border-edge px-3 py-1.5 text-xs font-medium text-fg-muted transition-colors hover:bg-edge hover:text-fg"
-            >
-              Shuffle
-            </button>
+
+            {/* The whole palette, not just a Shuffle button. `readPeers` already
+                re-assigns a colour that collides with an earlier peer's, so this
+                is a preference rather than a guarantee — but picking beats
+                re-rolling until you get the one you wanted. */}
+            <div role="radiogroup" aria-label="Cursor colour" className="flex flex-wrap gap-1.5">
+              {CURSOR_COLORS.map((swatch) => (
+                <button
+                  key={swatch}
+                  type="button"
+                  role="radio"
+                  aria-checked={swatch === color}
+                  aria-label={`Colour ${swatch}`}
+                  onClick={() => setColor(swatch)}
+                  className={cn(
+                    "h-6 w-6 rounded-full transition-transform",
+                    focusRing,
+                    swatch === color
+                      ? "ring-2 ring-fg ring-offset-2 ring-offset-raised"
+                      : "hover:scale-110",
+                  )}
+                  style={{ backgroundColor: swatch }}
+                />
+              ))}
+              <button
+                type="button"
+                onClick={() => setColor(randomColor())}
+                className={cn(
+                  "ml-auto rounded-lg border border-edge px-2.5 py-1 text-xs font-medium",
+                  "text-fg-muted transition-colors hover:bg-edge hover:text-fg",
+                  focusRing,
+                )}
+              >
+                Shuffle
+              </button>
+            </div>
           </div>
 
           <button
             type="submit"
             disabled={!isValid || busy}
-            className="flex items-center justify-center gap-2 rounded-lg bg-accent px-4 py-2.5 text-sm font-medium text-white shadow-lg shadow-accent/20 transition-colors hover:bg-accent-strong disabled:cursor-not-allowed disabled:bg-raised disabled:text-fg-muted disabled:shadow-none"
+            className={cn(primaryButton, "py-2.5")}
           >
             {busy && (
               <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white/40 border-t-white" />
@@ -229,9 +261,12 @@ export default function IdentityDialog({
             {submitLabel}
           </button>
 
-          {/* Deliberately says nothing about saving. Dead-room snapshots are
-              task 7.3 and do not exist yet, so promising a signed-in user that
-              this room lands in their profile would be a lie. */}
+          {/* An earlier version of this comment said dead-room snapshots did not
+              exist yet and so the dialog must promise nothing about saving. 7.3
+              shipped and that is no longer true — but the promise still has to
+              be hedged, because a snapshot needs a signed-in participant who
+              stayed 60s *and* edited (see CLAUDE.md, "Who a dead room belongs
+              to"). "can be saved" is the strongest honest form. */}
           <p className="text-center text-xs text-fg-muted">
             {!isValid
               ? "Enter both a first and last name to continue."

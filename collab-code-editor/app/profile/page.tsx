@@ -17,7 +17,7 @@ import { ArchiveIcon } from "../components/icons";
 import { listDeadRoomsForUser } from "../lib/deadRooms";
 
 export const metadata: Metadata = {
-  title: "Your rooms · Collaborative Code Editor",
+  title: "Your rooms",
   description: "Read-only snapshots of the rooms you worked in.",
 };
 
@@ -33,7 +33,7 @@ export default async function ProfilePage() {
         <h1 className="text-2xl font-semibold tracking-tight text-fg">Your rooms</h1>
         <p className="text-sm text-fg-muted">
           When a room closes, its final code is saved once and kept here.{" "}
-          <span className="text-fg-muted">Read-only</span> — a closed room can never be run
+          <span className="text-fg">Read-only</span> — a closed room can never be run
           or rejoined.
         </p>
       </div>
