@@ -10,7 +10,7 @@ export type CollabUser = {
   /**
    * Clerk's user ID, present only when this identity was submitted while signed
    * in. Task 7.1 asks for it *on the client*, and client is where it stays: it
-   * is deliberately absent from the awareness payload in `CodeEditor.tsx`,
+   * is deliberately absent from the awareness payload in `hooks/useCollabRoom.ts`,
    * because awareness is peer-controlled and any client could claim any ID
    * (see `lib/awareness.ts`). Task 7.3 needs the sync server to know who was
    * signed in, and it will have to verify a Clerk token itself to find out —

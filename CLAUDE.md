@@ -69,7 +69,15 @@ Key files:
 - `collab-code-editor/proxy.ts` — Clerk's request hook. **Next 16 renamed `middleware.ts` to `proxy.ts`**; it attaches the session and protects nothing
 - `collab-code-editor/app/lib/clerkIdentity.ts` — the one boundary between Clerk and the app; nothing else imports `useUser`
 - `collab-code-editor/app/lib/monacoLoader.ts` — points `@monaco-editor/react` at the npm package so no global AMD loader is installed
-- `collab-code-editor/app/components/CodeEditor.tsx` — the whole client-side Yjs stack (doc, provider, awareness, Monaco binding)
+- `collab-code-editor/app/components/CodeEditor.tsx` — the room screen. **Composition only**: it holds `language`, `code` and the Monaco instance, and hands everything else to the hooks and panels below
+- `collab-code-editor/app/hooks/useCollabRoom.ts` — the whole client-side Yjs stack (doc, provider, awareness, Monaco binding, the shared `execution` map and the stale-run watchdog), plus the peers/toasts it mirrors into React
+- `collab-code-editor/app/hooks/useCodeRunner.ts` — the Run button: the POST to `/api/execute` and the shared-map write, including the `runId` staleness check
+- `collab-code-editor/app/hooks/useCopyToClipboard.ts` — copy + the transient "copied" flag, with the non-secure-context fallback
+- `collab-code-editor/app/lib/executionState.ts` — the `ExecutionState` union, the map/key names, `STALE_RUN_MS`, and `isFailedRun()`; imported by the hooks *and* the output panel
+- `collab-code-editor/app/lib/cursorStyles.ts` — the remote-cursor `<style>` block; the only thing that writes a peer colour into CSS
+- `collab-code-editor/app/lib/download.ts` — Save, in full: a Blob and a throwaway `<a download>`, nothing else
+- `collab-code-editor/app/components/EditorToolbar.tsx` / `OutputPanel.tsx` / `icons.tsx` — the chrome around Monaco; presentational, no Yjs
+- `collab-code-editor/app/components/JoinRoomPrompt.tsx` — the room's name prompt, and the only room-side reader of Clerk
 - `collab-code-editor/app/room/[roomId]/page.tsx` — dynamic room route; `roomId` is the Yjs document name
 - `collab-code-editor/app/components/RoomGate.tsx` — decides whether a room may be entered at all, *before* the editor (and therefore the socket) exists
 - `collab-code-editor/app/lib/rooms.ts` — the client's view of room lifetime: `WS_URL`, the derived HTTP base, `createRoom()`, `checkRoom()`
@@ -122,8 +130,8 @@ purely a limit. A 10x10 multiplication table (~1.1 KB) is enough to hit it. `doc
 now sets `PISTON_OUTPUT_MAX_SIZE: 65536`; **this lives only in compose, so a Piston started any
 other way silently reverts to 1 KB.** The cap can still be hit, so `app/api/execute/route.ts`
 also maps `run.status` (`OL`/`EL`/`TO`) to a plain-English `notice` field, strips the
-fatal-signal line from stderr, and `CodeEditor.tsx` renders the notice in amber under the
-output. `notice` is optional on `ExecuteSuccess` because older records may still sit in a
+fatal-signal line from stderr, and `components/OutputPanel.tsx` renders the notice in amber
+under the output. `notice` is optional on `ExecuteSuccess` because older records may still sit in a
 room's shared `execution` map.
 
 **Piston validates every per-request limit against a configured ceiling, and 400s the whole
@@ -141,7 +149,10 @@ move the seed earlier, and never give Monaco a `defaultValue` — `MonacoBinding
 model to the `Y.Text` contents when it attaches, so it would be discarded anyway.
 
 **Yjs lifecycle is effect-scoped.** The `Y.Doc`, provider, awareness handler, and binding are
-all created and destroyed inside one effect keyed on `roomId` *and the local user*. Do not
+all created and destroyed inside one effect keyed on `roomId` *and the local user*, in
+`hooks/useCollabRoom.ts`. **That is why it is one hook and not several**: the pieces share a
+single teardown, so splitting the doc, the provider and the binding into separate hooks would
+hand each its own cleanup order and reintroduce the destroy-a-doc-nothing-recreates bug. Do not
 hoist the `Y.Doc` into component state — a cleanup that destroys a doc nothing recreates
 breaks both room switching and React StrictMode's dev remount. The effect deliberately
 early-returns until identity is known, so no socket opens before there is a name to announce.
@@ -179,6 +190,20 @@ the obvious `useEffect(() => setUser(load()))` version, so this is not merely a 
 preference. `IdentityDialog` reads storage in lazy `useState` initializers, which is only
 safe because callers keep it out of the server-rendered tree.
 
+**`/room/[roomId]` returns HTTP 500 on every request, and always has.** `lib/monacoLoader.ts`
+imports `monaco-editor` at module scope, which touches `window`; the import chain
+`RoomGate.tsx → CodeEditor.tsx → monacoLoader.ts` therefore throws
+`ReferenceError: window is not defined` while rendering the route on the server. The page
+still *works* — React recovers on the client and every feature (sync, presence, Run, Save)
+behaves normally — so it is invisible from a browser and easy to mistake for a refactor you
+just made. It is not: verified against the pre-refactor commit and against a production
+`next build && next start`, both of which 500 identically. Check it with
+`curl -o /dev/null -w '%{http_code}' localhost:3000/room/<id>`, not with a browser. The cost
+is real anyway (no SSR HTML, an error document served to crawlers and to anything that reads
+the status code), and fixing it means keeping Monaco off the server — a
+`dynamic(..., { ssr: false })` boundary around `CodeEditor` — **without** reintroducing the
+CDN AMD loader the file exists to avoid (see "Accounts (Clerk)" below).
+
 ## Architecture invariant
 
 **`tasks.md`'s section-5 sequence diagram draws execution wrong — do not implement it as
@@ -210,7 +235,7 @@ reaching an inline `style` or the cursor `<style>` tag. Without that check a pee
 `red } body { display: none } .x {` and restyle every other participant's page; this was
 verified exploitable before the guard was added.
 
-The user bar and `CodeEditor.tsx`'s `renderAwarenessStyles` (the remote-cursor `<style>`
+The user bar and `lib/cursorStyles.ts`'s `renderAwarenessStyles` (the remote-cursor `<style>`
 block) both consume `readPeers`'s output rather than touching `awareness.getStates()`
 directly — neither may read raw awareness state itself. Anything new that renders a remote
 name or colour (join/leave toasts) must go through `readPeers` too.
@@ -252,7 +277,7 @@ also what replaced the now-deprecated `createRouteMatcher`.
 
 **`clerkUserId` is client-only and must never enter awareness.** It rides inside `CollabUser`
 to sessionStorage via `setActiveUser`, and stops there. The awareness payload in
-`CodeEditor.tsx` lists its fields one by one and must never become `{...user}`: awareness is
+`hooks/useCollabRoom.ts` lists its fields one by one and must never become `{...user}`: awareness is
 peer-controlled, so a broadcast account ID is a claim anyone can forge, and 7.3 keys saved
 room snapshots on an account. Sourcing that from awareness would let a passing guest write a
 room's code into a stranger's profile — the same class of hole as the CSS-colour injection
@@ -334,7 +359,7 @@ server restart, from silently resurrecting the room it remembers.
 upgrade reaches the browser as an opaque error with no code attached, and the client needs to
 tell "this room is gone" (stop retrying, show the closed screen) from "the network blipped"
 (keep retrying). The constant is `CLOSE_ROOM_NOT_FOUND`, duplicated in
-`server/yjsConnection.js` and `CodeEditor.tsx` because the two workspaces share no code.
+`server/yjsConnection.js` and `hooks/useCollabRoom.ts` because the two workspaces share no code.
 Note y-websocket keeps reconnecting forever on its own, so the client's handler must call
 `provider.disconnect()` — that sets `shouldConnect = false`, which is the only thing `setupWS`
 checks before re-dialling.
@@ -362,7 +387,7 @@ socket to the sync server is opened when a dead room ID is visited.
 ## Shared code execution (the Run button)
 
 Clicking Run broadcasts the result to **everyone in the room**, not just the clicker. This
-rides entirely on Yjs, not a new server message: `CodeEditor.tsx` puts a second shared type,
+rides entirely on Yjs, not a new server message: `hooks/useCollabRoom.ts` puts a second shared type,
 `yDoc.getMap<ExecutionState>("execution")`, on the *same* `Y.Doc` that already holds the code
 (`yDoc.getText("monaco")`). y-websocket's sync protocol doesn't distinguish between shared
 types — it merges the whole document — so this new map syncs to every peer, including late
@@ -378,9 +403,9 @@ every peer whenever the shared status is `"running"` — but two peers can still
 before either has received the other's write over the WebSocket. Both writes converge on the
 same winning record (Yjs's normal conflict resolution); the *loser's* Piston response, when it
 eventually arrives, must recognise `executionMap.get("state")?.runId !== runId` and discard
-itself rather than clobbering the winner. `handleRun`'s `stale()` check covers this, plus the
-case where the effect torn down (room switch/unmount) while the fetch was in flight, via a
-`collabRef` ref (a ref, not state — see the Yjs-lifecycle gotcha below: hoisting the doc into
+itself rather than clobbering the winner. `useCodeRunner`'s `stale()` check covers this, plus
+the case where the effect torn down (room switch/unmount) while the fetch was in flight, via
+the `docRef` ref `useCollabRoom` returns (a ref, not state — see the Yjs-lifecycle gotcha below: hoisting the doc into
 state is exactly what must not happen, and a ref carries no such risk since it doesn't drive
 renders).
 
@@ -476,14 +501,15 @@ exact check runs on the decoded `code` string afterwards and is the one that enf
 cap. Both use UTF-8 byte length, not `String.length`: a document of emoji or CJK is up to 4x
 its character count on the wire, and the wire size is what is being capped.
 
-`CodeEditor.tsx` checks the same constant from `app/lib/execution.ts` before fetching. That
+`hooks/useCodeRunner.ts` checks the same constant from `app/lib/execution.ts` before fetching. That
 is a courtesy, not the enforcement — the route is reachable without the UI — but it means an
 oversized document never crosses the wire, and it writes the failure into the shared
 `execution` map like any other result, since the document is shared and so is the problem.
 
 ## Saving (the Save button)
 
-Save is the mirror image of Run: **entirely local**, and deliberately so. It builds a `Blob`
+Save is the mirror image of Run: **entirely local**, and deliberately so. `lib/download.ts`
+builds a `Blob`
 from the editor's current text, clicks a throwaway `<a download>`, and revokes the object URL
 — no Yjs write, no request to the server, nothing stored anywhere (v1's core principle:
 "saving a file means downloading it to the user's device"). v2 keeps Save local; the only
@@ -499,7 +525,7 @@ other downloaded `Main.java`, same contents. Putting the filename or a "last sav
 shared state would force one peer's choice onto everyone.
 
 **`app/lib/languages.ts` is the only place languages are enumerated.** It holds the dropdown
-labels, the Monaco/Piston language ids, and the file extensions; `CodeEditor.tsx` and
+labels, the Monaco/Piston language ids, and the file extensions; the editor components and
 `app/api/execute/route.ts` both import from it, and the route keeps only the pinned Piston
 *versions* (a property of the sandbox image, not the language). The extension list used to
 live solely in the route's `LANGUAGE_MAP`, which the client cannot import — it pulls in

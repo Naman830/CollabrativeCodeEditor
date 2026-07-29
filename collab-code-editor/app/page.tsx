@@ -201,7 +201,7 @@ export default function Home() {
         </ul>
       </div>
 
-      {/* Never gated on Clerk — see the matching comment in `CodeEditor.tsx`.
+      {/* Never gated on Clerk — see the matching comment in `JoinRoomPrompt.tsx`.
           The prefill is read in lazy useState initializers that run once, so
           the `key` remounts the dialog if a signed-in session resolves after it
           opened. A guest's key never changes, so the common path never

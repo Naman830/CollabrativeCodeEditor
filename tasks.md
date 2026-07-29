@@ -178,6 +178,13 @@ Shipped alongside 7.1, not originally listed here:
 - [ ] If someone visits `/room/<old-dead-id>`, redirect home (same as v1's "room doesn't exist" behavior)
 - [ ] Rate-limit DB writes the same way v1 rate-limits room creation
 
+### 7.6 Housekeeping (not originally listed; recorded because it shipped)
+- [x] Split the 810-line `CodeEditor.tsx` into composable parts before v2 adds multi-file,
+      chat and passwords to the same screen: the Yjs stack moved to `hooks/useCollabRoom.ts`,
+      Run to `hooks/useCodeRunner.ts`, and the chrome to `EditorToolbar` / `OutputPanel` /
+      `JoinRoomPrompt`. Behaviour unchanged — verified with a two-tab browser run of sync,
+      presence, join/leave toasts, shared Run, error output, copy and Save.
+
 ---
 
 ## 8. Explicitly out of scope for v2

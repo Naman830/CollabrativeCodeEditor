@@ -47,7 +47,7 @@ type ActivityToastsProps = {
 };
 
 /**
- * Join/leave banners, stacked bottom-right. `CodeEditor` builds these from
+ * Join/leave banners, stacked bottom-right. `useCollabRoom` builds these from
  * `readPeers`'s output, so the names and colours here are already sanitized.
  */
 export default function ActivityToasts({ toasts, onDismiss }: ActivityToastsProps) {
