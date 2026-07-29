@@ -21,6 +21,7 @@
     "next": "16.2.10",
     "react": "19.2.4",
     "react-dom": "19.2.4",
+    "react-resizable-panels": "^4.12.2",
     "y-monaco": "^0.1.6",
     "y-protocols": "^1.0.7",
     "y-websocket": "^1.5.4",

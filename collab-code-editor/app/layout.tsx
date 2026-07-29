@@ -1,6 +1,7 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
-import { ClerkProvider } from "@clerk/nextjs";
+import AppProviders from "./components/AppProviders";
+import { THEME_SCRIPT } from "./lib/theme";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -14,9 +15,21 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Collaborative Code Editor",
+  title: {
+    default: "Collaborative Code Editor",
+    template: "%s · Collaborative Code Editor",
+  },
   description:
     "Real-time collaborative code editor with multi-cursor editing and sandboxed code execution.",
+};
+
+export const viewport: Viewport = {
+  // Matches --app in globals.css for each theme, so the mobile browser's own
+  // chrome blends with the page instead of framing it in the wrong colour.
+  themeColor: [
+    { media: "(prefers-color-scheme: light)", color: "#f6f7f9" },
+    { media: "(prefers-color-scheme: dark)", color: "#0c0d10" },
+  ],
 };
 
 export default function RootLayout({
@@ -25,45 +38,30 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    // suppressHydrationWarning covers only this tag's own attributes, so it
-    // silences markers browser extensions add to <html> without hiding a real
-    // mismatch anywhere else. We set no attributes here ourselves.
+    // suppressHydrationWarning covers only this tag's own attributes. It is
+    // required rather than cosmetic: the inline script below writes `class="dark"`
+    // onto <html> before React hydrates, and without this React would treat that
+    // as a mismatch, re-render from the nearest boundary and undo it. It also
+    // still silences markers browser extensions add here.
     <html
       lang="en"
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
       suppressHydrationWarning
     >
-      <body className="min-h-full flex flex-col">
-        {/* Inside <body>, not wrapping <html> — Clerk's explicit instruction.
-            ClerkProvider renders no DOM element of its own, so the flex column
-            above still applies directly to the page.
-
-            Themed with `variables` only, and deliberately NOT with the `dark`
-            theme from `@clerk/ui`: that theme is a separate runtime bundle
-            Clerk fetches from its CDN, and on the room route Monaco's AMD
-            loader has already installed a global `define.amd`, which makes that
-            UMD bundle register itself as an AMD module instead of executing.
-            Clerk then fails with `failed_to_load_clerk_ui` and never finishes
-            loading — so a signed-in user deep-linking into a room silently got
-            no Clerk session at all. It is a race (Monaco vs the CDN), so it
-            reproduced only sometimes, which is what made it worth this comment.
-            These variables ship inside clerk-js itself and need no extra
-            bundle. Values are --color-app/panel/edge/accent from globals.css. */}
-        <ClerkProvider
-          appearance={{
-            variables: {
-              colorPrimary: "#4c8dff",
-              colorBackground: "#1b1b1b",
-              colorForeground: "#fafafa",
-              colorInput: "#232323",
-              colorInputForeground: "#fafafa",
-              colorNeutral: "#ffffff",
-              colorBorder: "#2e2e2e",
-            },
-          }}
-        >
-          {children}
-        </ClerkProvider>
+      <head>
+        {/* Runs synchronously during HTML parsing, before first paint, so the
+            saved theme is applied with no flash of the wrong one. This is the
+            pattern Next documents for exactly this problem (see
+            `docs/01-app/02-guides/preventing-flash-before-hydration.md`,
+            "Themes"). It cannot be done in React: by the time hydration runs the
+            browser has already painted the body once. */}
+        <script dangerouslySetInnerHTML={{ __html: THEME_SCRIPT }} />
+      </head>
+      <body className="flex min-h-full flex-col bg-app text-fg">
+        {/* Providers live inside <body>, per Clerk's instruction. Neither renders
+            a DOM element of its own, so the flex column above still applies
+            directly to the page. */}
+        <AppProviders>{children}</AppProviders>
       </body>
     </html>
   );
