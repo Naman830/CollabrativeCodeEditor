@@ -568,6 +568,55 @@ Shipped alongside 7.4, not originally listed here:
       `JoinRoomPrompt`. Behaviour unchanged — verified with a two-tab browser run of sync,
       presence, join/leave toasts, shared Run, error output, copy and Save.
 
+### 7.7 UI/UX redesign (not originally listed; recorded because it shipped)
+
+A full visual and interaction pass over every screen, requested directly rather than from this
+checklist. **No behavioural change to sync, presence, execution, auth or persistence** — the
+whole point was that the room keeps working exactly as 7.1–7.4 left it.
+
+- [x] **A real design system.** `app/globals.css` went from six dark-only colours to semantic
+      light *and* dark tokens (`--app`/`--panel`/`--raised`/`--edge`/`--fg`/`--accent`/
+      `--success`/`--danger`/`--warning`/`--code-bg`), surfaced to Tailwind with
+      `@theme inline` so one class on `<html>` re-resolves every utility. The ~200 literal
+      `zinc-*`/`emerald-*`/`amber-*`/`red-*` classes and the hardcoded `#2c2c2c`, `#101010`
+      and `#1f1414` hexes were swept onto tokens.
+- [x] **Light/dark theme with a three-way Light/System/Dark toggle**, defaulting to the OS
+      preference and persisted in `localStorage`. Includes the no-flash inline `<head>` script,
+      Monaco themes matching `--code-bg`, and Clerk's `appearance` following the theme — which
+      is why `ClerkProvider` moved into a client `AppProviders`.
+- [x] **A freely resizable editor/output split** via `react-resizable-panels` v4: drag to
+      resize, a button to switch between side-by-side and stacked, collapse/expand, sizes and
+      orientation persisted. Keyboard-resizable and double-click-to-reset come from the
+      library's `Separator`.
+- [x] **The two chrome rows became one.** `EditorToolbar.tsx` and `UserBar.tsx` were deleted
+      and replaced by `RoomChrome.tsx` + `PresenceStack.tsx`, roughly halving the vertical
+      space above the editor. Nothing was dropped: room id, sync state, presence, language,
+      Run and Save are all still there, plus the theme toggle.
+- [x] **Responsive across the whole app**, where before there was exactly one breakpoint in
+      the codebase. Phones get a forced stack, a wrapping chrome bar (no controls hidden), word
+      wrap in Monaco, and `h-dvh` so the URL bar stops clipping the output panel.
+- [x] **Designed failure screens**: root `not-found.tsx`, `error.tsx` and `global-error.tsx`.
+      Still no `loading.tsx` anywhere — a Suspense boundary would start streaming and turn
+      every real 404 into a soft 200.
+- [x] **Fixed the long-standing `/room/[roomId]` HTTP 500.** `RoomGate` now loads the editor
+      through `dynamic(..., { ssr: false })`, so the route server-renders for the first time.
+      This was not cosmetic: the no-flash theme script lives in the root layout's `<head>`, and
+      a route that 500s never ships one.
+- [x] **Deduplicated the copy-pasted button styles** into `app/lib/ui.ts`. `primaryButton` and
+      `secondaryButton` had been declared byte-for-byte in both `ProfileShell.tsx` and
+      `RoomGate.tsx`.
+- [x] **Accessibility and polish**: a focus trap in `IdentityDialog` (it is `aria-modal` but
+      Tab used to walk straight out of it), the first/last-name row stacking on narrow screens,
+      the full eight-colour cursor palette instead of a Shuffle-only button, a consistent
+      `focus-visible` ring, toasts clear of the mobile browser chrome, and a favicon
+      (`app/icon.svg`) where the app previously 404'd on every page load.
+- [x] **Verified end to end in a real browser**, two tabs: presence, sync, shared Run with
+      attribution, and — the load-bearing one — that dragging, flipping orientation, collapsing
+      and expanding, and switching theme all leave the shared output and editor contents intact
+      in *both* tabs. That is the assertion that proves `<Editor>` never remounted and the Yjs
+      stack was never torn down. Plus `/room/<id>` and `/profile` both answering 200,
+      `/nosuchpage` a real 404, and no Monaco in any server-rendered HTML.
+
 ---
 
 ## 8. Explicitly out of scope for v2

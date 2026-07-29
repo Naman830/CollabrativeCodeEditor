@@ -894,12 +894,15 @@ turns a shared `/profile` link into a silent bounce.
 **The code view is a `<pre>`, and Monaco must not come back.** An editor is the one widget on
 this site that means "you can type here", which is the opposite of what §7.4's last bullet
 asks for; there is nothing to highlight while `language` is null; and `lib/monacoLoader.ts`
-imports `monaco-editor` at module scope, which is why `/room/[roomId]` 500s on the server.
-Keeping that chain out of this route's graph is what lets `/profile` server-render at all —
-`curl -o /dev/null -w '%{http_code}'` gives **200** for `/profile` and **500** for `/room/<id>`,
-and that contrast is the regression test. Line numbers are one string in a `sticky left-0`
-`<pre>`, not one element per line: a 256 KB snapshot is ~8000 lines, and 8000 gutter spans is
-8000 DOM nodes for numbers nobody selects.
+imports `monaco-editor` at module scope, which is why that import must stay out of this
+route's graph. **An earlier version of this paragraph said the regression test was `/profile`
+answering 200 while `/room/<id>` answered 500. That contrast no longer exists** — the UI
+redesign fixed the room route with a `dynamic(..., { ssr: false })` boundary in `RoomGate`, so
+both now answer 200. The replacement check is
+`curl -s localhost:3000/room/<id> | grep -c monaco`, which must be **0**; see the
+`/room/[roomId]` gotcha above. Line numbers are one string in a `sticky left-0` `<pre>`, not
+one element per line: a 256 KB snapshot is ~8000 lines, and 8000 gutter spans is 8000 DOM
+nodes for numbers nobody selects.
 
 **The listing does not select `files`.** A snapshot is up to 256 KB, so a hundred of them is
 ~25 MB pulled out of Neon to render metadata cards. That is also why the cards carry no code
@@ -981,11 +984,21 @@ section 10.1 of `tasks.md` changes *what* Save produces once multi-file lands �
 downloads directly as today, 2+ files zip into `project.zip` via JSZip — but not where it
 goes.
 
-It must stay off the shared `Y.Doc`. The language dropdown is a per-user editing preference,
+It must stay off the shared `Y.Doc`. The language selector is a per-user editing preference,
 so two peers looking at the same text can be on different languages, and each has to get
 their own extension — verified with two tabs: one on C++ downloaded `main.cpp` while the
 other downloaded `Main.java`, same contents. Putting the filename or a "last saved" flag into
 shared state would force one peer's choice onto everyone.
+
+**The selector is the file tab, not a toolbar dropdown.** Since the UI redesign it lives in
+`EditorTabBar.tsx` as a real `<select>` layered invisibly (`opacity-0`) over the tab, with the
+visible `main.py` / `Main.java` label `aria-hidden` beneath it. The filename is derived from
+the language by `downloadFileName()`, so making the tab the control that changes it keeps one
+idea in one place — and the invisible-native-select trick keeps the mobile picker, the
+keyboard contract and the screen-reader semantics for free. Match it in tests on
+`select[aria-label="Language"]`; there is no `#language-select` id any more. This is still a
+per-user preference and still nowhere near the shared doc — §10.1 moving it to room creation
+is unaffected.
 
 **`app/lib/languages.ts` is the only place languages are enumerated.** It holds the dropdown
 labels, the Monaco/Piston language ids, and the file extensions; the editor components and
@@ -1209,6 +1222,14 @@ explicitly out of scope, so it stays deferred past v2.
 The whole v2 loop now closes: `server/rooms.js`'s `destroyRoom()` writes the snapshot and
 `/profile` reads it back, so a signed-in user's work really does outlive the tab. An older note
 here said "nothing reads it yet — do not add UI pointing at one"; that is no longer true.
+
+**A UI/UX redesign also shipped, outside the checklist** — it is recorded as `tasks.md` §7.7
+and described under "Design system and theming" and "The resizable room layout" above. It
+changed no behaviour in sync, presence, execution, auth or persistence, but it touched nearly
+every component, so notes written before it may describe markup that no longer exists.
+Three concrete things it invalidated across this file, all corrected in place: `/room/[roomId]`
+no longer 500s, the app is no longer dark-only, and `EditorToolbar.tsx`/`UserBar.tsx` are gone
+(now `RoomChrome.tsx` + `PresenceStack.tsx`).
 
 **7.5 is partly satisfied already, but do not tick it on that basis.** Its first two bullets —
 a dead room's `room_id` can never be reused, and `/room/<old-dead-id>` sends you home — have
