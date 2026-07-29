@@ -11,7 +11,8 @@
 // which is the wrong half for a failed query. Both props are passed; only this
 // one re-runs the server render.
 
-import { ProfilePanel, primaryButton } from "../components/ProfileShell";
+import { ProfilePanel } from "../components/ProfileShell";
+import { primaryButton } from "../lib/ui";
 
 export default function ProfileError({
   error,
@@ -42,7 +43,7 @@ export default function ProfileError({
         }
         title="Couldn't load your rooms"
       >
-        <p className="text-sm text-zinc-400">
+        <p className="text-sm text-fg-muted">
           Your saved rooms are still there — we just couldn&apos;t reach the database. Try
           again in a moment.
         </p>
@@ -52,7 +53,7 @@ export default function ProfileError({
         {/* The digest is the only handle on a server-side error the browser gets;
             the message itself is redacted in production. */}
         {error.digest && (
-          <p className="font-mono text-[11px] text-zinc-600">Reference: {error.digest}</p>
+          <p className="font-mono text-[11px] text-fg-subtle">Reference: {error.digest}</p>
         )}
       </ProfilePanel>
     </main>

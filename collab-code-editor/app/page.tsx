@@ -1,17 +1,80 @@
 "use client";
 
 import { useState, type SubmitEventHandler } from "react";
-import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { SignInButton, SignUpButton, UserButton } from "@clerk/nextjs";
 import IdentityDialog from "./components/IdentityDialog";
+import SiteNav from "./components/SiteNav";
+import { BoltIcon, CursorIcon, ShieldIcon } from "./components/icons";
 import { signedInUser, useClerkIdentity } from "./lib/clerkIdentity";
 import { RoomCreateError, createRoom } from "./lib/rooms";
+import { cn, inputField, primaryButton, secondaryButton } from "./lib/ui";
 import { setActiveUser, type CollabUser } from "./lib/user";
 
 // "No sign-up" was true in v1 and stopped being true the moment Clerk landed.
 // Signing in is optional, not absent — which is the claim worth making.
-const FEATURES = ["Live cursors", "Sandboxed runs", "Sign-in optional"];
+const FEATURES = [
+  {
+    Icon: CursorIcon,
+    title: "Live cursors",
+    body: "Every caret and selection, in that person's colour, as they type.",
+  },
+  {
+    Icon: ShieldIcon,
+    title: "Sandboxed runs",
+    body: "Five languages, executed in an isolated container with hard resource limits.",
+  },
+  {
+    Icon: BoltIcon,
+    title: "Sign-in optional",
+    body: "Join as a guest in one click. Sign in only if you want your rooms kept.",
+  },
+];
+
+/** A still frame of the room, purely decorative. */
+function EditorPreview() {
+  return (
+    <div
+      aria-hidden
+      className="overflow-hidden rounded-2xl border border-edge bg-panel shadow-2xl shadow-[var(--shadow-color)]"
+    >
+      <div className="flex h-10 items-center gap-2 border-b border-edge px-3">
+        <span className="h-2.5 w-2.5 rounded-full bg-danger/70" />
+        <span className="h-2.5 w-2.5 rounded-full bg-warning/70" />
+        <span className="h-2.5 w-2.5 rounded-full bg-success/70" />
+        <span className="ml-2 truncate font-mono text-[11px] text-fg-subtle">room-a4f2c1</span>
+        <span className="ml-auto flex -space-x-2">
+          {["#64b5f6", "#81c784", "#ba68c8"].map((color) => (
+            <span
+              key={color}
+              className="h-5 w-5 rounded-full ring-2 ring-panel"
+              style={{ backgroundColor: color }}
+            />
+          ))}
+        </span>
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-[1.4fr_1fr]">
+        <pre className="overflow-hidden bg-code px-4 py-3 font-mono text-[11px] leading-relaxed text-fg sm:border-r sm:border-edge">
+          <span className="text-fg-subtle">1 </span>
+          <span className="text-accent">def</span> solve(n):{"\n"}
+          <span className="text-fg-subtle">2 </span>
+          {"    "}
+          <span className="text-accent">return</span> sum(range(n)){"\n"}
+          <span className="text-fg-subtle">3 </span>
+          {"\n"}
+          <span className="text-fg-subtle">4 </span>print(solve(
+          <span className="text-success">10</span>))
+        </pre>
+
+        <div className="bg-code px-4 py-3 font-mono text-[11px] leading-relaxed">
+          <p className="text-fg-subtle">Output</p>
+          <p className="mt-1 text-fg">45</p>
+          <p className="mt-2 text-success">✓ exit 0 · 0.4s</p>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 export default function Home() {
   const router = useRouter();
@@ -68,150 +131,98 @@ export default function Home() {
   };
 
   return (
-    <main className="relative flex min-h-screen items-center justify-center overflow-hidden px-4 py-12">
-      <div
-        aria-hidden
-        className="pointer-events-none absolute inset-0 bg-[radial-gradient(55rem_35rem_at_50%_-15%,rgba(76,141,255,0.16),transparent_70%)]"
-      />
+    <>
+      <SiteNav />
 
-      <div className="relative w-full max-w-md">
-        <div className="flex flex-col items-center gap-4 text-center">
-          <span className="grid h-12 w-12 place-items-center rounded-xl bg-gradient-to-br from-accent to-accent-strong shadow-lg shadow-accent/20">
-            <svg
-              aria-hidden
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2.2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              className="h-6 w-6 text-white"
-            >
-              <path d="m9 8-4 4 4 4" />
-              <path d="m15 8 4 4-4 4" />
-            </svg>
-          </span>
-          <div className="flex flex-col gap-1.5">
-            <h1 className="text-3xl font-semibold tracking-tight text-zinc-50">
-              Collaborative Code Editor
-            </h1>
-            <p className="text-sm text-zinc-400">
-              Write and run code together, in the same room, in real time.
-            </p>
-          </div>
-        </div>
+      <main className="wash relative flex-1 px-4 py-12 sm:py-20">
+        <div className="mx-auto grid w-full max-w-5xl items-center gap-12 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)]">
+          <div className="flex flex-col gap-6">
+            <div className="flex flex-col gap-4">
+              <h1 className="text-4xl font-semibold tracking-tight text-balance text-fg sm:text-5xl">
+                Code together, run it together.
+              </h1>
+              <p className="max-w-md text-base text-pretty text-fg-muted">
+                A shared editor with live cursors and sandboxed execution. Spin up a room, send
+                the link, and everyone sees the same code and the same results.
+              </p>
+            </div>
 
-        {/* Signing in is an offer, never a gate: the create and join flows below
-            work identically either way. The contents wait for Clerk to resolve
-            so the buttons don't flash at someone already signed in — but the
-            row keeps its height while waiting, or the card below jumps out from
-            under the pointer the moment Clerk lands. */}
-        <div className="mt-6 flex h-8 items-center justify-center gap-3">
-          {clerk.ready && (
-            clerk.signedIn ? (
-              <>
-                <UserButton />
-                {/* The only way into /profile. Signed-out visitors get no link,
-                    because they have nothing there and the page would only tell
-                    them to sign in — which the buttons beside this already do. */}
-                <Link
-                  href="/profile"
-                  className="rounded-lg border border-edge bg-panel/60 px-3.5 py-1.5 text-xs font-medium text-zinc-200 transition-colors hover:border-zinc-600 hover:bg-raised"
+            <div className={cn("flex flex-col gap-4 rounded-2xl border border-edge bg-panel p-5 shadow-xl shadow-[var(--shadow-color)]")}>
+              <button type="button" onClick={handleCreate} className={cn(primaryButton, "w-full py-2.5")}>
+                Create a new room
+              </button>
+
+              <div className="flex items-center gap-3 text-[11px] font-medium uppercase tracking-widest text-fg-subtle">
+                <span className="h-px flex-1 bg-edge" />
+                or
+                <span className="h-px flex-1 bg-edge" />
+              </div>
+
+              <form onSubmit={handleJoin} className="flex flex-col gap-2">
+                <label htmlFor="room-id" className="text-xs font-medium text-fg-muted">
+                  Have a room ID?
+                </label>
+                <div className="flex flex-col gap-2 sm:flex-row">
+                  <input
+                    id="room-id"
+                    type="text"
+                    value={roomId}
+                    onChange={(e) => setRoomId(e.target.value)}
+                    placeholder="Paste or type a room ID"
+                    className={cn(inputField, "font-mono placeholder:font-sans sm:flex-1")}
+                  />
+                  <button type="submit" className={cn(secondaryButton, "sm:w-auto")}>
+                    Join
+                  </button>
+                </div>
+              </form>
+
+              {/* tasks.md 7.1 item 3: the guest path stays *visible*, not merely
+                  implied by the buttons above happening to work. Static on
+                  purpose — it is equally true signed in or out (the room
+                  identity is per-tab either way), and a line that appeared a
+                  beat after Clerk resolved would shift the card mid-click. */}
+              <p className="text-center text-xs text-fg-subtle">
+                Both work as a <span className="text-fg-muted">guest</span> — no account needed.
+              </p>
+
+              {createError && (
+                <p
+                  role="alert"
+                  className="rounded-lg border border-danger/40 bg-danger-soft px-3 py-2 text-sm text-danger"
                 >
-                  My rooms
-                </Link>
-                <span className="hidden text-xs text-zinc-500 sm:inline">
-                  Signed in as {clerk.label}
-                </span>
-              </>
-            ) : (
-              <>
-                <SignInButton mode="modal">
-                  <button
-                    type="button"
-                    className="rounded-lg border border-edge bg-panel/60 px-3.5 py-1.5 text-xs font-medium text-zinc-200 transition-colors hover:border-zinc-600 hover:bg-raised"
-                  >
-                    Sign in
-                  </button>
-                </SignInButton>
-                <SignUpButton mode="modal">
-                  <button
-                    type="button"
-                    className="rounded-lg border border-edge bg-panel/60 px-3.5 py-1.5 text-xs font-medium text-zinc-200 transition-colors hover:border-zinc-600 hover:bg-raised"
-                  >
-                    Sign up
-                  </button>
-                </SignUpButton>
-              </>
-            )
-          )}
-        </div>
-
-        <div className="mt-8 rounded-2xl border border-edge bg-panel/80 p-6 shadow-2xl shadow-black/40 backdrop-blur">
-          <form onSubmit={handleJoin} className="flex flex-col gap-2">
-            <label htmlFor="room-id" className="text-xs font-medium text-zinc-400">
-              Have a room ID?
-            </label>
-            <input
-              id="room-id"
-              type="text"
-              value={roomId}
-              onChange={(e) => setRoomId(e.target.value)}
-              placeholder="Paste or type a room ID"
-              className="w-full rounded-lg border border-edge bg-raised px-3 py-2.5 font-mono text-sm text-zinc-100 placeholder:font-sans placeholder:text-zinc-500 focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/30"
-            />
-            <button
-              type="submit"
-              className="mt-1 w-full rounded-lg bg-accent px-4 py-2.5 text-sm font-medium text-white shadow-lg shadow-accent/20 transition-colors hover:bg-accent-strong"
-            >
-              Join room
-            </button>
-          </form>
-
-          <div className="my-5 flex items-center gap-3 text-[11px] font-medium uppercase tracking-widest text-zinc-600">
-            <span className="h-px flex-1 bg-edge" />
-            or
-            <span className="h-px flex-1 bg-edge" />
+                  {createError}
+                </p>
+              )}
+            </div>
           </div>
 
-          <button
-            type="button"
-            onClick={handleCreate}
-            className="w-full rounded-lg border border-edge bg-raised px-4 py-2.5 text-sm font-medium text-zinc-100 transition-colors hover:border-zinc-600 hover:bg-[#2c2c2c]"
-          >
-            Create a new room
-          </button>
-
-          {/* tasks.md 7.1 item 3: the guest path stays *visible*, not merely
-              implied by the buttons above happening to work. Static on purpose
-              — it is equally true signed in or out (the room identity is
-              per-tab either way), and a line that appeared a beat after Clerk
-              resolved would shift the card mid-click. */}
-          <p className="mt-4 text-center text-xs text-zinc-500">
-            Both work as a <span className="text-zinc-300">guest</span> — no account needed.
-          </p>
-
-          {createError && (
-            <p
-              role="alert"
-              className="mt-4 rounded-lg border border-red-900/60 bg-red-950/40 px-3 py-2 text-sm text-red-300"
-            >
-              {createError}
-            </p>
-          )}
+          <div className="hidden lg:block">
+            <EditorPreview />
+          </div>
         </div>
 
-        <ul className="mt-6 flex flex-wrap items-center justify-center gap-2">
-          {FEATURES.map((feature) => (
+        <ul className="mx-auto mt-16 grid w-full max-w-5xl gap-4 sm:grid-cols-3">
+          {FEATURES.map(({ Icon, title, body }) => (
             <li
-              key={feature}
-              className="rounded-full border border-edge bg-panel/60 px-3 py-1 text-xs text-zinc-400"
+              key={title}
+              className="flex flex-col gap-2 rounded-xl border border-edge bg-panel/60 p-4"
             >
-              {feature}
+              <span className="grid h-8 w-8 place-items-center rounded-lg bg-accent-soft text-accent">
+                <Icon className="h-4 w-4" />
+              </span>
+              <h2 className="text-sm font-medium text-fg">{title}</h2>
+              <p className="text-xs text-pretty text-fg-muted">{body}</p>
             </li>
           ))}
         </ul>
-      </div>
+      </main>
+
+      <footer className="border-t border-edge px-4 py-6">
+        <p className="mx-auto max-w-5xl text-xs text-fg-subtle">
+          Rooms live only while someone is in them. Sign in to keep a snapshot when one closes.
+        </p>
+      </footer>
 
       {/* Never gated on Clerk — see the matching comment in `JoinRoomPrompt.tsx`.
           The prefill is read in lazy useState initializers that run once, so
@@ -236,6 +247,6 @@ export default function Home() {
           signedInAs={clerkUser?.label}
         />
       )}
-    </main>
+    </>
   );
 }

@@ -25,15 +25,15 @@ function ToastRow({ toast, onDismiss }: ToastRowProps) {
   }, [toast.id, onDismiss]);
 
   return (
-    <li className="animate-toast-in pointer-events-auto flex items-center gap-2.5 rounded-xl border border-edge bg-panel/95 py-2 pl-2.5 pr-3.5 text-xs text-zinc-200 shadow-xl shadow-black/40 backdrop-blur">
+    <li className="animate-toast-in pointer-events-auto flex items-center gap-2.5 rounded-xl border border-edge bg-panel/95 py-2 pl-2.5 pr-3.5 text-xs text-fg shadow-xl shadow-[var(--shadow-color)] backdrop-blur">
       <span
         aria-hidden
         className="h-2.5 w-2.5 shrink-0 rounded-full ring-2 ring-panel"
         style={{ backgroundColor: toast.color }}
       />
       <span>
-        <span className="font-medium text-zinc-100">{toast.name}</span>{" "}
-        <span className="text-zinc-400">
+        <span className="font-medium text-fg">{toast.name}</span>{" "}
+        <span className="text-fg-muted">
           {toast.kind === "join" ? "joined the room" : "left the room"}
         </span>
       </span>

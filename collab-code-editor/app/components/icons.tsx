@@ -236,6 +236,15 @@ export function WifiOffIcon({ className }: IconProps = {}) {
   );
 }
 
+export function UserIcon({ className }: IconProps = {}) {
+  return (
+    <Stroke className={className} width={1.8}>
+      <path d="M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z" />
+      <path d="M5 20a7 7 0 0 1 14 0" />
+    </Stroke>
+  );
+}
+
 export function UsersIcon({ className }: IconProps = {}) {
   return (
     <Stroke className={className}>

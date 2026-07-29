@@ -2,11 +2,13 @@
 
 import { useEffect, useRef, useState, type SubmitEventHandler } from "react";
 import {
+  CURSOR_COLORS,
   loadNamePrefill,
   randomColor,
   sanitizeName,
   type CollabUser,
 } from "../lib/user";
+import { cn, focusRing, primaryButton } from "../lib/ui";
 
 type IdentityDialogProps = {
   title: string;
@@ -61,15 +63,44 @@ export default function IdentityDialog({
   );
   const [color, setColor] = useState(() => randomColor());
   const firstNameRef = useRef<HTMLInputElement>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     firstNameRef.current?.focus();
   }, []);
 
+  // Escape closes (when there is anywhere to close *to*), and Tab is trapped.
+  //
+  // The trap is not decoration: this is `aria-modal="true"`, which promises
+  // assistive tech that the rest of the page is inert — but nothing enforces
+  // that for a keyboard user, so without it Tab walks straight out of the dialog
+  // and into a page that is visually behind a scrim. The in-room prompt is the
+  // worst case: it has no cancel button, so escaping it by Tab strands you on a
+  // room you cannot interact with.
   useEffect(() => {
-    if (!onCancel) return;
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onCancel();
+      if (e.key === "Escape" && onCancel) {
+        onCancel();
+        return;
+      }
+      if (e.key !== "Tab" || !dialogRef.current) return;
+
+      const focusable = dialogRef.current.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), input:not([disabled]), select, textarea, a[href], [tabindex]:not([tabindex="-1"])',
+      );
+      if (focusable.length === 0) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      const active = document.activeElement;
+
+      // Wrap at both ends, and pull focus back in if it has already escaped.
+      if (e.shiftKey && (active === first || !dialogRef.current.contains(active))) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && (active === last || !dialogRef.current.contains(active))) {
+        e.preventDefault();
+        first.focus();
+      }
     };
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
@@ -91,30 +122,31 @@ export default function IdentityDialog({
   };
 
   const fieldClass =
-    "w-full rounded-lg border border-edge bg-raised px-3 py-2 text-sm text-zinc-100 transition-colors focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/30";
+    "w-full rounded-lg border border-edge bg-raised px-3 py-2 text-sm text-fg transition-colors focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/30";
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4 dark:bg-black/70 backdrop-blur-sm">
       <div
+        ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby="identity-dialog-title"
-        className="w-full max-w-sm rounded-2xl border border-edge bg-panel p-6 text-zinc-200 shadow-2xl shadow-black/50"
+        className="w-full max-w-sm rounded-2xl border border-edge bg-panel p-6 text-fg shadow-2xl shadow-[var(--shadow-color)]"
       >
         <div className="flex items-start justify-between gap-4">
           <div className="flex flex-col gap-1">
             <h2
               id="identity-dialog-title"
-              className="text-lg font-semibold text-zinc-50"
+              className="text-lg font-semibold text-fg"
             >
               {title}
             </h2>
-            <p className="text-sm text-zinc-400">{description}</p>
+            <p className="text-sm text-fg-muted">{description}</p>
             {signedInAs && (
-              <p className="mt-1 flex items-center gap-1.5 text-xs text-zinc-500">
+              <p className="mt-1 flex items-center gap-1.5 text-xs text-fg-muted">
                 <span
                   aria-hidden
-                  className="h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-500"
+                  className="h-1.5 w-1.5 shrink-0 rounded-full bg-success"
                 />
                 <span className="truncate">Signed in as {signedInAs}</span>
               </p>
@@ -125,7 +157,7 @@ export default function IdentityDialog({
               type="button"
               onClick={onCancel}
               aria-label="Close"
-              className="-mr-1 -mt-1 rounded-lg px-2 py-1 text-lg leading-none text-zinc-500 transition-colors hover:bg-raised hover:text-zinc-200"
+              className="-mr-1 -mt-1 rounded-lg px-2 py-1 text-lg leading-none text-fg-muted transition-colors hover:bg-raised hover:text-fg"
             >
               &times;
             </button>
@@ -133,9 +165,11 @@ export default function IdentityDialog({
         </div>
 
         <form onSubmit={handleSubmit} className="mt-6 flex flex-col gap-4">
-          <div className="flex gap-3">
+          {/* Stacks below `sm`: two side-by-side inputs on a 360px screen left
+              about 140px each, which is not enough to see a name you typed. */}
+          <div className="flex flex-col gap-3 sm:flex-row">
             <label className="flex flex-1 flex-col gap-1.5">
-              <span className="text-xs font-medium text-zinc-400">First name</span>
+              <span className="text-xs font-medium text-fg-muted">First name</span>
               <input
                 ref={firstNameRef}
                 type="text"
@@ -147,7 +181,7 @@ export default function IdentityDialog({
               />
             </label>
             <label className="flex flex-1 flex-col gap-1.5">
-              <span className="text-xs font-medium text-zinc-400">Last name</span>
+              <span className="text-xs font-medium text-fg-muted">Last name</span>
               <input
                 type="text"
                 value={lastName}
@@ -169,8 +203,8 @@ export default function IdentityDialog({
                 {preview}
               </span>
               <span className="flex flex-col">
-                <span className="text-sm text-zinc-200">Your cursor colour</span>
-                <span className="text-xs text-zinc-500">
+                <span className="text-sm text-fg">Your cursor colour</span>
+                <span className="text-xs text-fg-muted">
                   Others see this next to your caret.
                 </span>
               </span>
@@ -178,7 +212,7 @@ export default function IdentityDialog({
             <button
               type="button"
               onClick={() => setColor(randomColor())}
-              className="rounded-lg border border-edge px-3 py-1.5 text-xs font-medium text-zinc-300 transition-colors hover:bg-[#2c2c2c] hover:text-zinc-100"
+              className="rounded-lg border border-edge px-3 py-1.5 text-xs font-medium text-fg-muted transition-colors hover:bg-edge hover:text-fg"
             >
               Shuffle
             </button>
@@ -187,7 +221,7 @@ export default function IdentityDialog({
           <button
             type="submit"
             disabled={!isValid || busy}
-            className="flex items-center justify-center gap-2 rounded-lg bg-accent px-4 py-2.5 text-sm font-medium text-white shadow-lg shadow-accent/20 transition-colors hover:bg-accent-strong disabled:cursor-not-allowed disabled:bg-raised disabled:text-zinc-500 disabled:shadow-none"
+            className="flex items-center justify-center gap-2 rounded-lg bg-accent px-4 py-2.5 text-sm font-medium text-white shadow-lg shadow-accent/20 transition-colors hover:bg-accent-strong disabled:cursor-not-allowed disabled:bg-raised disabled:text-fg-muted disabled:shadow-none"
           >
             {busy && (
               <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white/40 border-t-white" />
@@ -198,7 +232,7 @@ export default function IdentityDialog({
           {/* Deliberately says nothing about saving. Dead-room snapshots are
               task 7.3 and do not exist yet, so promising a signed-in user that
               this room lands in their profile would be a lie. */}
-          <p className="text-center text-xs text-zinc-500">
+          <p className="text-center text-xs text-fg-muted">
             {!isValid
               ? "Enter both a first and last name to continue."
               : signedInAs

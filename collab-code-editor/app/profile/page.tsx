@@ -30,10 +30,10 @@ export default async function ProfilePage() {
   return (
     <ProfileShell backHref="/" backLabel="Home">
       <div className="mb-6 flex flex-col gap-1.5">
-        <h1 className="text-2xl font-semibold tracking-tight text-zinc-50">Your rooms</h1>
-        <p className="text-sm text-zinc-400">
+        <h1 className="text-2xl font-semibold tracking-tight text-fg">Your rooms</h1>
+        <p className="text-sm text-fg-muted">
           When a room closes, its final code is saved once and kept here.{" "}
-          <span className="text-zinc-300">Read-only</span> — a closed room can never be run
+          <span className="text-fg-muted">Read-only</span> — a closed room can never be run
           or rejoined.
         </p>
       </div>
@@ -44,7 +44,7 @@ export default async function ProfilePage() {
               an empty profile is far more often "the rules were not met" than
               "nothing was saved", and a page that does not say so reads as
               broken. */}
-          <p className="text-sm text-zinc-400">
+          <p className="text-sm text-fg-muted">
             A room is saved to your profile when it closes — but only if you were signed in,
             stayed at least a minute, and actually edited the code. Rooms where everyone was
             a guest are never saved at all.
@@ -60,7 +60,7 @@ export default async function ProfilePage() {
 
           {/* Never cap silently. */}
           {capped && (
-            <p className="mt-4 text-center text-xs text-zinc-500">
+            <p className="mt-4 text-center text-xs text-fg-muted">
               Showing your {rooms.length} most recent rooms. Older ones are still saved but
               are not listed here.
             </p>

@@ -37,8 +37,8 @@ export default function SnapshotFile({ file }: { file: SnapshotFileData }) {
   return (
     <section className="overflow-hidden rounded-2xl border border-edge bg-panel">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-edge px-4 py-2.5">
-        <span className="font-mono text-sm text-zinc-200">{file.filename}</span>
-        <span className="text-[11px] font-medium uppercase tracking-wider text-zinc-500">
+        <span className="font-mono text-sm text-fg">{file.filename}</span>
+        <span className="text-[11px] font-medium uppercase tracking-wider text-fg-muted">
           {lineCount} {lineCount === 1 ? "line" : "lines"} · {formatBytes(bytes)}
         </span>
         <div className="ml-auto">
@@ -47,28 +47,28 @@ export default function SnapshotFile({ file }: { file: SnapshotFileData }) {
       </div>
 
       {truncated && (
-        <p className="border-b border-edge bg-amber-950/30 px-4 py-2 text-xs text-amber-300">
+        <p className="border-b border-edge bg-warning-soft px-4 py-2 text-xs text-warning">
           This room grew past the 256 KB snapshot cap, so the end of the file was not saved.
           The marker at the bottom is where it was cut.
         </p>
       )}
 
       {file.content.length === 0 ? (
-        <p className="px-4 py-6 text-sm text-zinc-500">This room was empty when it closed.</p>
+        <p className="px-4 py-6 text-sm text-fg-muted">This room was empty when it closed.</p>
       ) : (
         // The container scrolls both ways; the gutter is `sticky left-0` so it
         // stays put while the code scrolls sideways, and scrolls away with the
         // code vertically. `select-none` keeps line numbers out of a selection
         // dragged across the code.
-        <div className="max-h-[70vh] overflow-auto bg-[#101010]">
+        <div className="max-h-[70vh] overflow-auto bg-code">
           <div className="flex min-w-max">
             <pre
               aria-hidden
-              className="sticky left-0 select-none border-r border-edge bg-[#101010] px-3 py-3 text-right font-mono text-sm leading-relaxed text-zinc-600"
+              className="sticky left-0 select-none border-r border-edge bg-code px-3 py-3 text-right font-mono text-sm leading-relaxed text-fg-subtle"
             >
               {gutter}
             </pre>
-            <pre className="px-4 py-3 font-mono text-sm leading-relaxed text-zinc-200">
+            <pre className="px-4 py-3 font-mono text-sm leading-relaxed text-fg">
               {file.content}
             </pre>
           </div>

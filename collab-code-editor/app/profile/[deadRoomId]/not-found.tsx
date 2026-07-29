@@ -9,7 +9,8 @@
 // then serves the not-found UI under a 200.
 
 import Link from "next/link";
-import ProfileShell, { ProfilePanel, primaryButton } from "../../components/ProfileShell";
+import ProfileShell, { ProfilePanel } from "../../components/ProfileShell";
+import { primaryButton } from "../../lib/ui";
 
 export default function SnapshotNotFound() {
   return (
@@ -32,7 +33,7 @@ export default function SnapshotNotFound() {
         }
         title="No such saved room"
       >
-        <p className="text-sm text-zinc-400">
+        <p className="text-sm text-fg-muted">
           This snapshot either doesn&apos;t exist or isn&apos;t on your profile. A room is
           only saved for the people who were signed in, stayed a while, and edited it.
         </p>

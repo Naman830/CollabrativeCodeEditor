@@ -19,7 +19,7 @@ export default function SnapshotActions({ filename, content }: SnapshotActionsPr
   const { copied, copy } = useCopyToClipboard();
 
   const buttonClass =
-    "flex items-center gap-1.5 rounded-lg border border-edge bg-raised/60 px-2.5 py-1.5 text-xs text-zinc-300 transition-colors hover:border-zinc-600 hover:text-zinc-100 focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/30 disabled:cursor-not-allowed disabled:text-zinc-600";
+    "flex items-center gap-1.5 rounded-lg border border-edge bg-raised/60 px-2.5 py-1.5 text-xs text-fg-muted transition-colors hover:border-edge-strong hover:text-fg focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/30 disabled:cursor-not-allowed disabled:text-fg-subtle";
 
   return (
     <div className="flex items-center gap-2">
@@ -30,7 +30,7 @@ export default function SnapshotActions({ filename, content }: SnapshotActionsPr
         title={`Copy the contents of ${filename}`}
         className={buttonClass}
       >
-        <span className={copied ? "text-emerald-400" : "text-zinc-500"}>
+        <span className={copied ? "text-success" : "text-fg-muted"}>
           {copied ? <CheckIcon /> : <CopyIcon />}
         </span>
         {copied ? "Copied" : "Copy code"}

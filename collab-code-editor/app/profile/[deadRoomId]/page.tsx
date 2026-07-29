@@ -36,7 +36,7 @@ function DeadControl({ label, reason }: { label: string; reason: string }) {
       disabled
       aria-disabled="true"
       title={reason}
-      className="cursor-not-allowed rounded-lg border border-edge bg-transparent px-3 py-1.5 text-xs font-medium text-zinc-600 line-through decoration-zinc-700"
+      className="cursor-not-allowed rounded-lg border border-edge bg-transparent px-3 py-1.5 text-xs font-medium text-fg-subtle line-through decoration-fg-subtle"
     >
       {label}
     </button>
@@ -59,18 +59,18 @@ export default async function SnapshotPage(props: PageProps<"/profile/[deadRoomI
     <ProfileShell backHref="/profile" backLabel="Your rooms">
       <div className="mb-6 flex flex-col gap-4">
         <div className="flex flex-col gap-2">
-          <span className="flex w-fit items-center gap-1.5 rounded-full border border-amber-900/60 bg-amber-950/30 px-3 py-1 text-[11px] font-medium uppercase tracking-wider text-amber-300">
+          <span className="flex w-fit items-center gap-1.5 rounded-full border border-warning/40 bg-warning-soft px-3 py-1 text-[11px] font-medium uppercase tracking-wider text-warning">
             <LockIcon className="h-3 w-3" />
             Closed room · read-only snapshot
           </span>
-          <h1 className="break-all font-mono text-xl font-semibold text-zinc-50">
+          <h1 className="break-all font-mono text-xl font-semibold text-fg">
             {room.roomId}
           </h1>
         </div>
 
-        <dl className="flex flex-wrap items-center gap-x-5 gap-y-1 text-xs text-zinc-500">
+        <dl className="flex flex-wrap items-center gap-x-5 gap-y-1 text-xs text-fg-muted">
           <div className="flex items-center gap-1.5">
-            <dt className="text-zinc-600">Closed</dt>
+            <dt className="text-fg-subtle">Closed</dt>
             <dd>
               <time dateTime={room.diedAt.toISOString()} title={absoluteTime(room.diedAt)}>
                 {relativeTime(room.diedAt)}
@@ -78,7 +78,7 @@ export default async function SnapshotPage(props: PageProps<"/profile/[deadRoomI
             </dd>
           </div>
           <div className="flex items-center gap-1.5">
-            <dt className="text-zinc-600">Created</dt>
+            <dt className="text-fg-subtle">Created</dt>
             <dd>
               <time
                 dateTime={room.createdAt.toISOString()}
@@ -89,11 +89,11 @@ export default async function SnapshotPage(props: PageProps<"/profile/[deadRoomI
             </dd>
           </div>
           <div className="flex items-center gap-1.5">
-            <dt className="text-zinc-600">Lasted</dt>
+            <dt className="text-fg-subtle">Lasted</dt>
             <dd>{lifetime(room.createdAt, room.diedAt)}</dd>
           </div>
           <div className="flex items-center gap-1.5">
-            <dt className="text-zinc-600">Language</dt>
+            <dt className="text-fg-subtle">Language</dt>
             <dd>{room.language ?? "not recorded"}</dd>
           </div>
         </dl>
@@ -104,12 +104,12 @@ export default async function SnapshotPage(props: PageProps<"/profile/[deadRoomI
             <DeadControl label="Rejoin" reason="This room no longer exists on the server." />
             <Link
               href="/"
-              className="ml-auto rounded-lg border border-edge bg-raised px-3 py-1.5 text-xs font-medium text-zinc-200 transition-colors hover:border-zinc-600 hover:bg-[#2c2c2c]"
+              className="ml-auto rounded-lg border border-edge bg-raised px-3 py-1.5 text-xs font-medium text-fg transition-colors hover:border-edge-strong hover:bg-edge"
             >
               New room
             </Link>
           </div>
-          <p className="text-xs text-zinc-500">
+          <p className="text-xs text-fg-muted">
             The room was destroyed when the last person left. Copy the code into a new room to
             keep working on it.
           </p>
