@@ -75,7 +75,7 @@ Key files:
 - `collab-code-editor/app/hooks/useCopyToClipboard.ts` — copy + the transient "copied" flag, with the non-secure-context fallback
 - `collab-code-editor/app/lib/executionState.ts` — the `ExecutionState` union, the map/key names, `STALE_RUN_MS`, and `isFailedRun()`; imported by the hooks *and* the output panel
 - `collab-code-editor/app/lib/cursorStyles.ts` — the remote-cursor `<style>` block; the only thing that writes a peer colour into CSS
-- `collab-code-editor/app/lib/download.ts` — Save, in full: a Blob and a throwaway `<a download>`, nothing else
+- `collab-code-editor/app/lib/download.ts` — Save, in full: a Blob and a throwaway `<a download>`, nothing else. Shared with `/profile`'s Download button since 7.4
 - `collab-code-editor/app/components/EditorToolbar.tsx` / `OutputPanel.tsx` / `icons.tsx` — the chrome around Monaco; presentational, no Yjs
 - `collab-code-editor/app/components/JoinRoomPrompt.tsx` — the room's name prompt, and the only room-side reader of Clerk
 - `collab-code-editor/app/room/[roomId]/page.tsx` — dynamic room route; `roomId` is the Yjs document name
@@ -97,6 +97,11 @@ Key files:
 - `collab-code-editor/prisma/migrations/` — the applied SQL history, committed. Two migrations: `20260729084725_init_dead_rooms` and `20260729122125_dead_room_members` (which drops `owner_user_id` and its index), replaying from an empty database
 - `collab-code-editor/prisma.config.ts` — Prisma **CLI** config (migrate/generate/studio). Loads `.env.local` by hand and points migrations at `DIRECT_URL`
 - `collab-code-editor/app/lib/db.ts` — the one place the app learns about Postgres; server-only, never imported from a `"use client"` module
+- `collab-code-editor/app/lib/deadRooms.ts` — the one place the app *reads* `dead_rooms`, and the boundary that turns its `jsonb` columns into renderable values. Also server-only, and the module that enforces "a snapshot is fetched through its membership row or not at all"
+- `collab-code-editor/app/profile/page.tsx` / `[deadRoomId]/page.tsx` — the listing and one read-only snapshot; both async Server Components that gate on `await auth()`
+- `collab-code-editor/app/profile/error.tsx` / `[deadRoomId]/not-found.tsx` — "the database is unreachable" and "that snapshot isn't yours", kept distinct from each other and from an empty profile
+- `collab-code-editor/app/components/ProfileShell.tsx` — the profile chrome: page frame, the shared panel, and the signed-out gate. Carries no database import, because `error.tsx` is a Client Component and imports from it
+- `collab-code-editor/app/components/SnapshotFile.tsx` / `SnapshotActions.tsx` / `DeadRoomCard.tsx` — the `<pre>` code view, its Copy/Download buttons (the only client-side code on `/profile`), and one listing row
 - `server/db.js` — the sync server's whole database surface: one `pg` pool and one INSERT, no ORM
 
 ## Running locally
@@ -209,7 +214,12 @@ just made. It is not: verified against the pre-refactor commit and against a pro
 is real anyway (no SSR HTML, an error document served to crawlers and to anything that reads
 the status code), and fixing it means keeping Monaco off the server — a
 `dynamic(..., { ssr: false })` boundary around `CodeEditor` — **without** reintroducing the
-CDN AMD loader the file exists to avoid (see "Accounts (Clerk)" below).
+CDN AMD loader the file exists to avoid (see "Accounts (Clerk)" below). Note `ssr: false` is
+**illegal in a Server Component** in Next 16 (`lazy-loading.md`: *"you will see an error if you
+try to use it in Server Components"*), so that boundary belongs in `RoomGate.tsx`, which is
+already `"use client"` — not in `app/room/[roomId]/page.tsx`. `/profile` sidesteps the whole
+problem by never importing Monaco, and answers 200 where this route answers 500; that pair of
+status codes is the cheapest check that nothing has dragged the editor into a server graph.
 
 ## Architecture invariant
 
@@ -662,6 +672,104 @@ to connection timeout`. Hence 10s, under a 20s flush budget.
 `{filename, content}` reads back as `{content, filename}`. Harmless, but any test comparing
 serialised JSON must compare structurally instead.
 
+**Nothing that reaches a column may carry a NUL or an unpaired surrogate.** NUL cannot be
+stored in `text` or `jsonb` at all; a lone surrogate is worse, because it fails late and
+loudly — `JSON.stringify` happily emits a bare `\ud83d`, and Postgres rejects the **whole**
+statement with `unsupported Unicode escape sequence`, so one bad character in one
+participant's name loses the room's code too. Both are stripped by `stripUnstorable` in
+`server/roomState.js`, applied to every path. Two traps this closed, both found in 7.4:
+`sanitizeName`'s cut counted UTF-16 code units and could halve a surrogate pair — the name cut
+is now by **code point**; and `snapshotText` only repaired the document on its *truncating*
+branch, where `Buffer.toString("utf8")` substitutes U+FFFD, so a lone surrogate in a document
+**under** 256 KB was returned untouched. Monaco types neither character, but awareness is
+peer-supplied and a paste or a raw Yjs client can carry both.
+
+## The profile page (task 7.4)
+
+`/profile` is the only reader of `dead_rooms`, and the only page in the app that is
+protected. Everything under `app/profile/` is a Server Component except `SnapshotActions` and
+`error.tsx`; the code view itself ships no JavaScript.
+
+**A `DeadRoom` is never fetched by its id.** Both queries in `app/lib/deadRooms.ts` start from
+`deadRoomMember` keyed on the *viewer's* Clerk user ID and reach the room through the relation,
+so a snapshot the viewer holds no membership row for is not hidden by a filter someone
+remembered to add — it is unfetchable. §6.1 puts one room on several profiles, so there is no
+ownership column that could do this job instead. The detail lookup is `findUnique` on the
+composite primary key `(user_id, dead_room_id)`, which makes the authorization check and the
+index lookup the same query. Keep it that way: a `deadRoom.findUnique({where:{id}})` with a
+membership check bolted on afterwards is one forgotten `if` away from serving a stranger's code.
+
+**The URL carries `dead_rooms.id`, not `room_id`,** so the membership key and the path segment
+are the same value. It also keeps a dead snapshot's URL from sharing an id with a live
+`/room/<id>`. Because `id` is a Postgres `uuid`, a malformed segment does *not* come back as
+"not found" — it reaches the driver and 500s on `invalid input syntax for type uuid`, so
+`DEAD_ROOM_ID` rejects it before the query. And `notFound()` answers identically for "no such
+row" and "not yours", or the URL becomes an oracle for which snapshots exist.
+
+**There is no `loading.tsx` under `app/profile/`, and adding one breaks the 404.** A Suspense
+boundary in the parent segment also wraps `[deadRoomId]`; once a response starts streaming its
+status is already sent, and Next then serves the not-found UI under a **200**. The query is a
+single indexed lookup, so a spinner is not worth a wrong status code.
+
+**`error.tsx` exists because "the database is unreachable" is not "you have no rooms".** Neon
+autosuspends an idle branch, so a cold start is a routine way to fail here, and an empty-looking
+profile would be a lie the user cannot check — the same `missing` vs `unreachable` split
+`RoomGate` draws for a room. It takes Next 16.2's **`unstable_retry`**, not `reset`: `reset`
+was demoted to "clear the error and re-render the children *without re-fetching*", which is the
+wrong half for a failed query. Both props are passed; only `unstable_retry` re-runs the server
+render. Verified by starting a production build against a dead `DATABASE_URL`.
+
+**No `export const dynamic = "force-dynamic"`, and none is needed.** Clerk's `auth()` reads
+`headers()` internally, which opts the route into dynamic rendering on its own — `next build`
+lists both profile routes as `ƒ`. Clerk also throws `ClerkUseCacheError` if `auth()` is called
+inside a `use cache` scope, which is one more reason `cacheComponents` must stay off: enabling
+it would also switch navigation to `<Activity>`-based state preservation, and the room route
+depends on a real unmount to tear the Yjs stack down.
+
+**Auth is checked in the page, never in `proxy.ts`.** `clerkMiddleware()` stays callback-free
+so `/`, `/room/*` and `/api/execute` remain public, and Clerk's own `createRouteMatcher`
+deprecation note says to "move auth checks into each page, layout, API route, or Server
+Function that accesses protected data". A signed-out visitor gets an in-page gate with a
+`SignInButton mode="modal"` rather than a redirect: this app has no `/sign-in` route, so
+`auth.protect()` would eject them to Clerk's hosted Account Portal, and a bare `redirect("/")`
+turns a shared `/profile` link into a silent bounce.
+
+**The code view is a `<pre>`, and Monaco must not come back.** An editor is the one widget on
+this site that means "you can type here", which is the opposite of what §7.4's last bullet
+asks for; there is nothing to highlight while `language` is null; and `lib/monacoLoader.ts`
+imports `monaco-editor` at module scope, which is why `/room/[roomId]` 500s on the server.
+Keeping that chain out of this route's graph is what lets `/profile` server-render at all —
+`curl -o /dev/null -w '%{http_code}'` gives **200** for `/profile` and **500** for `/room/<id>`,
+and that contrast is the regression test. Line numbers are one string in a `sticky left-0`
+`<pre>`, not one element per line: a 256 KB snapshot is ~8000 lines, and 8000 gutter spans is
+8000 DOM nodes for numbers nobody selects.
+
+**The listing does not select `files`.** A snapshot is up to 256 KB, so a hundred of them is
+~25 MB pulled out of Neon to render metadata cards. That is also why the cards carry no code
+preview — a preview needs `$queryRaw` with a `jsonb` substring, not a wider `select`. The list
+is capped at 100 rows (`take: LIST_LIMIT + 1`, so the cap can be *detected*) and says so when
+the cap bites.
+
+**What the page has to render around, and these are real values, not placeholders.** There is
+**no room name** — `dead_rooms` has no name column, so the original `room_id` is the title.
+`language` is null on every row and shows as "not recorded"; `is_private` is `false` on every
+row and is not rendered at all. Both become meaningful only when §10.1 and §10.3 land.
+`participants` is written but deliberately **unread**: nothing on `/profile` renders a peer
+name or colour today, and anything that starts to must go through a sanitizing boundary like
+`readSnapshotFiles`, never straight from the column.
+
+**Dates are relative on purpose.** "Closed 3 hours ago" and "lasted 12 minutes" are pure
+deltas, so the server and the browser agree; a locale- or timezone-formatted absolute date
+rendered on the server is a hydration mismatch waiting to happen on a page that otherwise
+needs no client JavaScript. The exact instant still travels, in `<time dateTime>` and `title`.
+
+**`TRUNCATION_MARKER` is now the fourth hand-maintained duplication across the workspaces,**
+after `rateLimit.js`/`rateLimit.ts`, `CLOSE_ROOM_NOT_FOUND`, and `roomState.js`'s copies of
+`sanitizeName`/`HEX_COLOR`. `deadRooms.ts` matches it with `endsWith` — never `includes`, since
+a user may have typed that sentence themselves — to show the amber "this room grew past the
+256 KB cap" notice. The content is still rendered and copied **verbatim**, so what you see is
+what you copy.
+
 ## Rate limiting and payload size
 
 Both endpoints that cost real resources are limited to **10 requests/minute/IP**:
@@ -700,6 +808,11 @@ oversized document never crosses the wire, and it writes the failure into the sh
 `execution` map like any other result, since the document is shared and so is the problem.
 
 ## Saving (the Save button)
+
+Since 7.4 `lib/download.ts` has a second caller — `/profile`'s Download button, which saves a
+dead room's `main.txt`. That does not change anything below: it is still a Blob and an `<a
+download>`, still nothing stored, and it is neither a Run nor a Rejoin, which is what §8
+forbids on a dead room.
 
 Save is the mirror image of Run: **entirely local**, and deliberately so. `lib/download.ts`
 builds a `Blob`
@@ -929,32 +1042,29 @@ image is **amd64-only** (single-arch manifest) — ARM free tiers cannot host it
 
 ## Not built yet
 
-**Sections 7.1 (Clerk auth), 7.2 (Postgres) and 7.3 (the dead-room snapshot) are done** — see
-"Accounts (Clerk)", "Persistence (Postgres)" and "Dead-room snapshots" above, which replace
-older notes here claiming none of them existed. **What remains unticked:** 7.4 (`/profile`),
-7.5 (guardrails), and all of section 10 — no multi-file, no chat, no room passwords. Redis
-pub/sub for horizontal scaling is *not* a v2 item at all — section 8 puts it explicitly out of
-scope, so it stays deferred past v2.
+**Sections 7.1 (Clerk auth), 7.2 (Postgres), 7.3 (the dead-room snapshot) and 7.4 (`/profile`)
+are done** — see "Accounts (Clerk)", "Persistence (Postgres)", "Dead-room snapshots" and "The
+profile page" above, which replace older notes here claiming none of them existed. **What
+remains unticked:** 7.5 (guardrails) and all of section 10 — no multi-file, no chat, no room
+passwords. Redis pub/sub for horizontal scaling is *not* a v2 item at all — section 8 puts it
+explicitly out of scope, so it stays deferred past v2.
 
-`dead_rooms` is now written by `server/rooms.js`'s `destroyRoom()`, so a signed-in user's work
-does outlive the tab. **Nothing reads it yet** — that is 7.4. Until `/profile` exists there is
-no way for a user to see a snapshot, so do not add UI pointing at one.
+The whole v2 loop now closes: `server/rooms.js`'s `destroyRoom()` writes the snapshot and
+`/profile` reads it back, so a signed-in user's work really does outlive the tab. An older note
+here said "nothing reads it yet — do not add UI pointing at one"; that is no longer true.
 
 **7.5 is partly satisfied already, but do not tick it on that basis.** Its first two bullets —
 a dead room's `room_id` can never be reused, and `/room/<old-dead-id>` sends you home — have
 been true since v1 (see "Room lifetime") and were re-verified during 7.3, including with a
 valid Clerk token attached. Its third, rate-limiting DB writes, is not built: the write is
 bounded indirectly by room creation's 10/min/IP limit and by the fact that one room produces at
-most one row, but there is no limiter on the write itself.
+most one row, but there is no limiter on the write itself. Note 7.4 adds a *read* path that
+7.5 never anticipated and which is likewise unlimited — though it is bounded by Clerk
+authentication and by one indexed query per request.
 
-Two things 7.4 should know before it starts:
-
-- **The listing is a join, not a column filter.** `dead_room_members` joined to `dead_rooms`,
-  ordered by `died_at` — a room legitimately appears on several people's profiles. The
-  composite primary key `(user_id, dead_room_id)` is the index that serves it.
-- **`language` is null and every file is called `main.txt`.** Both are real values the profile
-  UI has to render around, not placeholders that will be backfilled — they only become
-  meaningful when §10.1 moves the language selector to room creation.
+The two facts 7.4 was warned about both held, and are now documented under "The profile page":
+the listing is a join from `dead_room_members`, not a column filter; and `language` being null
+with every file called `main.txt` is a permanent state until §10.1, not a backfill.
 
 **Documents are in-memory only — room state does not survive a WebSocket server restart**, and
 since a restart wipes the room registry too, every client still in a room gets its reconnect

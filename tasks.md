@@ -427,6 +427,18 @@ Shipped alongside 7.3, not originally listed here:
       and the 4404 path, the always-200 `GET /rooms/:id` and the no-socket `RoomGate` invariant
       all still hold. The browser pass drove a real Clerk sign-in and confirmed the socket URL
       carries a token and the resulting member row is the verified Clerk user ID.
+- [x] **An unpaired surrogate anywhere in a snapshot silently lost the whole room** — found
+      while building 7.4, fixed there, recorded here because it is 7.3's write path. A lone
+      surrogate cannot be stored: `JSON.stringify` emits a bare `\ud83d` and Postgres rejects
+      the *entire* INSERT with `unsupported Unicode escape sequence`, so `saveDeadRoom`
+      returned `"failed"` and the code went with it. Two ways in, both reachable by a peer:
+      `sanitizeName`'s `.slice(0, 24)` counted UTF-16 code units and could halve a surrogate
+      pair, so one participant's emoji name destroyed everyone's snapshot; and `snapshotText`
+      only repaired the document on its *truncating* branch (`Buffer.toString("utf8")`
+      substitutes U+FFFD), so a lone surrogate in a document **under** 256 KB was returned
+      untouched. Both now go through one `stripUnstorable`, and the name cut is by code point.
+      `app/lib/user.ts`'s copy of `sanitizeName` got the identical change so the two do not
+      drift.
 
 ### 7.4 Profile page
 - [x] New route: `/profile` — `app/profile/page.tsx`, an async Server Component. Plus
