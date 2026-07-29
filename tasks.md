@@ -107,17 +107,27 @@ Keep it minimal — one table is enough for v2.
 ```
 dead_rooms
 ├── id              (uuid, primary key)
-├── room_id         (text — the original ephemeral room ID)
+├── room_id         (text, UNIQUE — the original ephemeral room ID)
 ├── owner_user_id   (text — Clerk user ID of the creator)
 ├── files           (jsonb — array of { filename, content }, supports multi-file rooms)
-├── language        (text — the room's single language, see Section 10.1)
+├── language        (text, NULLABLE — the room's single language, see Section 10.1)
 ├── is_private      (boolean — was this room password-protected)
 ├── participants    (jsonb — names/colors of everyone who was in the room, optional)
-├── created_at      (timestamp — when the room was first created)
-└── died_at         (timestamp — when the last person left)
+├── created_at      (timestamptz — when the room was first created)
+└── died_at         (timestamptz — when the last person left)
+
+INDEX on (owner_user_id, died_at DESC)   -- the /profile query in 7.4
 ```
 
 > Note: `code` (single string) from earlier drafts is replaced by `files` (an array) so multi-file rooms save cleanly. A single-file room is just a `files` array with one entry.
+
+> **Corrected during 7.2, against the draft above.** `room_id` is `UNIQUE` so the database
+> enforces the write-once rule below rather than trusting the writer (it also backs 7.5's
+> "can never be reused"), and the index is what keeps 7.4's profile listing off a full table
+> scan. `language` is **nullable** because the language dropdown is a per-user editing
+> preference kept deliberately off the shared Yjs doc — the server has nothing to record until
+> §10.1 moves the selector to room creation, so `NOT NULL` would make 7.3 unbuildable before
+> then.
 
 Rules:
 - Only written to **once**, when the last user disconnects.
@@ -154,9 +164,37 @@ Shipped alongside 7.1, not originally listed here:
 
 ### 7.2 Database (PostgreSQL)
 - [ ] Provision a Postgres instance (Railway, Neon, or Supabase)
-- [ ] Set up Prisma or Drizzle ORM with the `dead_rooms` schema above
-- [ ] Add environment variables for the DB connection
+- [x] Set up Prisma or Drizzle ORM with the `dead_rooms` schema above
+      — **Prisma 7**, in `collab-code-editor/`: `prisma/schema.prisma` (the `DeadRoom` model)
+      plus `prisma.config.ts` for the CLI.
+- [x] Add environment variables for the DB connection
+      — `DATABASE_URL` (pooled) and `DIRECT_URL` (unpooled, migrations only) documented in
+      both `.env.example` files and in CLAUDE.md's env table.
 - [ ] Write a migration for the `dead_rooms` table
+
+Shipped alongside 7.2, not originally listed here:
+
+- [x] **The sync server does not use Prisma.** `server/db.js` is a plain `pg` pool and one
+      hand-written INSERT, because that process writes one row per room in its whole life and
+      never reads or updates one. Prisma there would mean a second schema copy, a
+      `prisma generate` step and the query engine in the Railway image to serve a single
+      statement. Same deliberate duplication as `rateLimit.js` / `rateLimit.ts`.
+- [x] `DATABASE_URL` is **optional in `server/`**: unset, no pool is opened and
+      `saveDeadRoom()` is a logged no-op, so the sync server still boots and serves rooms
+      exactly as in v1. The guest flow stores nothing, so it must not depend on a database.
+- [x] `pool.on("error", …)` in `server/db.js` — mandatory, not defensive. An idle connection
+      dropped by Neon's pooler emits an `error` on the pool; unhandled it is an uncaught
+      exception that would kill the sync server and every live room with it, over a database
+      it was not using.
+- [x] `ON CONFLICT (room_id) DO NOTHING` on the INSERT, so a retry or a restart that
+      re-evicts an already-saved room cannot violate the write-once rule.
+- [x] `build` is `prisma generate && next build`, not just a `postinstall` hook — Vercel
+      restores a cached `node_modules` and can skip `postinstall`, producing a build that
+      fails on a missing client while working locally.
+- [x] `app/lib/db.ts` — the one place the app learns about Postgres, server-only, with the
+      client cached on `globalThis` so Next's dev HMR does not open a new pool per edit.
+- [x] Schema hardening beyond §6's draft: `UNIQUE` on `room_id` and an index on
+      `(owner_user_id, died_at DESC)`. See the note in Section 6.
 
 ### 7.3 Dead room snapshot logic
 - [ ] On last-user-disconnect (same trigger point as v1's room cleanup), check if any participant was a logged-in (Clerk) user

@@ -668,6 +668,10 @@ one-line `curl --resolve` check that settles it.
 
 <tr><td><code>PISTON_*</code> (7 vars)</td><td><code>docker-compose.yml</code></td><td>see file</td><td><b>Ceilings inside the container, not app config.</b> Piston rejects any per-request limit above them.</td></tr>
 
+<tr><td><code>DATABASE_URL</code></td><td><code>collab-code-editor/.env.local</code> and <code>server/.env</code></td><td>—</td><td>Neon's <b>pooled</b> connection string (host contains <code>-pooler</code>), used at runtime by both workspaces. <b>Optional in <code>server/</code></b> — unset, no pool is opened and the dead-room snapshot is a no-op, so the sync server runs exactly as it did in v1.</td></tr>
+
+<tr><td><code>DIRECT_URL</code></td><td><code>collab-code-editor/.env.local</code></td><td>—</td><td>Neon's <b>unpooled</b> string, used by <code>prisma migrate</code> alone. <b>Not interchangeable with <code>DATABASE_URL</code></b>: the pooler can't hold the session-level lock a migration takes, so migrations aimed at it hang or half-apply.</td></tr>
+
 </table>
 
 ---
@@ -693,13 +697,17 @@ one-line `curl --resolve` check that settles it.
 │   │       ├── rooms.ts             WS_URL, createRoom(), checkRoom()
 │   │       ├── languages.ts         the ONE language enumeration
 │   │       ├── execution.ts         MAX_CODE_BYTES, shared by client and route
+│   │       ├── db.ts                the ONE place the app learns about Postgres
 │   │       └── rateLimit.ts         sliding window (copy #1)
+│   ├── prisma/schema.prisma         ⭐ the authority on the dead_rooms table
+│   ├── prisma.config.ts             Prisma CLI config — migrations use DIRECT_URL
 │   └── docker-compose.yml           🐳 Piston + its ceilings
 │
 └── server/                          🔌 Node WebSocket server (Railway)
     ├── index.js                     one listener: HTTP routes + WS upgrade
     ├── yjsConnection.js             the only place that speaks the Yjs wire protocol
     ├── rooms.js                     ⭐ the one authority on whether a room exists
+    ├── db.js                        one pg pool + one INSERT — no ORM, on purpose
     └── rateLimit.js                 sliding window (copy #2)
 ```
 
@@ -725,7 +733,10 @@ one-line `curl --resolve` check that settles it.
 - [ ] 🐳 Host Piston on a VPS that allows privileged containers, so **Run** on the live demo stops
       depending on a developer machine being online (the image is **amd64-only**, so ARM free tiers
       are out)
-- [ ] 🗄️ Postgres persistence — rooms that survive a restart
+- [ ] 🗄️ Postgres persistence — **in progress (v2).** The `dead_rooms` table and both
+      connections exist; the snapshot write on room death and the `/profile` page do not yet.
+      Note this never makes a *live* room survive a restart: a snapshot is read-only and is
+      written when a room dies normally.
 - [ ] 🔴 Redis pub/sub — multiple sync instances sharing room state, and a global rate limiter
 - [ ] 🔗 Shareable short links
 

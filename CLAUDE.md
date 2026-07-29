@@ -91,6 +91,10 @@ Key files:
 - `collab-code-editor/app/api/execute/route.ts` — server-side proxy to Piston; also where the sandbox-side execution limits live
 - `server/yjsConnection.js` — the only place that speaks the Yjs wire protocol; also the gate that refuses connections to rooms that don't exist
 - `server/rooms.js` — the one authority on whether a room exists, and the only thing that ever deletes one
+- `collab-code-editor/prisma/schema.prisma` — the authority on the `dead_rooms` table's shape, and the only place it is described declaratively
+- `collab-code-editor/prisma.config.ts` — Prisma **CLI** config (migrate/generate/studio). Loads `.env.local` by hand and points migrations at `DIRECT_URL`
+- `collab-code-editor/app/lib/db.ts` — the one place the app learns about Postgres; server-only, never imported from a `"use client"` module
+- `server/db.js` — the sync server's whole database surface: one `pg` pool and one INSERT, no ORM
 
 ## Running locally
 
@@ -540,6 +544,97 @@ local download, and changing it risks that runtime.
 Save's only disabled state is an empty document. It has no equivalent of Run's room-wide
 `"running"` lock, since there is nothing for two clickers to contend over.
 
+## Persistence (Postgres)
+
+**Postgres is the only data store, and it holds exactly one thing**: the `dead_rooms` snapshot
+written when a room is destroyed. Nothing on the live path touches it — sync stays in memory,
+Save stays local, and the rate limiters stay in-process. Adding Postgres does **not** make a
+shared rate-limit counter a candidate: a per-request round trip on the execute path is a worse
+trade than the documented per-instance approximation.
+
+The database is **Neon**, with a `dev` branch for local work and `main` for the deployed site,
+so local testing never writes rows the deployed `/profile` would read.
+
+**The two connection strings are not interchangeable, and swapping them fails confusingly
+rather than loudly.** `DATABASE_URL` is Neon's *pooled* endpoint (its host contains `-pooler`)
+and is what the app and the sync server use at runtime — Vercel runs many short-lived
+instances that would each open their own pool and exhaust the project's connection ceiling
+within a few requests. `DIRECT_URL` is the *unpooled* endpoint and is used by `prisma migrate`
+alone: the pooler runs pgbouncer in transaction mode, which cannot hold the session-level
+advisory lock a migration takes, so migrations pointed at the pooled URL hang or fail
+part-applied.
+
+### Prisma 7 invalidates almost every Prisma recipe written before it
+
+Three breaking changes, all of which bite at a different moment:
+
+- **The generator is `prisma-client`, not `prisma-client-js`** (deprecated), and `output` is
+  now **required**. The client is therefore imported from that generated path
+  (`../../generated/prisma/client`), **not** from `@prisma/client`. Importing the package path
+  compiles fine and yields a client with no models on it.
+- **A driver adapter is required.** Prisma 7 removed `datasourceUrl` *and* `datasources` from
+  the `PrismaClient` constructor, so there is no way to hand it a URL directly; the connection
+  string goes through `new PrismaPg({ connectionString })` from `@prisma/adapter-pg`. This is
+  caught at compile time (`'datasourceUrl' does not exist in type 'PrismaClientOptions'`),
+  which is the one merciful failure of the three.
+- **Prisma no longer auto-loads `.env`,** and the datasource URL moved out of `schema.prisma`
+  into `prisma.config.ts`. `prisma.config.ts` calls `dotenv`'s `config({ path: ".env.local" })`
+  itself — Next's convention is `.env.local`, Prisma's default is `.env`, and loading the
+  former explicitly keeps one file instead of two. Without that call the CLI reports a missing
+  datasource URL rather than a missing file.
+
+**`prisma init` writes more than Prisma files.** Run in a project root it also drops
+`.claude/skills/`, `.windsurf/skills/`, `.agents/skills/` and a `skills-lock.json` alongside
+the schema, and appends to `.gitignore`. Scaffold in a scratch directory and copy across, or
+it silently edits this repo's agent configuration.
+
+**`prisma generate` must run before `next build`, and `postinstall` alone is not enough on
+Vercel.** Vercel restores a cached `node_modules` and can skip `postinstall` entirely, which
+produces a build failing on a missing generated client that works perfectly locally. The
+`build` script is therefore `prisma generate && next build`, with `postinstall` kept as a
+convenience for fresh local installs. `next.config.ts` needs nothing: `@prisma/client` is
+already on Next 16's built-in `serverExternalPackages` list.
+
+### The sync server does not use Prisma
+
+`server/db.js` is a plain `pg` pool and one hand-written INSERT. The sync server writes one
+row per room in its entire life and never reads or updates one, so a second `schema.prisma`, a
+`prisma generate` step, and the query engine in the Railway image would all be overhead for a
+single statement. This is the same deliberate duplication as `rateLimit.js` / `rateLimit.ts`:
+**a column renamed in `schema.prisma` must be renamed in that INSERT by hand — nothing checks
+it.**
+
+Two things there are load-bearing. `pool.on("error", …)` is mandatory, not defensive: an idle
+connection dropped by Neon's pooler emits an `error` event on the pool, and unhandled that is
+an uncaught exception which would kill the sync server — taking every live room with it —
+because of a database it was not even using. And `DATABASE_URL` is **optional**: unset, no pool
+is opened and `saveDeadRoom()` is a logged no-op, so the guest flow (which stores nothing and
+is the whole of v1) never depends on database infrastructure it does not touch.
+
+`ON CONFLICT (room_id) DO NOTHING` is what enforces `tasks.md` §6's write-once rule against a
+retry or a restart that re-evicts an already-saved room, and it only works because `room_id`
+carries a `UNIQUE` constraint.
+
+**Write `sslmode=verify-full` in the connection strings, not the `sslmode=require` Neon hands
+you.** node-postgres currently treats `require`, `prefer` and `verify-ca` as aliases for
+`verify-full`, and warns on every connection that pg v9 will switch them to libpq semantics —
+under which `require` encrypts but **does not verify the certificate at all**. So the string
+that looks safe today becomes a silent downgrade to an unauthenticated TLS session on a routine
+`npm update`. `verify-full` pins the strong behaviour and removes the warning; verified working
+against Neon. `server/db.js` additionally passes `ssl: { rejectUnauthorized: true }`
+explicitly, which survives that change regardless — the connection string is the part that
+would rot.
+
+### Two deliberate departures from `tasks.md` §6
+
+- **`room_id` is `UNIQUE`, and there is an index on `(owner_user_id, died_at DESC)`.** The
+  first makes the database enforce "written once, never updated" instead of trusting the
+  writer; the second is exactly the `/profile` query and keeps it off a full table scan.
+- **`language` is nullable**, where §6 writes plain `text`. This is forced, not stylistic: the
+  language dropdown is a per-user editing preference kept deliberately off the shared `Y.Doc`
+  (see "Saving"), so **the server has no language to record** until §10.1 moves the selector to
+  room creation. `NOT NULL` would make the 7.3 snapshot unwritable before 10.1 lands.
+
 ## Environment variables
 
 | Var | Where | Purpose |
@@ -551,6 +646,8 @@ Save's only disabled state is an empty document. It has no equivalent of Run's r
 | `PORT` | `server/.env` | Port for both the WebSocket upgrade and the room HTTP routes. Defaults to `8080`. |
 | `ROOM_GRACE_MS` | `server/.env` | How long an emptied room lingers before destruction. Defaults to `10000`. |
 | `ROOM_RESERVATION_MS` | `server/.env` | How long a created-but-never-entered room stays claimable. Defaults to `300000`. |
+| `DATABASE_URL` | `collab-code-editor/.env.local` **and** `server/.env` | Neon's **pooled** connection string (host contains `-pooler`). Used at runtime by `app/lib/db.ts` and `server/db.js`. **Optional in `server/`** — unset, `db.js` opens no pool and `saveDeadRoom()` is a no-op, so the sync server boots and serves rooms exactly as in v1. |
+| `DIRECT_URL` | `collab-code-editor/.env.local` only | Neon's **unpooled** string, used by `prisma migrate` alone. Not interchangeable with `DATABASE_URL` — see "Persistence (Postgres)". The sync server has no counterpart because it never migrates. |
 
 ## Production execution path
 
@@ -585,15 +682,31 @@ image is **amd64-only** (single-arch manifest) — ARM free tiers cannot host it
 
 ## Not built yet
 
-**Section 7.1 (Clerk auth) is done — see "Accounts (Clerk)" above, which replaces an older
-note here claiming no Clerk existed. Everything else in `tasks.md` (v2) is still unticked:**
-no Postgres, no `dead_rooms` table, no `/profile`, no multi-file, no chat, no room passwords.
-Redis pub/sub for horizontal scaling is *not* a v2 item at all — section 8 puts it explicitly
-out of scope, so it stays deferred past v2.
+**Sections 7.1 (Clerk auth) and 7.2 (Postgres) are done** — see "Accounts (Clerk)" and
+"Persistence (Postgres)" above, which replace older notes here claiming neither existed. **What
+remains unticked:** 7.3 (the dead-room snapshot write), 7.4 (`/profile`), 7.5 (guardrails),
+and all of section 10 — no multi-file, no chat, no room passwords. Redis pub/sub for horizontal
+scaling is *not* a v2 item at all — section 8 puts it explicitly out of scope, so it stays
+deferred past v2.
 
-Because 7.2 (Postgres) is not built, **an account currently changes nothing that outlives the
-tab**: `clerkUserId` reaches sessionStorage and no further. Do not add UI promising a signed-in
-user that a room will be saved to their profile until 7.3 actually writes the snapshot.
+7.2 built the table and both connections; **nothing writes to it yet.** So an account still
+changes nothing that outlives the tab: `clerkUserId` reaches sessionStorage and no further,
+`dead_rooms` stays empty, and `saveDeadRoom()` in `server/db.js` has no caller. Do not add UI
+promising a signed-in user that a room will be saved to their profile until 7.3 actually
+writes the snapshot.
+
+**7.3 has three inputs that do not exist yet**, and they are the real work in it — the columns
+are the easy part:
+- **`owner_user_id`.** `server/rooms.js` records nothing about a room but a timer;
+  `reserveRoom()` stores only a `crypto.randomUUID()`. The ID must come from a **verified
+  Clerk token**, never from awareness — see "Accounts (Clerk)", where forging it means writing
+  a stranger's code into someone else's profile.
+- **`created_at`.** Nothing currently records when a room was created.
+- **`language`.** Per-user and off the shared doc, hence the nullable column.
+
+Also note the eviction timer in `server/rooms.js` is `unref()`'d, so it never keeps the process
+alive: on a Railway SIGTERM a queued eviction simply never fires, and with it the snapshot.
+7.3 needs a shutdown flush or it will silently lose rooms on every deploy.
 
 **Documents are in-memory only — room state does not survive a WebSocket server restart**, and
 since a restart wipes the room registry too, every client still in a room gets its reconnect
