@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, type SubmitEventHandler } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { SignInButton, SignUpButton, UserButton } from "@clerk/nextjs";
 import IdentityDialog from "./components/IdentityDialog";
@@ -110,7 +111,18 @@ export default function Home() {
             clerk.signedIn ? (
               <>
                 <UserButton />
-                <span className="text-xs text-zinc-500">Signed in as {clerk.label}</span>
+                {/* The only way into /profile. Signed-out visitors get no link,
+                    because they have nothing there and the page would only tell
+                    them to sign in — which the buttons beside this already do. */}
+                <Link
+                  href="/profile"
+                  className="rounded-lg border border-edge bg-panel/60 px-3.5 py-1.5 text-xs font-medium text-zinc-200 transition-colors hover:border-zinc-600 hover:bg-raised"
+                >
+                  My rooms
+                </Link>
+                <span className="hidden text-xs text-zinc-500 sm:inline">
+                  Signed in as {clerk.label}
+                </span>
               </>
             ) : (
               <>
