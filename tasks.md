@@ -163,14 +163,22 @@ Shipped alongside 7.1, not originally listed here:
       dependency — so the sign-in modal matches the dark app without a second bundle.
 
 ### 7.2 Database (PostgreSQL)
-- [ ] Provision a Postgres instance (Railway, Neon, or Supabase)
+- [x] Provision a Postgres instance (Railway, Neon, or Supabase)
+      — **Neon**, database `neondb` on `ap-southeast-1`. See the reset note below: the
+      instance existed but was not empty.
 - [x] Set up Prisma or Drizzle ORM with the `dead_rooms` schema above
       — **Prisma 7**, in `collab-code-editor/`: `prisma/schema.prisma` (the `DeadRoom` model)
       plus `prisma.config.ts` for the CLI.
 - [x] Add environment variables for the DB connection
-      — `DATABASE_URL` (pooled) and `DIRECT_URL` (unpooled, migrations only) documented in
-      both `.env.example` files and in CLAUDE.md's env table.
-- [ ] Write a migration for the `dead_rooms` table
+      — `DATABASE_URL` (pooled) and `DIRECT_URL` (unpooled, migrations only), documented in
+      both `.env.example` files and CLAUDE.md's env table **and actually present** in
+      `collab-code-editor/.env.local` + `server/.env`. They had been documented but never
+      set, so `prisma migrate` failed on a missing datasource URL rather than on anything
+      to do with the database.
+- [x] Write a migration for the `dead_rooms` table
+      — `prisma/migrations/20260729084725_init_dead_rooms/`. Verified applied: the table,
+      the `room_id` UNIQUE index and the `(owner_user_id, died_at DESC)` index all exist,
+      and `EXPLAIN` shows 7.4's profile query using that second index rather than scanning.
 
 Shipped alongside 7.2, not originally listed here:
 
@@ -195,6 +203,29 @@ Shipped alongside 7.2, not originally listed here:
       client cached on `globalThis` so Next's dev HMR does not open a new pool per edit.
 - [x] Schema hardening beyond §6's draft: `UNIQUE` on `room_id` and an index on
       `(owner_user_id, died_at DESC)`. See the note in Section 6.
+- [x] **The Neon database had to be reset before it could be migrated.** It already held a
+      `Room` table (42 rows of `ydocState bytea`) and a `_prisma_migrations` row
+      `20260706083131_init`, left over from an abandoned experiment that persisted live Yjs
+      docs to Postgres — the exact thing §8 puts out of scope. Its commits are dangling
+      (reachable from no branch), so the rows were orphaned. Both tables were dumped to a
+      backup and dropped, giving `dead_rooms` a single clean migration history that replays
+      from an empty database.
+- [x] Connection strings pinned to `?sslmode=verify-full`. Neon hands out
+      `?sslmode=require&channel_binding=require`, and `server/.env` had been left that way —
+      node-postgres warns on every connect that pg v9 will make `require` stop verifying the
+      certificate at all.
+- [x] A Neon **`dev`** branch for local work, with `main` left for the deployed site.
+      `collab-code-editor/.env.local` and `server/.env` point at `dev`, so local testing can
+      never write rows the deployed `/profile` would read. Note a branch is a copy-on-write
+      fork of its parent *at the moment it is taken*: `dev` was cut from a pre-cleanup
+      snapshot and arrived carrying the same `Room` table, so it needed the same drop and a
+      `prisma migrate deploy` of its own.
+- [x] Acceptance test for the schema/INSERT duplication: `saveDeadRoom()` is called directly,
+      the row is read back column by column, a repeat call proves `ON CONFLICT DO NOTHING`
+      returns `false` instead of throwing, a snapshot with no language/participants proves the
+      nullable columns, and a `DATABASE_URL`-unset process proves the no-op path. Nothing in
+      the build compares `server/db.js`'s hand-written INSERT to `schema.prisma`, so this is
+      the only thing that would catch a rename.
 
 ### 7.3 Dead room snapshot logic
 - [ ] On last-user-disconnect (same trigger point as v1's room cleanup), check if any participant was a logged-in (Clerk) user
@@ -217,6 +248,25 @@ Shipped alongside 7.2, not originally listed here:
 - [ ] Rate-limit DB writes the same way v1 rate-limits room creation
 
 ### 7.6 Housekeeping (not originally listed; recorded because it shipped)
+
+- [x] **Full end-to-end verification pass** driven through a real browser (Playwright against
+      system Chrome; nothing was added to either workspace's dependencies, and the scripts are
+      deliberately not committed — this repo has no test harness and 7.x did not ask for one).
+      77 assertions, all passing: landing and Clerk chrome; room create/join; Yjs sync both
+      ways and concurrent-edit merge; presence, remote-cursor styling and <300 ms departure
+      (the `disableBc` regression); Run in all five languages against live Piston; the output
+      cap, OOM and timeout notices, and the deliberate *absence* of a notice on a plain
+      non-zero exit; per-user Save filenames (`main.cpp` vs `Main.java` from one document);
+      copy; room eviction measured at 10.2 s against a 10 s `ROOM_GRACE_MS`; `missing` vs
+      `unreachable` vs rate-limited kept distinct; the `RoomGate` no-socket invariant;
+      hostile-peer CSS injection and a 10 000-character name; name/colour collision resolved
+      identically for two viewers; the 413 payload cap; both rate limiters; the 25 s stale-run
+      watchdog healing an abandoned run at 24.3 s; and the full signed-in flow including the
+      invariant that `clerkUserId` never appears in awareness (read off the wire by a raw Yjs
+      client, not from the UI).
+- [x] Corrected two claims in `CLAUDE.md` that testing disproved: missing Clerk keys do **not**
+      500 a production start, and `GET /rooms/:roomId` never returns 404 — it always answers
+      200 with `{"exists": …}`.
 - [x] Split the 810-line `CodeEditor.tsx` into composable parts before v2 adds multi-file,
       chat and passwords to the same screen: the Yjs stack moved to `hooks/useCollabRoom.ts`,
       Run to `hooks/useCodeRunner.ts`, and the chrome to `EditorToolbar` / `OutputPanel` /

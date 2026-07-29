@@ -92,6 +92,7 @@ Key files:
 - `server/yjsConnection.js` — the only place that speaks the Yjs wire protocol; also the gate that refuses connections to rooms that don't exist
 - `server/rooms.js` — the one authority on whether a room exists, and the only thing that ever deletes one
 - `collab-code-editor/prisma/schema.prisma` — the authority on the `dead_rooms` table's shape, and the only place it is described declaratively
+- `collab-code-editor/prisma/migrations/` — the applied SQL history, committed. One migration, `20260729084725_init_dead_rooms`, which replays from an empty database
 - `collab-code-editor/prisma.config.ts` — Prisma **CLI** config (migrate/generate/studio). Loads `.env.local` by hand and points migrations at `DIRECT_URL`
 - `collab-code-editor/app/lib/db.ts` — the one place the app learns about Postgres; server-only, never imported from a `"use client"` module
 - `server/db.js` — the sync server's whole database surface: one `pg` pool and one INSERT, no ORM
@@ -308,6 +309,15 @@ session arrives late. A guest's key never changes, so the common path never remo
 nothing typed is lost. `signedInUser()` in `lib/clerkIdentity.ts` collapses "guest" and "not
 loaded yet" into one `null` precisely so no caller can reintroduce that gate.
 
+**Automated sign-in needs two things the UI does not tell you.** The dev instance has
+Cloudflare Turnstile on **sign-up**, so a driven browser can never complete one — create the
+user through Clerk's Backend API (`POST https://api.clerk.com/v1/users` with
+`CLERK_SECRET_KEY`) instead, which bypasses it and marks the email verified. Then sign-*in*
+from a fresh browser profile still stops at `signIn.status === "needs_client_trust"` ("You're
+signing in from a new device"), which wants an emailed code — a `+clerk_test@example.com`
+address accepts the fixed code `424242` and sends no mail. Clerk's OTP control is a row of
+**unnamed** single-character inputs, so match it on `input[inputmode="numeric"]`, not a name.
+
 **Monaco's AMD loader broke Clerk, and this is why `app/lib/monacoLoader.ts` exists.**
 `@monaco-editor/react` defaults to fetching Monaco from a CDN with an AMD loader, which
 installs a global `define` carrying `define.amd`. Any UMD bundle loaded afterwards then
@@ -367,6 +377,12 @@ tell "this room is gone" (stop retrying, show the closed screen) from "the netwo
 Note y-websocket keeps reconnecting forever on its own, so the client's handler must call
 `provider.disconnect()` — that sets `shouldConnect = false`, which is the only thing `setupWS`
 checks before re-dialling.
+
+**`GET /rooms/:roomId` always answers HTTP 200 — existence is the `exists` field
+in the body.** There is no 404 for a dead room, which is what `lib/rooms.ts`'s `checkRoom`
+relies on: a non-`ok` response means *unreachable*, and only `{"exists": false}` means
+*missing*. Anything asserting on the status code (a health check, a test) will read every
+dead room as alive.
 
 **Rooms are minted by the server (`POST /rooms`), not the browser.** This is the whole basis
 of "this room ID doesn't exist": an ID nobody was ever issued is refused at connect time. The
@@ -552,8 +568,26 @@ Save stays local, and the rate limiters stay in-process. Adding Postgres does **
 shared rate-limit counter a candidate: a per-request round trip on the execute path is a worse
 trade than the documented per-instance approximation.
 
-The database is **Neon**, with a `dev` branch for local work and `main` for the deployed site,
-so local testing never writes rows the deployed `/profile` would read.
+The database is **Neon** (`neondb`, `ap-southeast-1`), with a `dev` branch
+(`ep-raspy-rice-aosriqt9`) for local work and `main` (`ep-super-star-ao4pfz3z`) for the
+deployed site, so local testing never writes rows the deployed `/profile` would read. Both
+carry the same single migration. `collab-code-editor/.env.local` and `server/.env` point at
+`dev`; Railway and Vercel must point at `main`.
+
+**The Neon database was not empty when 7.2 migrated it, and this is worth knowing before you
+trust anything in it.** It held a `Room` table (42 rows of `ydocState bytea`) and a
+`_prisma_migrations` row `20260706083131_init` from an abandoned experiment that persisted live
+Yjs documents to Postgres — precisely what `tasks.md` §8 rules out. Those commits are dangling,
+reachable from no branch, so nothing in the repo explained the tables. Both were dumped to a
+backup and dropped, so `dead_rooms` now has a single migration history that replays cleanly
+from an empty database. If a future `prisma migrate` reports drift, check for leftovers like
+these before assuming the schema is wrong.
+
+**Create the Neon branch *before* diverging the two databases, not after.** A branch is a
+copy-on-write fork of the parent at the moment it is taken — and this bit during 7.2: `dev`
+was cut from a snapshot of `main` that predated the cleanup, so it arrived carrying the same
+42-row `Room` table and stale migration row, and had to be dropped and migrated a second time.
+A branch does not track its parent.
 
 **The two connection strings are not interchangeable, and swapping them fails confusingly
 rather than loudly.** `DATABASE_URL` is Neon's *pooled* endpoint (its host contains `-pooler`)
@@ -615,6 +649,20 @@ is the whole of v1) never depends on database infrastructure it does not touch.
 retry or a restart that re-evicts an already-saved room, and it only works because `room_id`
 carries a `UNIQUE` constraint.
 
+**The `id` column has no database default, and `server/db.js` is the only reason that works.**
+`@default(uuid())` in `schema.prisma` is a *Prisma-side* default: the generated
+`migration.sql` says plainly `"id" UUID NOT NULL` with no `DEFAULT` clause, because Prisma
+mints the UUID in its client. The sync server has no Prisma client, so its INSERT supplies
+`gen_random_uuid()` itself. Drop that from the statement and every write fails on a null
+`id` — and the schema will look innocent, since it does declare a default. Use
+`@default(dbgenerated("gen_random_uuid()"))` instead if a database-level default is ever
+wanted.
+
+**Verify this pairing by running the INSERT, not by reading the DDL.** A `\d dead_rooms`
+proves the table parses; it proves nothing about whether the hand-written statement still
+matches it. The check that catches a rename is calling `saveDeadRoom()` for real and reading
+the row back.
+
 **Write `sslmode=verify-full` in the connection strings, not the `sslmode=require` Neon hands
 you.** node-postgres currently treats `require`, `prefer` and `verify-ca` as aliases for
 `verify-full`, and warns on every connection that pg v9 will switch them to libpq semantics —
@@ -623,7 +671,15 @@ that looks safe today becomes a silent downgrade to an unauthenticated TLS sessi
 `npm update`. `verify-full` pins the strong behaviour and removes the warning; verified working
 against Neon. `server/db.js` additionally passes `ssl: { rejectUnauthorized: true }`
 explicitly, which survives that change regardless — the connection string is the part that
-would rot.
+would rot. Neon also appends `&channel_binding=require`, which node-postgres ignores; it is
+dropped from these strings rather than carried along as decoration.
+
+**`verify-full` is the right string for the app and the wrong one for `psql`.** node-postgres
+verifies against Node's bundled CA store, so the URL in `.env.local` needs nothing more. The
+`psql` CLI instead looks for `~/.postgresql/root.crt` and refuses to connect at all
+(`root certificate file … does not exist`) — for ad-hoc queries append
+`&sslrootcert=system`. **Never put `sslrootcert=system` in an env file**: node-postgres reads
+that value as a *filename* and will try to open a file called `system`.
 
 ### Two deliberate departures from `tasks.md` §6
 
@@ -640,7 +696,7 @@ would rot.
 | Var | Where | Purpose |
 | --- | --- | --- |
 | `NEXT_PUBLIC_WS_URL` | `collab-code-editor/.env.local` | WebSocket server URL. Defaults to `ws://localhost:8080`; production points at the Railway `wss://` URL. **Also the source of the room-routes HTTP base** — `app/lib/rooms.ts` swaps the scheme, so there is no separate variable to keep in sync. |
-| `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`, `CLERK_SECRET_KEY` | `collab-code-editor/.env.local` | Clerk API keys. **What breaks without them is not what you would guess**: `next build` still succeeds (`proxy.ts` doesn't run at build time) and `next dev` still boots, because `@clerk/nextjs` falls back to *keyless mode* and provisions a throwaway instance under `.clerk/` — but `clerkMiddleware()` asserts both keys on **every matched request** and keyless is development-only, so a production start 500s the whole site. `.clerk/` holds that throwaway instance's secret key and is gitignored. |
+| `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`, `CLERK_SECRET_KEY` | `collab-code-editor/.env.local` | Clerk API keys. `next build` still succeeds without them (`proxy.ts` doesn't run at build time) and `next dev` still boots, because `@clerk/nextjs` falls back to *keyless mode* and provisions a throwaway instance under `.clerk/` (gitignored, holds that instance's secret key). **An earlier version of this table claimed a production start 500s the whole site without them. That is false** — measured on `@clerk/nextjs` 7.6.2 by running `NODE_ENV=production next start` with both keys removed *and* `.clerk/` deleted, so keyless could not mask it: `/` served 200 and `/robots.txt` 404, exactly as with keys. Missing keys degrade auth; they do not take the site down. Do not use this as the explanation for a 5xx. |
 | `PISTON_API_URL` | `collab-code-editor` | Piston base URL. Defaults to `http://localhost:2000`. **No trailing slash** — `app/api/execute/route.ts` appends `/api/v2/execute`. On Vercel it holds the tunnel hostname (see "Production execution path"); Vercel env changes only reach a *new* deployment, so changing it requires a redeploy. |
 | `PISTON_OUTPUT_MAX_SIZE`, `PISTON_RUN_TIMEOUT`, `PISTON_RUN_CPU_TIME`, `PISTON_COMPILE_TIMEOUT`, `PISTON_COMPILE_CPU_TIME`, `PISTON_RUN_MEMORY_LIMIT`, `PISTON_COMPILE_MEMORY_LIMIT` | `collab-code-editor/docker-compose.yml` | Ceilings inside the Piston container, **not** app config — they exist only in compose, and Piston rejects any per-request limit above them. Keep in step with the constants in `app/api/execute/route.ts`. |
 | `PORT` | `server/.env` | Port for both the WebSocket upgrade and the room HTTP routes. Defaults to `8080`. |
@@ -689,10 +745,11 @@ and all of section 10 — no multi-file, no chat, no room passwords. Redis pub/s
 scaling is *not* a v2 item at all — section 8 puts it explicitly out of scope, so it stays
 deferred past v2.
 
-7.2 built the table and both connections; **nothing writes to it yet.** So an account still
-changes nothing that outlives the tab: `clerkUserId` reaches sessionStorage and no further,
-`dead_rooms` stays empty, and `saveDeadRoom()` in `server/db.js` has no caller. Do not add UI
-promising a signed-in user that a room will be saved to their profile until 7.3 actually
+7.2 built the table and both connections; **nothing in the running app writes to it yet.** So
+an account still changes nothing that outlives the tab: `clerkUserId` reaches sessionStorage
+and no further, `dead_rooms` stays empty, and `saveDeadRoom()` in `server/db.js` has no caller
+— it has been exercised only by a standalone acceptance script, never by `rooms.js`. Do not add
+UI promising a signed-in user that a room will be saved to their profile until 7.3 actually
 writes the snapshot.
 
 **7.3 has three inputs that do not exist yet**, and they are the real work in it — the columns
