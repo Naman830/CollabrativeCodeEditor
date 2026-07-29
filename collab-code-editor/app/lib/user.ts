@@ -71,14 +71,18 @@ export function initials(user: { firstName: string; lastName: string }): string 
 
 function isValidUser(value: unknown): value is CollabUser {
   if (typeof value !== "object" || value === null) return false;
-  const { firstName, lastName, color } = value as Record<string, unknown>;
+  const { firstName, lastName, color, clerkUserId } = value as Record<string, unknown>;
   return (
     typeof firstName === "string" &&
     typeof lastName === "string" &&
     typeof color === "string" &&
     sanitizeName(firstName).length > 0 &&
     sanitizeName(lastName).length > 0 &&
-    CURSOR_COLORS.includes(color)
+    CURSOR_COLORS.includes(color) &&
+    // Optional, and must stay optional: every guest record — including every
+    // one already sitting in someone's sessionStorage from v1 — has no such
+    // field, and rejecting those would log the whole world out on first load.
+    (clerkUserId === undefined || typeof clerkUserId === "string")
   );
 }
 
@@ -96,6 +100,7 @@ function loadSessionUser(): CollabUser | null {
       firstName: sanitizeName(parsed.firstName),
       lastName: sanitizeName(parsed.lastName),
       color: parsed.color,
+      clerkUserId: parsed.clerkUserId,
     };
   } catch {
     // Malformed JSON, or storage blocked (Safari private mode throws). Either
