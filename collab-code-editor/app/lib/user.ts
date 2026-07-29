@@ -1,11 +1,22 @@
 // A collaborator's identity: the name they typed and a colour we assigned. It
-// never leaves the browser — there is no account system — so this module is the
-// whole user model.
+// never leaves the browser, and it is the whole user model for the live room —
+// Clerk (see ./clerkIdentity.ts) sits alongside it rather than replacing it,
+// because signing in is optional and the guest flow is unchanged from v1.
 
 export type CollabUser = {
   firstName: string;
   lastName: string;
   color: string;
+  /**
+   * Clerk's user ID, present only when this identity was submitted while signed
+   * in. Task 7.1 asks for it *on the client*, and client is where it stays: it
+   * is deliberately absent from the awareness payload in `CodeEditor.tsx`,
+   * because awareness is peer-controlled and any client could claim any ID
+   * (see `lib/awareness.ts`). Task 7.3 needs the sync server to know who was
+   * signed in, and it will have to verify a Clerk token itself to find out —
+   * this field can never be that source of truth.
+   */
+  clerkUserId?: string;
 };
 
 // Fixed palette so remote cursor colors stay legible on the vs-dark theme.
