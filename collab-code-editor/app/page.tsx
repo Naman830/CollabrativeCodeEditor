@@ -4,7 +4,7 @@ import { useState, type SubmitEventHandler } from "react";
 import { useRouter } from "next/navigation";
 import { SignInButton, SignUpButton, UserButton } from "@clerk/nextjs";
 import IdentityDialog from "./components/IdentityDialog";
-import { useClerkIdentity } from "./lib/clerkIdentity";
+import { signedInUser, useClerkIdentity } from "./lib/clerkIdentity";
 import { RoomCreateError, createRoom } from "./lib/rooms";
 import { setActiveUser, type CollabUser } from "./lib/user";
 
@@ -18,6 +18,7 @@ export default function Home() {
   // cannot be used on this page — the whole landing page is "use client".
   // Branching on the hook keeps one source of auth truth in the client tree.
   const clerk = useClerkIdentity();
+  const clerkUser = signedInUser(clerk);
   const [roomId, setRoomId] = useState("");
   // The identity dialog for a new room is open. The ID isn't known until submit
   // — the server mints it, so an ID it never handed out can be refused later.
@@ -207,20 +208,20 @@ export default function Home() {
           remounts and nothing typed is lost. */}
       {creating && (
         <IdentityDialog
-          key={clerk.ready && clerk.signedIn ? "clerk" : "guest"}
+          key={clerkUser ? "clerk" : "guest"}
           title="Create a room"
           description="Pick a name so everyone can tell your cursor apart."
           submitLabel="Create & Enter"
           onSubmit={handleIdentitySubmit}
           onCancel={reserving ? undefined : () => setCreating(false)}
           busy={reserving}
-          clerkUserId={clerk.signedIn ? clerk.clerkUserId : undefined}
+          clerkUserId={clerkUser?.clerkUserId}
           clerkPrefill={
-            clerk.signedIn
-              ? { firstName: clerk.firstName, lastName: clerk.lastName }
+            clerkUser
+              ? { firstName: clerkUser.firstName, lastName: clerkUser.lastName }
               : null
           }
-          signedInAs={clerk.signedIn ? clerk.label : undefined}
+          signedInAs={clerkUser?.label}
         />
       )}
     </main>

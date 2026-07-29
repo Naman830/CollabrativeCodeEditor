@@ -129,10 +129,28 @@ Rules:
 ## 7. Feature checklist for Claude Code
 
 ### 7.1 Auth (Clerk)
-- [ ] Install and configure Clerk in the Next.js app
-- [ ] Add "Sign in" / "Sign up" options on the landing page
-- [ ] Keep a visible "Continue as guest" option (v1 flow, unchanged)
-- [ ] Store Clerk user ID on the client when a room is created or joined by a logged-in user
+- [x] Install and configure Clerk in the Next.js app
+- [x] Add "Sign in" / "Sign up" options on the landing page
+- [x] Keep a visible "Continue as guest" option (v1 flow, unchanged)
+- [x] Store Clerk user ID on the client when a room is created or joined by a logged-in user
+
+Shipped alongside 7.1, not originally listed here:
+
+- [x] `app/lib/clerkIdentity.ts` — the single boundary between Clerk and the app.
+      Nothing else imports `useUser`, so Clerk's nullable `firstName`/`lastName` get
+      sanitized exactly once, through the same `sanitizeName` guest names use.
+- [x] Signing in **prefills** the name dialog rather than replacing it. A Clerk session is
+      one cookie shared by every tab; a `CollabUser` is per-tab sessionStorage. Skipping
+      the prompt would collapse two tabs into one collaborator and break the documented
+      way to test multiplayer locally.
+- [x] The dialog is never gated on Clerk having loaded. Verified: gating it left a
+      deep-linked room with no prompt at all and therefore unjoinable.
+- [x] Monaco is loaded from the `monaco-editor` package instead of its CDN AMD loader,
+      because that loader's global `define.amd` broke Clerk's UI bundle on the room route
+      (see CLAUDE.md, "Accounts (Clerk)"). Adds `monaco-editor` as a direct dependency and
+      removes a runtime CDN dependency.
+- [x] Clerk's components are themed with `appearance.variables` only — no `@clerk/ui`
+      dependency — so the sign-in modal matches the dark app without a second bundle.
 
 ### 7.2 Database (PostgreSQL)
 - [ ] Provision a Postgres instance (Railway, Neon, or Supabase)

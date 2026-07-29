@@ -9,7 +9,8 @@ import ActivityToasts, { type ActivityToast } from "./ActivityToasts";
 import IdentityDialog from "./IdentityDialog";
 import UserBar from "./UserBar";
 import { readPeers, type Peer } from "../lib/awareness";
-import { useClerkIdentity } from "../lib/clerkIdentity";
+import { signedInUser, useClerkIdentity } from "../lib/clerkIdentity";
+import { configureMonacoLoader } from "../lib/monacoLoader";
 import { MAX_CODE_BYTES, TOO_LARGE_MESSAGE, codeByteLength } from "../lib/execution";
 import { LANGUAGES, downloadFileName } from "../lib/languages";
 import { WS_URL } from "../lib/rooms";
@@ -213,6 +214,9 @@ function CheckIcon() {
   );
 }
 
+// Module scope, so it has run before any <Editor> in this module can mount.
+configureMonacoLoader();
+
 export default function CodeEditor({ roomId, onRoomClosed }: CodeEditorProps) {
   const [language, setLanguage] = useState<string>("javascript");
   // Starts empty, not at DEFAULT_CODE: the editor really is empty until the
@@ -296,7 +300,7 @@ export default function CodeEditor({ roomId, onRoomClosed }: CodeEditorProps) {
   // Only consulted to prefill the join dialog below. It deliberately has no
   // bearing on the Yjs effect: a tab that already has an identity connects
   // without ever waiting on Clerk.
-  const clerk = useClerkIdentity();
+  const clerkUser = signedInUser(useClerkIdentity());
 
   // Owns the whole Yjs lifecycle: doc, provider, awareness and binding are all
   // created and torn down here, so switching rooms (or React's StrictMode
@@ -787,18 +791,18 @@ export default function CodeEditor({ roomId, onRoomClosed }: CodeEditorProps) {
           the common path never remounts and nothing typed is ever lost. */}
       {identity.status === "absent" && (
         <IdentityDialog
-          key={clerk.ready && clerk.signedIn ? "clerk" : "guest"}
+          key={clerkUser ? "clerk" : "guest"}
           title="Join this room"
           description="Pick a name so everyone can tell your cursor apart."
           submitLabel="Join Room"
           onSubmit={setActiveUser}
-          clerkUserId={clerk.signedIn ? clerk.clerkUserId : undefined}
+          clerkUserId={clerkUser?.clerkUserId}
           clerkPrefill={
-            clerk.signedIn
-              ? { firstName: clerk.firstName, lastName: clerk.lastName }
+            clerkUser
+              ? { firstName: clerkUser.firstName, lastName: clerkUser.lastName }
               : null
           }
-          signedInAs={clerk.signedIn ? clerk.label : undefined}
+          signedInAs={clerkUser?.label}
         />
       )}
     </div>
