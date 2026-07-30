@@ -51,21 +51,13 @@ export class RoomCreateError extends Error {
   }
 }
 
-/**
- * Reserves a room and returns its ID. Throws if the server can't be reached —
- * the caller must show that rather than enter a room that doesn't exist.
- *
- * Still no request body: without a Content-Type this stays a CORS **simple**
- * request, so room creation costs no preflight round trip. That is exactly why
- * §10.1's language travels as a query parameter and not as JSON — a body would
- * buy a whole extra round trip before every room creation, for one word.
- */
+// INVARIANT: no request body — a Content-Type makes this a non-simple CORS request and
+// buys a preflight before every room creation, which is why language is a query param.
 export async function createRoom(language: LanguageValue): Promise<string> {
   const res = await fetch(`${API_URL}/rooms?language=${encodeURIComponent(language)}`, {
     method: "POST",
   });
   if (!res.ok) {
-    // Prefer the server's own wording — it knows why it refused.
     const explained = await res
       .json()
       .then((data: unknown) =>

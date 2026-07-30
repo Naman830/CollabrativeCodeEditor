@@ -32,10 +32,8 @@ export function signedInUser(identity: ClerkIdentity): SignedInClerkUser | null 
 
 const TOKEN_TIMEOUT_MS = 2000;
 
-// The only trustworthy channel for the sync server to learn who is signed in — an
-// account ID must never travel through peer-controlled awareness instead.
-// INVARIANT: never rejects, never hangs; always resolves within TOKEN_TIMEOUT_MS,
-// because the caller opens the WebSocket and must not be gated on Clerk.
+// INVARIANT: the only trustworthy channel for "who is signed in" (never awareness), and
+// it never rejects or hangs — it gates the WebSocket, which must not wait on Clerk.
 export function useClerkToken(): () => Promise<string | null> {
   const { getToken } = useAuth();
 
