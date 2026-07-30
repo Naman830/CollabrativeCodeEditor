@@ -71,6 +71,10 @@ proper VPS is available.**
 the complete application, execution included. Nothing is stubbed, mocked, or disabled in the local
 build.
 
+**Want to deploy it anyway?** [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) is a step-by-step guide for
+both paths — a single VPS where everything works including Run, and managed hosting where it does
+not — with the security setup each one needs.
+
 <!-- ───────────────────────────────────────────────────────────────
      SCREENSHOT SLOT — hero
      Add docs/screenshots/hero.png, then uncomment the block below.
@@ -720,6 +724,8 @@ Two independent workspaces plus the sandbox container. **There is no root `packa
 .
 ├── docker-compose.yml               the Piston sandbox and its ceilings
 ├── docs/TESTING.md                  the full audit and test report
+├── docs/DEPLOYMENT.md               how to host it, if you want to
+├── docs/learning.md                 learn the project from zero, and from its bugs
 │
 ├── web/                             Next.js 16 frontend
 │   ├── src/

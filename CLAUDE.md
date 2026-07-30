@@ -73,7 +73,7 @@ root `package.json`** — install and run each workspace separately.
 | `web/` | Next.js 16 (App Router) frontend. Monaco editor, room routing, and the `/api/execute` proxy to Piston. |
 | `server/` | Standalone Node.js WebSocket server speaking the Yjs sync protocol, plus the room-lifetime HTTP routes on the same port. Carries a `railway.json`; Railway is its deployment target when one is wanted. |
 | `docker-compose.yml` | The Piston sandbox. At the **repo root**, not inside `web/` — it is a third service, not part of the frontend. |
-| `docs/` | `TESTING.md`, the audit report — now the only file here, since `tasks.md` was deleted. `README.md`, `LICENSE` and this file stay at the root by convention. |
+| `docs/` | `TESTING.md` (the audit report), `DEPLOYMENT.md` (the hosting runbook) and `learning.md` (the teaching document). `tasks.md` was deleted; `README.md`, `LICENSE` and this file stay at the root by convention. |
 | `web/tests/` | vitest: the unit tier, the `drift/` tier, `fixtures/hostile.ts`, and `setup/no-ambient-secrets.ts`. |
 | `web/e2e/` | Playwright. The only cross-service tier; `helpers.ts` holds every selector trap. |
 | `server/tests/` | vitest: `unit/` (hermetic) and `integration/` (spawns the real server, raw `ws`). |
@@ -1969,13 +1969,31 @@ hot execute path is a worse trade than the approximation.
 
 ## The public-facing docs
 
-Three files describe this project to humans, and they do not overlap:
+Five files describe this project to humans, and they do not overlap:
 
 | File | Audience | Rule |
 | --- | --- | --- |
 | `README.md` | Developers, recruiters, beginners | What it is, how to run it, what it does, what is *not* built. Never internal debugging history. |
 | `CLAUDE.md` (this file) | Whoever edits the code next | The why: gotchas, rejected alternatives, invariants, measurements. |
 | `docs/TESTING.md` | Contributors and reviewers | The audit: procedure, case IDs, numbers, and §12's honest list of what is unproven. |
+| `docs/DEPLOYMENT.md` | Anyone hosting it | The runbook for both paths: one VPS (Run works), or managed hosting (Run does not). Beginner-level detail on purpose. |
+| `docs/learning.md` | Anyone learning *from* it | The teaching document: concepts from zero, six end-to-end walkthroughs, and every bug retold as a transferable lesson. |
+
+**`docs/learning.md` is the one file allowed to retell this file's debugging history**, and that is
+the whole reason it exists as a fifth document rather than a README section. The README's rule
+("never internal debugging history") is what left the project's most instructive material — the 21
+audited defects and the traps below — visible only to whoever was already editing the code.
+`learning.md` re-presents that same material for a reader who has never seen a WebSocket, in the
+shape a lesson needs rather than the shape a notebook entry needs: symptom → what was believed →
+what was true → fix → the general principle.
+
+So it **derives from this file and `docs/TESTING.md`; it is never the source.** When a gotcha here
+is rewritten because it turned out false, the corresponding lesson there is wrong too — and it is
+wrong in a way nothing detects, since it explains code it does not import. Two consequences worth
+carrying: it deliberately contains **no setup instructions** (the README and `DEPLOYMENT.md` own
+those, and a third copy would drift), and every bug in it is a real one with a case ID in
+`TESTING.md` §5 — inventing a plausible-sounding bug to illustrate a point would make the whole
+document unciteable.
 
 **The README leads with why the app is not deployed, and that framing is deliberate.** The blocker
 is Piston and only Piston: the public API at `emkc.org` went whitelist-only, and self-hosting needs
@@ -1983,6 +2001,13 @@ a privileged container, which needs a VPS. The tunnel that once bridged a local 
 deployed site was removed for the security reasons under "Production execution path", and the
 README says so in the user's own framing — *exposing a personal machine is not worth it for a
 demo.*
+
+`docs/DEPLOYMENT.md` is the escape hatch that keeps that honest: the README explains *why* it is not
+deployed, and the guide explains *how* to deploy it if someone wants to. The guide's single-VPS path
+is recommended precisely because it keeps Piston on loopback with the frontend on the same host —
+**no authentication is needed because nothing external can reach it.** Its managed-hosting path
+deliberately ships with execution disabled rather than teaching anyone to expose Piston; if that
+ever changes, the shared-secret header in `route.ts` has to land in the same change.
 
 **Do not re-add live deployment URLs to the README** without the user asking. Hosting projects do
 still exist for the frontend and the sync server, but pointing at them would be worse than saying
