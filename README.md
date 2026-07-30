@@ -6,7 +6,7 @@
 
 **Open a room. Share the link. Type together. Run the code — everyone sees the output.**
 
-No accounts. No database. No `eval()`.
+Guest-first — no account needed. No `eval()`. Sign in only if you want a snapshot kept.
 
 <br/>
 
@@ -59,7 +59,7 @@ CollabCode fixes that with a room you can share by URL:
 | 🎨 | **You can see where everyone is.** Live cursors, live selections, coloured name labels. |
 | ▶️ | **Anyone can hit Run.** The result appears in *everyone's* output panel, not just the clicker's. |
 | 🔒 | **Untrusted code runs in a real sandbox.** Isolated containers with CPU, memory, and output ceilings — never `eval()` in the browser. |
-| 💨 | **Nothing is stored.** No accounts, no database. The room dies when the last person leaves. |
+| 💨 | **The room dies when the last person leaves.** Guests store nothing at all. Sign in and a room you worked in is snapshotted **once**, read-only, to your profile. |
 
 > **The two hard problems this project is actually about:** keeping edit state consistent across
 > concurrent users without merge conflicts, and running arbitrary untrusted code without
@@ -74,19 +74,24 @@ CollabCode fixes that with a room you can share by URL:
 | :-- | :-- | :-- |
 | **Frontend** | 🟢 Live | [real-time-collabrative-code-editor-two.vercel.app](https://real-time-collabrative-code-editor-two.vercel.app) |
 | **Sync server** | 🟢 Live | `wss://collabrativecodeeditor-production.up.railway.app` |
-| **Piston sandbox** | 🟡 Tunneled | a local container, reached over a fixed tunnel hostname |
+| **Piston sandbox** | 🔴 Local only | runs on `127.0.0.1:2000`; **not reachable from the deployed site** |
 
 > [!IMPORTANT]
-> **Execution on the live demo runs on a developer machine, not in the cloud.**
-> Piston needs a privileged Docker container with `tmpfs … :exec` to build its isolation layer,
-> and neither Vercel nor Railway permits that. So the deployed `/api/execute` points at a local
-> Piston exposed through a reserved ngrok hostname (`PISTON_API_URL`).
+> **Code execution does not work on the deployed site, deliberately.**
+> Piston needs a *privileged* Docker container with `tmpfs … :exec` to build its isolation layer,
+> and neither Vercel nor Railway permits that.
 >
-> The consequence is honest and unavoidable: **Run works on the live demo only while that
-> machine is online.** When it isn't, Run reports *"Could not reach the code execution service."*
-> Making this independent of any one machine means [hosting Piston on a VPS](#️-roadmap).
+> It used to be bridged by a reserved ngrok tunnel to a local Piston. **That tunnel was shut down
+> on purpose:** it exposed `POST /api/v2/execute` to the public internet with **no authentication
+> at all**, against a container running `privileged: true` — and it bypassed the rate limiter
+> entirely, since that limiter lives on Vercel and the tunnel went straight to Piston. Piston is
+> now bound to `127.0.0.1`.
 >
-> **[Running locally](#-quick-start) is the reliable way to see it** — three commands, no tunnel.
+> So on the deployed site Run reports *"Could not reach the code execution service."* That is the
+> **expected** behaviour, not a fault. If a tunnel is ever restored, authentication is not
+> optional; the durable fix is [hosting Piston on a VPS](#️-roadmap).
+>
+> **[Running locally](#-quick-start) is the way to see it** — three commands, no tunnel.
 
 ---
 
@@ -111,7 +116,7 @@ CollabCode fixes that with a room you can share by URL:
 
 <tr><td>🌍 <b>5 languages</b></td><td>JavaScript · Python · TypeScript · Java · C++ — chosen <b>once, when the room is created</b>, and fixed for its lifetime. It drives syntax highlighting, the sandbox runtime, and every file's extension.</td></tr>
 
-<tr><td>💾 <b>Save to device</b></td><td>Downloads the current buffer with the right extension (<code>main.py</code>, <code>main.cpp</code>, <code>Main.java</code>…). Purely local — nothing touches the server.</td></tr>
+<tr><td>💾 <b>Save to device</b></td><td>One file downloads with the right extension (<code>main.py</code>, <code>main.cpp</code>, <code>Main.java</code>…); two or more become <code>project.zip</code>. Purely local — nothing touches the server.</td></tr>
 
 <tr><td>♻️ <b>Room lifecycle</b></td><td>Rooms self-destruct 10s after the last person leaves. A refresh survives; a closed room shows "This room has closed" and sends you home.</td></tr>
 
@@ -677,7 +682,7 @@ one-line `curl --resolve` check that settles it.
 
 ## 🧪 Tests
 
-**281 tests across four tiers**, plus CI. Full report — strategy, every bug found, root causes,
+**295 tests across four tiers**, plus CI. Full report — strategy, every bug found, root causes,
 fixes, and the remaining limitations — is in **[`docs/TESTING.md`](docs/TESTING.md)**.
 
 The first three tiers are **hermetic**: no database, no Clerk keys, no network. A contributor with

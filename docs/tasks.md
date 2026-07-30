@@ -824,7 +824,7 @@ no test harness and 7.x did not ask for one": there is a harness now, and it is 
 
 #### 7.10.1 The committed suite
 
-- [x] Four tiers, 281 tests, from zero. `web/tests/unit/` + `web/tests/unit/drift/` (vitest),
+- [x] Four tiers, 295 tests, from zero. `web/tests/unit/` + `web/tests/unit/drift/` (vitest),
       `server/tests/unit/` and `server/tests/integration/` (vitest), `web/e2e/` (Playwright).
 - [x] Tests live inside the workspace they test; `web/e2e/` is the only cross-service tier. Recorded
       as a **fifth structural rule** in `CLAUDE.md`, and it exists to keep "there is no root

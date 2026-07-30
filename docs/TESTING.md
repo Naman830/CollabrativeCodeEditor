@@ -4,7 +4,7 @@ An end-to-end audit of this repository: what was tested, what was broken, what w
 is still true afterwards.
 
 The short version: the app had **no automated tests at all** — none, in its entire git history — and
-every one of its ~35 `INVARIANT:` comments was enforced by prose. It now has **281 committed tests
+every one of its ~35 `INVARIANT:` comments was enforced by prose. It now has **295 committed tests
 across four tiers plus CI**, and the audit found **21 defects**, four of which could kill the sync
 server or silently destroy user data. All four are fixed.
 
