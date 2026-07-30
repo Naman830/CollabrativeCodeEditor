@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { fileExtFor } from "@/lib/editor/languages";
+import { fileExtFor, isLanguage } from "@/lib/editor/languages";
 import { MAX_CODE_BYTES, TOO_LARGE_MESSAGE, payloadTooLarge } from "@/lib/sandbox/execution";
 import { clientKey, createRateLimiter } from "@/lib/sandbox/rateLimit";
 
@@ -186,13 +186,19 @@ export async function POST(request: Request) {
     return NextResponse.json({ success: false, error: oversize }, { status: 413 });
   }
 
-  const mapping = LANGUAGE_MAP[language];
-  if (!mapping) {
+  // INVARIANT: isLanguage, not a truthiness check on LANGUAGE_MAP[language] — the map is a plain
+  // object, so LANGUAGE_MAP["__proto__"] is Object.prototype, which is truthy and yields
+  // {language: undefined, version: undefined}. Verified live before this guard: the request
+  // reached Piston and came back as a 502 carrying Piston's own message.
+  // The value is also not echoed back: it is caller-controlled, and this string is written into
+  // the room's shared execution record, i.e. broadcast to every participant.
+  if (!isLanguage(language)) {
     return NextResponse.json(
-      { success: false, error: `Unsupported language: ${language}` },
+      { success: false, error: "That language isn't supported." },
       { status: 400 }
     );
   }
+  const mapping = LANGUAGE_MAP[language];
 
   let pistonRes: Response;
   try {
@@ -243,8 +249,13 @@ export async function POST(request: Request) {
   }
 
   if (!pistonRes.ok) {
+    // Never forwarded: Piston's message carries sandbox package paths, versions and configured
+    // limit values, and this string is broadcast to the whole room via the shared execution map.
+    // `noticeFor`'s fallback to run.message is a different path — a 200 with an unrecognised
+    // sandbox status — and must stay, or a new Piston status becomes illegible.
+    console.warn(`Piston rejected a run (${pistonRes.status}): ${data.message ?? "no message"}`);
     return NextResponse.json(
-      { success: false, error: data.message ?? "Code execution service returned an error." },
+      { success: false, error: "The code execution service rejected this run." },
       { status: 502 }
     );
   }

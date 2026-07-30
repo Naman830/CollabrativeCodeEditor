@@ -2,9 +2,14 @@
 // INVARIANT: every function here is lookup-only — an observer that creates state
 // resurrects a room doc.destroy() just killed, and nothing deletes it again.
 
+const { intFromEnv } = require("../env");
+
 // INVARIANT: keep in sync with web/src/lib/data/persistence.ts, which hardcodes
 // this default and cannot see the env override.
-const MEMBER_MIN_CONNECTED_MS = Number(process.env.MEMBER_MIN_CONNECTED_MS) || 60_000;
+// 0 is legitimate and is the value people actually want in tests: everyone qualifies at once.
+const MEMBER_MIN_CONNECTED_MS = intFromEnv(process.env.MEMBER_MIN_CONNECTED_MS, 60_000, {
+  name: "MEMBER_MIN_CONNECTED_MS",
+});
 
 const MAX_SNAPSHOT_BYTES = 256 * 1024;
 // INVARIANT: keep in sync with web/src/lib/data/deadRooms.ts, which matches on it.

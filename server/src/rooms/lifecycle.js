@@ -4,15 +4,28 @@ const crypto = require("crypto");
 const db = require("../storage/db");
 const snapshotQueue = require("../storage/snapshotQueue");
 const { createRoomState, deleteRoomState, buildSnapshot } = require("./state");
+const { intFromEnv } = require("../env");
 
-const GRACE_MS = Number(process.env.ROOM_GRACE_MS) || 10_000;
+// 0 is legitimate here: destroy on the last disconnect, which is useful in tests.
+const GRACE_MS = intFromEnv(process.env.ROOM_GRACE_MS, 10_000, { name: "ROOM_GRACE_MS" });
 
-const RESERVATION_MS = Number(process.env.ROOM_RESERVATION_MS) || 300_000;
+// Floor of 1s: 0 would expire the reservation before its creator can connect, breaking every
+// room creation.
+const RESERVATION_MS = intFromEnv(process.env.ROOM_RESERVATION_MS, 300_000, {
+  min: 1_000,
+  name: "ROOM_RESERVATION_MS",
+});
 
+// A deliberate non-env constant: a global ceiling on unclaimed rooms, unrelated to the
+// per-caller limiter on POST /rooms. Both are needed — the limiter stops one script exhausting
+// this, and this stops many callers doing it.
 const MAX_RESERVATIONS = 1000;
 
 // INVARIANT: must stay above db.js's connect timeout and under the platform's SIGTERM grace.
-const FLUSH_DEADLINE_MS = Number(process.env.SNAPSHOT_FLUSH_MS) || 20_000;
+// 0 is legitimate: don't wait for snapshot writes at shutdown.
+const FLUSH_DEADLINE_MS = intFromEnv(process.env.SNAPSHOT_FLUSH_MS, 20_000, {
+  name: "SNAPSHOT_FLUSH_MS",
+});
 
 let shuttingDown = false;
 
@@ -134,10 +147,17 @@ function destroyRoom(roomId, reason) {
   }
 }
 
+// Split out of flushAndDestroyAll so /health can start answering 503 while the listener is
+// still open. INVARIANT: idempotent, and flushAndDestroyAll still calls it — the flag has to be
+// set before server.close(), or the platform sees a refused connection instead of the 503.
+function beginShutdown() {
+  shuttingDown = true;
+}
+
 // Shutdown: live rooms are destroyed too — at SIGTERM a live room is a dead room that has
 // not noticed. The eviction timers are unref'd, so they never fire on their own.
 function flushAndDestroyAll() {
-  shuttingDown = true;
+  beginShutdown();
 
   // INVARIANT: before the destroy loop — it also starts parked writes, whose sockets are
   // the only thing anchoring the event loop once the listener is closed.
@@ -163,7 +183,9 @@ function isShuttingDown() {
 module.exports = {
   GRACE_MS,
   RESERVATION_MS,
+  MAX_RESERVATIONS,
   FLUSH_DEADLINE_MS,
+  beginShutdown,
   reserveRoom,
   roomExists,
   claimRoom,

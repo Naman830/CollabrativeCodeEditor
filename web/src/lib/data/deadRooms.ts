@@ -2,6 +2,12 @@
 // INVARIANT: never fetch a DeadRoom by id; every read starts from deadRoomMember on the viewer's id.
 
 import { prisma } from "./db";
+// INVARIANT: one filename sanitizer for the room and the snapshot reader. This file used to
+// carry its own copy that claimed to be in sync and was not — it cut with a UTF-16 slice, so
+// `"a" + "😀".repeat(32)` left a lone high surrogate that reached `<a download>` and a zip
+// entry key. `server/src/rooms/state.js`'s copy is now the only genuine duplication, because
+// the sync server can import neither workspace.
+import { sanitizeFileName } from "@/lib/collab/roomFiles";
 
 export type SnapshotFile = {
   filename: string;
@@ -35,7 +41,6 @@ export const DEAD_ROOM_ID =
 // Keep in sync with TRUNCATION_MARKER in server/src/rooms/state.js.
 const TRUNCATION_MARKER = "\n\n/* --- snapshot truncated: room exceeded 256 KB --- */\n";
 
-const MAX_FILENAME_LENGTH = 64;
 const FALLBACK_FILENAME = "main.txt";
 
 const MAX_FILES = 50;
@@ -43,18 +48,6 @@ const MAX_FILES = 50;
 // `endsWith`, never `includes`: a user may have typed the marker's text themselves.
 export function isTruncated(content: string): boolean {
   return content.endsWith(TRUNCATION_MARKER);
-}
-
-// INVARIANT: the `files` jsonb is untrusted; a filename reaching `<a download>` must lose
-// path separators and control characters.
-function safeFilename(raw: string): string {
-  const cleaned = raw
-    .replace(/[\u0000-\u001F\u007F]/g, "")
-    .replace(/[/\\]/g, "")
-    .trim()
-    .slice(0, MAX_FILENAME_LENGTH);
-  // "." and ".." survive the replacements above and are not filenames.
-  return /[^.]/.test(cleaned) ? cleaned : FALLBACK_FILENAME;
 }
 
 // INVARIANT: the only boundary that narrows the raw `files` column — no component reads it
@@ -67,7 +60,7 @@ export function readSnapshotFiles(value: unknown): SnapshotFile[] {
     if (!entry || typeof entry !== "object") continue;
     const { filename, content } = entry as { filename?: unknown; content?: unknown };
     files.push({
-      filename: safeFilename(typeof filename === "string" ? filename : ""),
+      filename: sanitizeFileName(filename),
       content: typeof content === "string" ? content : "",
     });
     if (files.length >= MAX_FILES) break;
@@ -144,10 +137,12 @@ export async function deleteDeadRoomForUser(
     });
     if (removed.count === 0) return false;
 
-    const remaining = await tx.deadRoomMember.count({ where: { deadRoomId } });
-    if (remaining === 0) {
-      await tx.deadRoom.delete({ where: { id: deadRoomId } });
-    }
+    // INVARIANT: deleteMany here too, and with the relation filter. `delete` throws P2025 when a
+    // concurrent deleter already dropped the row, and that throw rolls back the membership
+    // deletion above — the caller was then shown "Couldn't reach the database" while their row
+    // still existed. `members: { none: {} }` re-checks last-member-ness at delete time, so the
+    // read-committed window between a count and the delete cannot erase somebody else's copy.
+    await tx.deadRoom.deleteMany({ where: { id: deadRoomId, members: { none: {} } } });
     return true;
   });
 }

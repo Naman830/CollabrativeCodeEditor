@@ -3,6 +3,7 @@
 // INVARIANT: only storage/snapshotQueue.js may call saveDeadRoom — it bounds concurrency.
 
 const { Pool } = require("pg");
+const { intFromEnv } = require("../env");
 
 // INVARIANT: snapshotQueue.js caps its concurrency at exactly this. Another consumer of
 // this pool means that cap must drop below POOL_MAX.
@@ -10,6 +11,12 @@ const POOL_MAX = 3;
 
 // Optional: unset, no pool opens and saveDeadRoom is a no-op, so guests need no database.
 const CONNECTION_STRING = process.env.DATABASE_URL;
+
+// 0 is legitimate and distinct: pg reads it as "no timeout". Exported so index.js can check the
+// ordering against SNAPSHOT_FLUSH_MS at boot, which CLAUDE.md documented but nothing enforced.
+const CONNECT_TIMEOUT_MS = intFromEnv(process.env.DB_CONNECT_TIMEOUT_MS, 10_000, {
+  name: "DB_CONNECT_TIMEOUT_MS",
+});
 
 /** @type {import("pg").Pool | null} */
 let pool = null;
@@ -20,7 +27,7 @@ if (CONNECTION_STRING) {
     max: POOL_MAX,
     // INVARIANT: must stay below the shutdown flush deadline in rooms/lifecycle.js
     // and above a Neon cold start (>5s measured against a suspended branch).
-    connectionTimeoutMillis: Number(process.env.DB_CONNECT_TIMEOUT_MS) || 10_000,
+    connectionTimeoutMillis: CONNECT_TIMEOUT_MS,
     idleTimeoutMillis: 30_000,
     ssl: { rejectUnauthorized: true },
   });
@@ -126,4 +133,4 @@ async function close() {
   });
 }
 
-module.exports = { POOL_MAX, isEnabled, saveDeadRoom, close };
+module.exports = { POOL_MAX, CONNECT_TIMEOUT_MS, isEnabled, saveDeadRoom, close };

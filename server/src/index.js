@@ -8,6 +8,7 @@ const {
   roomExists,
   GRACE_MS,
   FLUSH_DEADLINE_MS,
+  beginShutdown,
   flushAndDestroyAll,
   isShuttingDown,
 } = require("./rooms/lifecycle");
@@ -91,6 +92,18 @@ function handleRequest(req, res) {
   // INVARIANT: no body — a Content-Type would force a CORS preflight, hence `?language=`.
   // The value is narrowed by normalizeLanguage before it can reach dead_rooms.language.
   if (req.method === "POST" && path === "/rooms") {
+    // INVARIANT: refuse while draining. The listener now stays open through the flush so
+    // /health can answer 503, and flushAndDestroyAll iterates `docs`, never `reservations` —
+    // so a room minted now would never be flushed and its creator would meet "this room has
+    // closed" after the restart. The wording matters: createRoom() surfaces the server's own
+    // sentence, and this must not read as "couldn't reach the sync server".
+    if (isShuttingDown()) {
+      res.setHeader("Retry-After", "5");
+      return json(res, 503, {
+        error: "The sync server is restarting. Try again in a few seconds.",
+      });
+    }
+
     // Also recorded as the room's snapshot-pacing key: this is the only moment a room and
     // an address are ever in the same place.
     const caller = clientKey(req);
@@ -153,6 +166,15 @@ wss.on("error", (err) => console.error("WebSocket server error:", err.message));
 server.listen(PORT, () => {
   console.log(`Yjs sync WebSocket server listening on port ${PORT}`);
   console.log(`Rooms are destroyed ${GRACE_MS}ms after the last client leaves`);
+
+  // INVARIANT (documented in CLAUDE.md, now actually checked): the flush deadline must exceed
+  // one Postgres connect attempt, or a shutdown gives up before the first write can land.
+  if (db.isEnabled() && db.CONNECT_TIMEOUT_MS >= FLUSH_DEADLINE_MS) {
+    console.warn(
+      `DB_CONNECT_TIMEOUT_MS (${db.CONNECT_TIMEOUT_MS}) >= SNAPSHOT_FLUSH_MS ` +
+        `(${FLUSH_DEADLINE_MS}); snapshots may be abandoned at shutdown.`
+    );
+  }
 });
 
 let shutdownStarted = false;
@@ -163,13 +185,22 @@ async function shutdown(signal) {
     process.exit(1);
   }
   shutdownStarted = true;
+
+  // INVARIANT: the flag first, and server.close() LAST. Closing the listener before the flag was
+  // set meant the platform got ECONNREFUSED instead of the 503 that /health's draining branch
+  // exists to serve — that branch was unreachable on every SIGTERM.
+  beginShutdown();
   console.log(`${signal} received; flushing dead-room snapshots (up to ${FLUSH_DEADLINE_MS}ms)`);
 
-  server.close();
   await flushAndDestroyAll();
 
   // INVARIANT: after the rooms, so close handlers cannot perturb a flush in progress.
   for (const client of wss.clients) client.close(CLOSE_SERVICE_RESTART, "server-restart");
+
+  server.close();
+  // The listener stayed open through the flush, so a keep-alive connection could otherwise hold
+  // the handle past the drain.
+  if (typeof server.closeIdleConnections === "function") server.closeIdleConnections();
 
   // INVARIANT: armed before db.close() — pool.end() can hang on an unresponsive Neon, and a
   // backstop created afterwards would never be reached.

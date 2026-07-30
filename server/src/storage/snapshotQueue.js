@@ -3,11 +3,21 @@
 // destroys the only copy. Only the memory bounds below discard, and they log it.
 
 const { createRateLimiter } = require("../http/rateLimit");
+const { intFromEnv } = require("../env");
 const db = require("./db");
 
 // Deliberately not POST /rooms' 10 (see CLAUDE.md); env-overridable for testing.
-const WRITE_LIMIT = Number(process.env.SNAPSHOT_WRITE_LIMIT) || 60;
-const WRITE_WINDOW_MS = Number(process.env.SNAPSHOT_WRITE_WINDOW_MS) || 60_000;
+// INVARIANT: floor of 1 on both, unlike the other knobs. A limit of 0 makes `recent.length >= 0`
+// always true, so every snapshot is paced forever and only releasePacing() at SIGTERM saves any
+// of them — i.e. 0 is silent data loss, not a faster setting. A 0 window degenerates likewise.
+const WRITE_LIMIT = intFromEnv(process.env.SNAPSHOT_WRITE_LIMIT, 60, {
+  min: 1,
+  name: "SNAPSHOT_WRITE_LIMIT",
+});
+const WRITE_WINDOW_MS = intFromEnv(process.env.SNAPSHOT_WRITE_WINDOW_MS, 60_000, {
+  min: 1,
+  name: "SNAPSHOT_WRITE_WINDOW_MS",
+});
 
 // INVARIANT: keep in step with SNAPSHOT_FLUSH_MS and db.POOL_MAX — queueing past
 // what a shutdown flush can drain is memory that can provably never be written.
