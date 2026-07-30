@@ -72,6 +72,14 @@ Key files:
 - `collab-code-editor/app/components/CodeEditor.tsx` — the room screen. **Composition only**: it holds `language`, `code` and the Monaco instance, and hands everything else to the hooks and panels below
 - `collab-code-editor/app/hooks/useCollabRoom.ts` — the whole client-side Yjs stack (doc, provider, awareness, Monaco binding, the shared `execution` map and the stale-run watchdog), plus the peers/toasts it mirrors into React
 - `collab-code-editor/app/hooks/useCodeRunner.ts` — the Run button: the POST to `/api/execute` and the shared-map write, including the `runId` staleness check
+- `collab-code-editor/app/hooks/useEditorShortcuts.ts` — Ctrl/Cmd+Enter and Ctrl/Cmd+S, bound to the Monaco instance and never to `window`
+- `collab-code-editor/app/hooks/useRoomPersistence.ts` — the sole-peer `beforeunload` and the client-side estimate of whether this room reaches your profile
+- `collab-code-editor/app/lib/persistence.ts` — the estimate's constant, states and wording, and the long note on why it can only ever be an estimate
+- `collab-code-editor/app/lib/platform.ts` — ⌘ vs Ctrl, for tooltips only; changes no behaviour
+- `collab-code-editor/app/components/PersistenceChip.tsx` — that estimate as one chip in the room's chrome, and where the leaving warning's actual sentence lives
+- `collab-code-editor/app/components/ConfirmDialog.tsx` — the generic destructive-confirmation modal; `IdentityDialog`'s scrim/trap treatment, generalised
+- `collab-code-editor/app/components/DeleteSnapshotButton.tsx` — the only caller of the delete action, and `/profile`'s second client component
+- `collab-code-editor/app/profile/actions.ts` — the repo's only `"use server"` module: auth, delete, revalidate, redirect
 - `collab-code-editor/app/hooks/useCopyToClipboard.ts` — copy + the transient "copied" flag, with the non-secure-context fallback
 - `collab-code-editor/app/lib/executionState.ts` — the `ExecutionState` union, the map/key names, `STALE_RUN_MS`, and `isFailedRun()`; imported by the hooks *and* the output panel
 - `collab-code-editor/app/lib/cursorStyles.ts` — the remote-cursor `<style>` block; the only thing that writes a peer colour into CSS
@@ -99,7 +107,7 @@ Key files:
 - `collab-code-editor/app/components/SiteNav.tsx` — the top bar for every screen that is not the room
 - `collab-code-editor/app/not-found.tsx` / `error.tsx` / `global-error.tsx` — the root 404, the root error boundary, and the layout-failed page that renders its own `<html>`
 - `collab-code-editor/app/icon.svg` — the favicon, via Next's file convention
-- `collab-code-editor/app/lib/execution.ts` — the cap on what may be *sent* for execution (`MAX_CODE_BYTES`), shared by the client's pre-flight check and the route's 413
+- `collab-code-editor/app/lib/execution.ts` — the cap on what may be *sent* for execution (`MAX_CODE_BYTES`) and `payloadTooLarge()`, the one budget rule covering code **and** stdin together; shared by the client's pre-flight check and the route's 413
 - `collab-code-editor/app/lib/rateLimit.ts` / `server/rateLimit.js` — the same in-memory sliding-window limiter, once per workspace
 - `collab-code-editor/app/api/execute/route.ts` — server-side proxy to Piston; also where the sandbox-side execution limits live
 - `server/yjsConnection.js` — the only place that speaks the Yjs wire protocol; also the gate that refuses connections to rooms that don't exist, and where a `?token=` becomes a member session
@@ -685,6 +693,25 @@ different languages selected locally while watching the same run — so the capt
 ("Run by Alice A. · Python") always reflects what actually executed, sourced from the shared
 record, not from `language` state.
 
+**The run's `stdin` is on the shared record; the box you type into is not (§10.4).**
+`ExecutionState` carries `stdin`, so every peer can see what produced the output they are
+looking at — the same reason the caption shows the run's own `language`. The *draft* stays in
+`CodeEditor`'s local state and is never synced, which is what stops a remote run overwriting
+what someone is halfway through typing; `OutputPanel` renders the local draft in the textarea
+and `state.stdin` in the read-only echo, and must never confuse the two. `stdin` is **required**
+on the three non-idle variants (unlike `notice`), which is what makes the compiler enumerate all
+five write sites — four in `useCodeRunner` plus the stale-run watchdog in `useCollabRoom`, which
+has to carry it through when it heals an abandoned run rather than dropping it.
+
+**Code and stdin share one 64 KB budget, and that is why `REQUEST_BYTE_CEILING` did not move.**
+`payloadTooLarge(code, stdin)` in `app/lib/execution.ts` is the single rule, imported by both
+the client pre-check and the route's 413 for the same reason `codeByteLength` already lived
+there. Because the decoded payload still caps at `MAX_CODE_BYTES`, the route's existing "doubled
+for JSON escaping" `Content-Length` headroom still covers the whole envelope. A *separate* stdin
+cap would have doubled the worst case and forced that constant up with it — so if a per-field
+cap is ever wanted, `REQUEST_BYTE_CEILING` has to be raised in the same change. Verified at the
+boundary: 60 KB code + 8 KB stdin is a 413, 60 KB + 3 KB runs.
+
 **Attribution bypasses `readPeers` on purpose.** `startedBy: {name, color}` is written from
 the clicking user's own trusted `displayName(user)`/`user.color` (`lib/user.ts`) at the moment
 they click Run — not from remote awareness. `readPeers`/`lib/awareness.ts` exists to sanitize
@@ -944,12 +971,95 @@ deltas, so the server and the browser agree; a locale- or timezone-formatted abs
 rendered on the server is a hydration mismatch waiting to happen on a page that otherwise
 needs no client JavaScript. The exact instant still travels, in `<time dateTime>` and `title`.
 
+**Deleting is the same rule as reading, one layer down (task 10.7).**
+`deleteDeadRoomForUser` lives in `deadRooms.ts` *beside* the two reads precisely so the HARD
+RULE covers it: it starts from `deadRoomMember` on the composite key, so a snapshot the viewer
+holds no membership row for is **undeletable**, not merely hidden. It deletes the viewer's
+membership row and drops the `dead_rooms` row only when that was the last member — §6.1 puts one
+room on several profiles with no owner, so deleting the room row directly erases somebody else's
+copy. Use `deleteMany`, not `delete`: a missing row is an ordinary `count === 0`, which is also
+the answer for "not yours", so the action cannot be used to probe which ids exist.
+
+**A zero-member `dead_rooms` row can be orphaned, and that is accepted.** Under read-committed,
+two members deleting concurrently each still see the other's uncommitted row, so neither takes
+the last-member branch. The row is unfetchable (every read starts from `dead_room_members`) and
+invisible. `Serializable` would replace it with a serialization failure shown to someone who has
+already confirmed a delete — a worse trade at this scale.
+
+**`app/profile/actions.ts` is the repo's only `"use server"` module.** It is a thin wrapper:
+`await auth()` (a Server Function is a public POST endpoint, and `proxy.ts` deliberately protects
+nothing), then the call, then `revalidatePath("/profile")` **before** `redirect("/profile")` —
+`redirect` throws for control flow, so revalidation after it never runs and the listing would be
+served from the router cache still showing the deleted row. A failure **returns a message rather
+than throwing**: a throw lands in `error.tsx`, whose sentence is "Couldn't load your rooms" —
+copy about a failed read, shown for a failed write.
+
+**`ConfirmDialog` is the generalised `IdentityDialog` treatment, not a second copy of it.** Its
+`aria-labelledby` comes from `useId()` because `IdentityDialog` hardcodes
+`"identity-dialog-title"` and two dialogs would collide. Focus lands on **Cancel** — for an
+irreversible action the safe choice is the one a stray Enter hits — and Escape is ignored while
+the request is in flight, since the request is already gone and closing would hide the result.
+The delete control belongs on the detail page and never on `DeadRoomCard`, whose whole surface is
+one `<Link>`.
+
 **`TRUNCATION_MARKER` is now the fourth hand-maintained duplication across the workspaces,**
 after `rateLimit.js`/`rateLimit.ts`, `CLOSE_ROOM_NOT_FOUND`, and `roomState.js`'s copies of
 `sanitizeName`/`HEX_COLOR`. `deadRooms.ts` matches it with `endsWith` — never `includes`, since
 a user may have typed that sentence themselves — to show the amber "this room grew past the
 256 KB cap" notice. The content is still rendered and copied **verbatim**, so what you see is
 what you copy.
+
+## The leaving warning and the persistence estimate (task 10.8)
+
+Closing the last tab starts the 10s grace window and then destroys the room forever, so the sole
+peer gets a `beforeunload` prompt and a chip that says whether anything survives.
+`hooks/useRoomPersistence.ts` owns both; `lib/persistence.ts` holds the constant and the wording.
+
+**The chip is an estimate and must keep promising less than the server guarantees.** The client
+cannot know the verdict: §6.1's threshold is evaluated against a token the *server* verified (a
+Clerk outage or a mismatched `CLERK_SECRET_KEY` leaves a perfectly healthy-looking socket and no
+membership at all), the server's connected time is refcounted across every socket of an account
+while a tab can only see itself, and whether the *room* is saved depends on other participants
+whose sign-in status awareness deliberately never carries. **So the chip speaks only about you,
+never about the room.** Do not "improve" it into a promise without adding a real server→client
+channel — and note that writing user IDs into the shared doc to build one would leak them to
+every peer, guests included.
+
+**The local did-edit test filters on `transaction.origin === binding`, and that filter is
+load-bearing.** It is the client mirror of the server taking the WebSocket as the transaction
+origin. Without it the `DEFAULT_CODE` seed — a local transaction with a null origin — marks
+every joiner as having edited within milliseconds of arriving, which is exactly the lurker §6.1
+exists to exclude. Note this makes the client **stricter** than the server, which counts the
+seed. That asymmetry is deliberate: the error must never fall on the side of claiming "saving"
+earlier than the server would.
+
+**`peers.length === 0` is not "alone".** It is the pre-connect and torn-down state, before this
+client has published its own awareness — the same distinction `PresenceStack` draws with its
+`connected` prop. Being last is `syncStatus === "connected"` **and** exactly one peer **and** it
+being you. Getting this wrong registers a `beforeunload` on every room the moment it mounts.
+
+**`MEMBER_MIN_CONNECTED_MS` is the fifth hand-maintained cross-workspace duplication**, after
+`rateLimit.js`/`rateLimit.ts`, `CLOSE_ROOM_NOT_FOUND`, `roomState.js`'s `sanitizeName`/
+`HEX_COLOR`, and `TRUNCATION_MARKER`. It is worse than those in one way: the server's value is
+env-overridable, so the two can legitimately disagree at runtime with nothing to detect it.
+
+**The countdown ticks only while it is on screen** and stops the moment the threshold is met —
+~60 ticks per session, never a permanent per-second re-render of the room. It is primed with a
+`setTimeout(…, 0)` so someone who joins, reads for two minutes and only then types sees the right
+number immediately rather than a full 60s that jumps. React 19's `react-hooks/refs` and
+`react-hooks/purity` rules reject the shorter version (a `Date.now()` and a `ref.current` read
+during render) and are right to — that is a value which changes without a render.
+
+**Two limitations, neither fixable here.** Browsers ignore custom `beforeunload` text and show
+their own generic prompt, which is why the real sentence lives in the chip's `title`; and the
+prompt needs prior interaction with the page (sticky activation), so a tab nobody touched closes
+silently. It also fires on a **reload**, where the room in fact survives — the reconnect lands
+inside the grace window. Over-warning there is the accepted trade.
+
+**Testing note that cost a debugging pass:** Playwright's `dialog.dismiss()` on a `beforeunload`
+**cancels the close**, so the page stays open and connected. A test that dismisses is then
+measuring presence in a tab it believes it closed, and every later "am I alone" assertion is
+wrong. Call `accept()`.
 
 ## Rate limiting and payload size
 
@@ -1037,14 +1147,49 @@ message.
 before the body is read, so an absurd payload is refused without being buffered — but that
 header measures the JSON envelope, and escaping can nearly double a program made of quotes
 and newlines, so the cheap check is deliberately *loose* (`MAX_CODE_BYTES * 2 + 4 KB`). The
-exact check runs on the decoded `code` string afterwards and is the one that enforces the
-cap. Both use UTF-8 byte length, not `String.length`: a document of emoji or CJK is up to 4x
-its character count on the wire, and the wire size is what is being capped.
+exact check runs afterwards, on the decoded `code` **plus `stdin`** (§10.4 made it one combined
+budget — see "Shared code execution"), and is the one that enforces the cap. Both use UTF-8 byte
+length, not `String.length`: a document of emoji or CJK is up to 4x its character count on the
+wire, and the wire size is what is being capped.
 
-`hooks/useCodeRunner.ts` checks the same constant from `app/lib/execution.ts` before fetching. That
+`hooks/useCodeRunner.ts` calls the same `payloadTooLarge()` from `app/lib/execution.ts` before fetching. That
 is a courtesy, not the enforcement — the route is reachable without the UI — but it means an
 oversized document never crosses the wire, and it writes the failure into the shared
 `execution` map like any other result, since the document is shared and so is the problem.
+
+## Keyboard shortcuts (task 10.5)
+
+Ctrl/Cmd+Enter runs, Ctrl/Cmd+S saves. Both are registered on the Monaco instance in
+`hooks/useEditorShortcuts.ts`.
+
+**They must never become a `window` keydown listener.** The room has other focusable controls,
+so a global handler would fire Run while someone is typing in the language select, in the stdin
+box, or — once §10.2 lands — in the chat box.
+
+**Registered once, handlers read through refs.** `handleRun`/`handleSave` close over `code`, so
+they are new functions on every keystroke; an effect depending on them directly would tear down
+and re-register the keybindings sixty times a minute. Same latest-value-ref pattern
+`useCollabRoom` uses for `onRoomClosed` and the Clerk token. Use `editor.addAction`, not
+`addCommand` — it returns an `IDisposable`, and it also lists both actions in Monaco's F1
+palette for free.
+
+**Neither action re-checks the room-wide `"running"` lock, deliberately.** `useCodeRunner`
+already returns early when the shared map reads `"running"`, so the shortcut inherits exactly
+the button's guard instead of keeping a second copy that could drift.
+
+**`KeyMod`/`KeyCode` come from `onMount`'s second argument** (`MonacoApi` in
+`lib/monacoTypes.ts`), never a static `import "monaco-editor"` — that touches `window` at import
+time, which is the whole reason that file exists.
+
+**Monaco's `preventDefault` only holds while the editor has focus, and that is a real gap.**
+With focus on a button or on the stdin textarea, Ctrl+S still opens the browser's save dialog.
+The sanctioned fix is *element-scoped*, not global: the stdin textarea carries its own
+`onKeyDown` in `CodeEditor`. Anything else that becomes focusable and deserves these keys gets
+the same treatment — not a `window` listener.
+
+**The empty-document guard lives in `handleSave`, not only on the button.** The shortcut does
+not consult `disabled`, so before that moved, Ctrl+S downloaded an empty file where the button
+was visibly off.
 
 ## Saving (the Save button)
 
@@ -1254,7 +1399,7 @@ that value as a *filename* and will try to open a file called `system`.
 | `DATABASE_URL` | `collab-code-editor/.env.local` **and** `server/.env` | Neon's **pooled** connection string (host contains `-pooler`). Used at runtime by `app/lib/db.ts` and `server/db.js`. **Optional in `server/`** — unset, `db.js` opens no pool and `saveDeadRoom()` is a no-op, so the sync server boots and serves rooms exactly as in v1. |
 | `DIRECT_URL` | `collab-code-editor/.env.local` only | Neon's **unpooled** string, used by `prisma migrate` alone. Not interchangeable with `DATABASE_URL` — see "Persistence (Postgres)". The sync server has no counterpart because it never migrates. |
 | `CLERK_SECRET_KEY` | `collab-code-editor/.env.local` **and** `server/.env` | In the app, Clerk's usual server key. In `server/`, used *only* by `verifyToken` on the WebSocket. **Optional in `server/`** — unset, no token is verified, no room has members and nothing is written, so the guest flow never depends on auth infrastructure. Must be the **same Clerk instance** as the frontend's publishable key: a mismatched key fails every token with no visible symptom at all (rooms work; snapshots simply never appear), which is why `clerkAuth.js` warns once per process. |
-| `MEMBER_MIN_CONNECTED_MS` | `server/.env` | How long a signed-in participant must be connected before they can earn a `dead_room_members` row. Defaults to `60000`. Only half the threshold — see "Who a dead room belongs to". |
+| `MEMBER_MIN_CONNECTED_MS` | `server/.env` | How long a signed-in participant must be connected before they can earn a `dead_room_members` row. Defaults to `60000`. Only half the threshold — see "Who a dead room belongs to". **The frontend hardcodes this default too** (`app/lib/persistence.ts`, for §10.8's chip), and cannot see this variable — so overriding it here silently desynchronises the in-room estimate from the rule it estimates. |
 | `SNAPSHOT_FLUSH_MS` | `server/.env` | Ceiling on how long a shutdown waits for snapshot writes. Defaults to `20000`. A ceiling, not a delay — but since 7.5 it bounds a *drain*, not one batch: N queued rooms take `ceil(N / POOL_MAX) × per-write`, measured ~6.6s for 40 rooms against a warm Neon. An empty queue still shuts down in about half a second. |
 | `SNAPSHOT_WRITE_LIMIT`, `SNAPSHOT_WRITE_WINDOW_MS` | `server/.env` | The snapshot write pacing, keyed on the room creator's IP. Default `60` per `60000`ms — deliberately *not* `POST /rooms`' 10; see "The snapshot write queue". Over-limit writes wait rather than being dropped. Lower both to exercise the deferral path in seconds. |
 | `DB_CONNECT_TIMEOUT_MS` | `server/.env` | Per-attempt Postgres connect timeout. Defaults to `10000`. Must stay **under** `SNAPSHOT_FLUSH_MS` and **over** a Neon cold start — see "Dead-room snapshots". |
@@ -1295,12 +1440,22 @@ image is **amd64-only** (single-arch manifest) — ARM free tiers cannot host it
 **Section 7 is complete: 7.1 (Clerk auth), 7.2 (Postgres), 7.3 (the dead-room snapshot),
 7.4 (`/profile`) and 7.5 (guardrails) are all done** — see "Accounts (Clerk)", "Persistence
 (Postgres)", "Dead-room snapshots", "The profile page" and "The snapshot write queue" above,
-which replace older notes here claiming none of them existed. **What remains unticked:** all of
-section 10, which now has eight subsections rather than three — the original 10.1 multi-file,
-10.2 chat and 10.3 room passwords, plus 10.4 stdin for runs, 10.5 keyboard shortcuts,
-10.6 room names, 10.7 deleting a snapshot from `/profile` and 10.8 the last-person-leaving
-warning. None are built. Section 10 ends with a suggested order for them, which is by payoff
-rather than dependency. Redis pub/sub for horizontal scaling is
+which replace older notes here claiming none of them existed.
+
+**Half of section 10 is done as well.** It has eight subsections rather than the original three,
+and **10.4 (stdin for runs), 10.5 (keyboard shortcuts), 10.7 (deleting a snapshot from
+`/profile`) and 10.8 (the last-person-leaving warning) are all built** — see "Shared code
+execution", "Keyboard shortcuts", "The profile page" and "The leaving warning and the persistence
+estimate" above. An older version of this paragraph said none of section 10 was built; that is no
+longer true.
+
+**What remains unticked: 10.1 multi-file, 10.2 in-room chat, 10.3 room passwords and 10.6 room
+names.** So there is still no multi-file room, no chat, no password, and `/profile` still titles
+every card with the raw `room_id`. Two of those carry consequences recorded elsewhere in this
+file: **10.1 is what finally gives `dead_rooms.language` a value and `files` more than one
+entry** (until then `language` is null on every row and the single file is always `main.txt`),
+and **10.6 is the one that needs a third migration**. Section 10 ends with a suggested order,
+which is by payoff rather than dependency. Redis pub/sub for horizontal scaling is
 *not* a v2 item at all — section 8 puts it explicitly out of scope, so it stays deferred past
 v2.
 

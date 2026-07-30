@@ -805,15 +805,45 @@ output has to be able to see what was fed in, or the output is unexplainable. It
 run, not part of the editor — it must not go on the `Y.Text` and must not become a second
 shared type.
 
-- [ ] Collapsible "Input (stdin)" field in the output panel, above the output
-- [ ] Send it as `stdin` in the Piston payload from `app/api/execute/route.ts`
-- [ ] Carry the stdin used on the shared `ExecutionState` record, so every peer sees the input
+- [x] Collapsible "Input (stdin)" field in the output panel, above the output
+- [x] Send it as `stdin` in the Piston payload from `app/api/execute/route.ts`
+- [x] Carry the stdin used on the shared `ExecutionState` record, so every peer sees the input
       that produced the output they are looking at
-- [ ] Cap its size and count it against the same UTF-8 byte budget as the code
+- [x] Cap its size and count it against the same UTF-8 byte budget as the code
       (`MAX_CODE_BYTES` in `app/lib/execution.ts`) — checked client-side *and* in the route,
       like the code payload already is
-- [ ] Strip nothing and trust nothing: stdin is user input on a path that already has a
+- [x] Strip nothing and trust nothing: stdin is user input on a path that already has a
       documented double-check, so the loose `Content-Length` pre-check must account for it too
+
+Shipped alongside 10.4, not originally listed here:
+
+- [x] **`payloadTooLarge(code, stdin)` in `app/lib/execution.ts` is the one budget rule**, so
+      the client pre-check and the route's 413 cannot drift — the same reason `codeByteLength`
+      already lived there rather than in the route. It also picks the wording: the old
+      code-only sentence when stdin is empty, a combined one when it is not.
+- [x] **The budget is combined, not per-field**, which is what let `REQUEST_BYTE_CEILING` stay
+      untouched. The decoded payload still caps at `MAX_CODE_BYTES`, so the existing "doubled
+      for JSON escaping" headroom still covers the whole envelope; a separate stdin cap would
+      have doubled the worst case and forced that constant up with it. Verified at the
+      boundary: 60 KB of code + 8 KB of stdin is a 413, 60 KB + 3 KB runs.
+- [x] **`stdin` is required on the `ExecutionState` variants, not optional** (unlike `notice`),
+      so the compiler enumerates all five sites that write a record — four in `useCodeRunner`
+      and the stale-run watchdog in `useCollabRoom`, which must carry it through rather than
+      drop it when it heals an abandoned run. The output panel still guards before rendering,
+      for the mixed-bundle window.
+- [x] **The draft box is local; only the value a run used is shared.** A remote run therefore
+      never overwrites what someone is halfway through typing, and the echo is rendered from
+      the shared record — the same rule the output caption already follows for `language`.
+- [x] **A line-count badge on the collapsed field.** A closed box with content in it is
+      otherwise invisible, which makes a run that consumed input look like it invented it.
+- [x] **`stdin !== undefined && typeof stdin !== "string"` is a 400, not a coercion.** Absent
+      is legitimate (a client that never opens the box sends nothing); present-and-wrong is a
+      bad request.
+- [x] **End-to-end verification**: Python `input()`, Java `Scanner` and C++ `cin >>` all run
+      correctly with stdin and — the point of the feature — the same Python program without
+      stdin still dies on `ValueError: invalid literal for int() with base 10: ''`, which is
+      the hole this closed. Plus a two-tab browser pass: the peer sees the same output *and*
+      the same echoed input while its own draft box stays empty.
 
 ### 10.5 Keyboard shortcuts
 
@@ -826,12 +856,45 @@ holds. They must not be a `window` keydown listener: the room page has other foc
 and a global handler would fire Run while someone is typing in the language select or (once
 10.2 lands) the chat box.
 
-- [ ] Ctrl/Cmd+Enter runs the code — respecting the same room-wide `"running"` lock that
+- [x] Ctrl/Cmd+Enter runs the code — respecting the same room-wide `"running"` lock that
       disables the Run button, so a shortcut cannot start a second concurrent run
-- [ ] Ctrl/Cmd+S saves (downloads) and calls `preventDefault`, so the browser's save dialog
+- [x] Ctrl/Cmd+S saves (downloads) and calls `preventDefault`, so the browser's save dialog
       never appears
-- [ ] Both shortcuts are discoverable: show the binding in the Run and Save buttons' `title`
-- [ ] Bindings live with the editor instance, not on `window`
+- [x] Both shortcuts are discoverable: show the binding in the Run and Save buttons' `title`
+- [x] Bindings live with the editor instance, not on `window`
+
+Shipped alongside 10.5, not originally listed here:
+
+- [x] **`hooks/useEditorShortcuts.ts` reads its handlers through refs and registers once.**
+      `handleRun`/`handleSave` close over `code`, so they are new functions on every keystroke;
+      an effect depending on them would tear down and re-register the keybindings sixty times a
+      minute. Same latest-value-ref pattern `useCollabRoom` already uses for `onRoomClosed` and
+      the Clerk token.
+- [x] **`editor.addAction`, not `addCommand`** — it returns an `IDisposable` for a clean
+      teardown, and it lists both actions in Monaco's F1 command palette for free.
+- [x] **Neither action re-checks the running lock, deliberately.** `useCodeRunner` already
+      returns early when the shared map reads `"running"`, so the shortcut inherits the same
+      guard rather than keeping a second copy that could drift from it.
+- [x] **`KeyMod`/`KeyCode` come from `onMount`'s second argument**, added to `lib/monacoTypes.ts`
+      as `MonacoApi`. A static `import "monaco-editor"` touches `window` at import time, which
+      is the whole reason that file exists.
+- [x] **The empty-document guard moved into `handleSave`.** It used to live only on the button's
+      `disabled`, which the shortcut does not consult — Ctrl+S would otherwise have downloaded
+      an empty file where the button was visibly off.
+- [x] **An honest limitation, and the one thing done about it.** Monaco `preventDefault`s a
+      binding it owns *only while the editor has focus*; with focus on a button or on §10.4's
+      new stdin textarea, Ctrl+S still opens the browser dialog. §10.5 forbids a `window`
+      listener (it would fire Run while someone types in the language select or, after §10.2,
+      the chat box), so the stdin textarea carries its own **element-scoped** `onKeyDown`
+      instead — which respects the rule while closing the one gap §10.4 opened.
+- [x] **`app/lib/platform.ts`** picks the ⌘/Ctrl label for the tooltips. Reading `navigator` at
+      render is safe here because `RoomGate` loads `CodeEditor` through
+      `dynamic(..., { ssr: false })`, so this tree never server-renders.
+- [x] **End-to-end verification** in a real browser: both bindings advertised in their `title`s;
+      Ctrl+Enter in the editor runs the code *with the current stdin*; Ctrl+Enter from inside
+      the stdin box does the same; Ctrl+S downloads `main.js` with no browser dialog. Asserting
+      on the resulting output rather than on the transient "Running…" caption is what makes the
+      first two reliable — a warm JS run finishes in well under a second.
 
 ### 10.6 Room names
 
@@ -870,19 +933,57 @@ owner. Deleting must therefore remove **the viewer's `dead_room_members` row**, 
 garbage once its last member is gone, so it is deleted only in that case, in the same
 transaction.
 
-- [ ] Delete control on the snapshot detail page, behind a confirmation — it is irreversible
+- [x] Delete control on the snapshot detail page, behind a confirmation — it is irreversible
       and there is no second copy anywhere
-- [ ] It deletes the viewer's membership row, keyed on the composite primary key
+- [x] It deletes the viewer's membership row, keyed on the composite primary key
       `(user_id, dead_room_id)`, exactly like the read path — so a snapshot the viewer holds no
       membership row for is *unfetchable and undeletable*, not merely hidden
-- [ ] Delete the `dead_rooms` row too, in the same transaction, **only** when that was its last
+- [x] Delete the `dead_rooms` row too, in the same transaction, **only** when that was its last
       remaining member
-- [ ] A Server Function, not an API route — `/profile` is otherwise entirely server-rendered
+- [x] A Server Function, not an API route — `/profile` is otherwise entirely server-rendered
       and this must not become the page's second reason to ship client JavaScript beyond the
       confirm dialog
-- [ ] Deleting the last snapshot returns the empty-profile state, which must stay visually
+- [x] Deleting the last snapshot returns the empty-profile state, which must stay visually
       distinct from `error.tsx`'s "the database is unreachable" (see CLAUDE.md, "The profile
       page")
+
+Shipped alongside 10.7, not originally listed here:
+
+- [x] **`deleteDeadRoomForUser` lives in `app/lib/deadRooms.ts`, beside the two reads**, so the
+      file's HARD RULE — a `DeadRoom` is never reached except through the viewer's membership
+      row — governs the write as well. `app/profile/actions.ts` is a thin auth + revalidate +
+      redirect wrapper over it.
+- [x] **`deleteMany`, not `delete`.** A row that isn't there is an ordinary "no" (`count === 0`),
+      not an exception to catch and translate — and it is the same answer as "no such snapshot",
+      so the action cannot be used to probe which ids exist.
+- [x] **A failed delete returns a message instead of throwing.** A throw would land in
+      `app/profile/error.tsx`, whose sentence is "Couldn't load your rooms" — copy about a
+      failed *read*, shown for a failed *write*. The dialog renders it in place instead.
+- [x] **`revalidatePath("/profile")` before `redirect("/profile")`.** `redirect` throws for
+      control flow, so revalidation after it never runs and the listing would be served from
+      the client router cache still showing the deleted row.
+- [x] **A known and accepted race, recorded rather than engineered around.** Under Postgres'
+      default read-committed isolation, two members deleting concurrently each still see the
+      other's uncommitted row, so neither takes the "last member" branch and a zero-member
+      `dead_rooms` row is orphaned. It is unfetchable and invisible; `Serializable` would trade
+      that for a serialization failure shown to a user who already confirmed a delete.
+- [x] **`components/ConfirmDialog.tsx`** — the scrim, `role="dialog"`/`aria-modal`, Escape and
+      the Tab focus trap generalised out of `IdentityDialog` rather than copied a second time,
+      with `useId()` for `aria-labelledby` (IdentityDialog hardcodes the id, so two dialogs
+      would have collided). Focus lands on **Cancel**: for an irreversible action the safe
+      choice is the one a stray Enter hits. Escape is ignored while the request is in flight.
+- [x] **`dangerButton` in `app/lib/ui.ts` and a `TrashIcon`** — the product's first destructive
+      style, deliberately its only red button.
+- [x] **The control is on the detail page, never on `DeadRoomCard`**, whose entire surface is
+      one `<Link>`; a button nested in an anchor is invalid markup.
+- [x] **End-to-end verification**: a real room was driven to death and deleted through the UI,
+      then SQL confirmed **both** its `dead_rooms` and `dead_room_members` rows were gone. The
+      shared case was then seeded directly — one snapshot, two members — and deleting it as one
+      member left `roomStillThere: true`, `myMembershipGone: true`,
+      `otherMembershipKept: true`, i.e. one member cannot erase another's copy. Plus: the
+      confirmation dialog names the room, Escape cancels without deleting, a snapshot the
+      viewer holds no membership for 404s, a malformed uuid 404s rather than 500ing, and the
+      emptied profile shows the empty state rather than `error.tsx`.
 
 ### 10.8 Last-person-leaving warning
 
@@ -895,12 +996,59 @@ Awareness already knows the peer count, so this needs no new server state: regis
 only while `readPeers()` reports exactly one peer, and remove it the instant a second arrives —
 an always-on `beforeunload` is a prompt on every navigation, which is worse than the problem.
 
-- [ ] `beforeunload` handler registered only when the local user is the sole peer in the room
-- [ ] Removed again as soon as another peer joins, and on unmount
-- [ ] Pair it with the in-room persistence indicator: whether this room is on track to be saved
+- [x] `beforeunload` handler registered only when the local user is the sole peer in the room
+- [x] Removed again as soon as another peer joins, and on unmount
+- [x] Pair it with the in-room persistence indicator: whether this room is on track to be saved
       is exactly what makes the warning actionable
-- [ ] Verified with two tabs: the second tab open means no prompt in either; closing it puts
+- [x] Verified with two tabs: the second tab open means no prompt in either; closing it puts
       the prompt back on the remaining one
+
+Shipped alongside 10.8, not originally listed here:
+
+- [x] **The indicator is an estimate, and `app/lib/persistence.ts` says so at length.** The
+      client cannot know the server's verdict: §6.1's threshold is evaluated against a token the
+      *server* verified (an outage or a mismatched `CLERK_SECRET_KEY` leaves a healthy-looking
+      socket and no membership at all), the server's connected time is refcounted across every
+      socket of an account while a tab can only see itself, and whether the *room* is saved
+      depends on other people whose sign-in status awareness deliberately never carries. So the
+      chip speaks only about **you**, never about the room.
+- [x] **The client's did-edit test is deliberately stricter than the server's.** It filters
+      `doc.on("update")` on `transaction.origin === binding` — the client-side mirror of the
+      server taking the WebSocket as the transaction origin. Without that filter the
+      `DEFAULT_CODE` seed (a local transaction with a null origin) would mark every joiner as
+      having edited within milliseconds of arriving, which is exactly the lurker §6.1 excludes.
+      The server counts the seed; this does not. Erring that way is the point — the chip must
+      never claim "saving" earlier than the server would.
+- [x] **`MEMBER_MIN_CONNECTED_MS` is now the fifth hand-maintained cross-workspace
+      duplication**, after `rateLimit.js`/`rateLimit.ts`, `CLOSE_ROOM_NOT_FOUND`,
+      `roomState.js`'s `sanitizeName`/`HEX_COLOR`, and `TRUNCATION_MARKER`. It is worse than
+      those in one way: the server's value is env-overridable, so the two can legitimately
+      disagree at runtime with nothing to detect it. One more reason for the estimate framing.
+- [x] **`peers.length === 0` is not "alone".** It is the pre-connect and torn-down state, before
+      this client has published its own awareness — the same distinction `PresenceStack` draws
+      with its `connected` prop. Being last is `syncStatus === "connected"`, one peer, and it
+      being you.
+- [x] **The countdown ticks only while it is on screen and stops the moment the threshold is
+      met** — ~60 ticks per session, never a permanent once-a-second re-render of the room. It
+      is primed with a `setTimeout(…, 0)` so someone who joins, reads for two minutes and only
+      then types sees the right number immediately instead of a full 60s that jumps.
+      React 19's `react-hooks/refs` and `react-hooks/purity` rules reject the shorter version of
+      this (a `Date.now()` and a `ref.current` read during render), and are right to.
+- [x] **The warning's actual sentence lives in the chip's tooltip**, because browsers ignore
+      custom `beforeunload` text and show their own generic prompt.
+- [x] **Two limitations recorded rather than papered over**: the prompt needs prior interaction
+      with the page (sticky activation), so a tab nobody touched closes silently; and it fires
+      on a **reload**, where the room in fact survives because the reconnect lands inside the
+      10s grace window. Over-warning there is the accepted trade — the alternative is failing to
+      warn on the case that actually destroys work.
+- [x] **End-to-end verification** in a real browser. Guest: the chip reads "Guest · nothing is
+      saved", the sole peer gets a `beforeunload` prompt, a second tab joining removes the
+      last-peer warning from both and no prompt fires on close, and closing it puts the warning
+      back on the survivor. Signed in: "Not saved yet" before editing → a live countdown after
+      → "Saving to your profile" past the real 60s threshold — and then the room was allowed to
+      die and **did** appear on `/profile`, i.e. the chip told the truth. (Note `dialog.dismiss()`
+      *cancels* a `beforeunload` close, so a test that dismisses is measuring a tab it believes
+      it closed; accept it.)
 
 ---
 
