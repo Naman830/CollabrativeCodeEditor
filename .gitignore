@@ -1,5 +1,5 @@
-# Top-level safety net. Each workspace (collab-code-editor/, server/) also has
-# its own .gitignore — this covers anything created at the repo root.
+# Top-level safety net. web/ and server/ each have their own .gitignore too;
+# this covers anything created at the repo root.
 
 node_modules/
 

@@ -92,6 +92,37 @@ These are conventions, not preferences — each one closes a specific failure th
    proxy convention at the project root *or* inside `src/` — never `src/app/`. The check that it
    is still wired is `ƒ Proxy (Middleware)` in `next build` output; a misplaced file fails silently.
 
+### Comments: this file carries the rationale, the code carries the rule
+
+The code was deliberately reduced from ~3,100 comment lines to ~650. **Do not reintroduce
+explanatory essays in source files.** The division is:
+
+- **In the code:** at most 1–2 lines, and only where the logic is genuinely non-obvious. A rule a
+  future edit could break silently gets exactly one line, prefixed `// INVARIANT:` — ordering
+  constraints, trust boundaries, coupled numeric ceilings, "never throws" contracts, and a
+  `// keep in sync with <path>` marker on each of the seven hand-maintained cross-workspace
+  duplications. There are ~175 such lines and they are load-bearing: **do not delete an
+  `INVARIANT:` line to tidy up.**
+- **In this file:** the why. The measurements, the rejected alternatives, the debugging history,
+  the "this cost a session to find" stories. That is what the sections below are *for*, and it is
+  why compressing the code lost nothing — every essay removed from a source file is already
+  written up here at greater length.
+
+So when a gotcha turns up, add it here and leave a one-line pointer there. The reverse — a
+paragraph in the source and nothing here — is the shape this codebase moved away from.
+
+**One deliberate exception to the 1–2 line rule:** `saveDeadRoom`'s JSDoc in
+`server/src/storage/db.js` keeps its full `@param` object shape and `@returns` union. `server/` is
+plain JavaScript with no TypeScript, so that block is the *only* declaration of the snapshot
+contract between `rooms/state.js` and this INSERT — it is a type signature, not prose. Deleting it
+is closer to deleting code than to tidying a comment.
+
+One mechanical trap found while doing it: **`server/src/rooms/state.js` contains regex literals
+with `\u0000` and `\uD800`–`\uDFFF` escapes.** Tool-call arguments JSON-decode `\uXXXX`, so
+rewriting those lines through an editing tool can silently write *real* NUL and lone-surrogate
+bytes and turn the file binary. Edit around them, and check with
+`grep -P '\x00'` plus `file server/src/rooms/state.js` (must still say "UTF-8 text").
+
 Key files:
 - `web/src/proxy.ts` — Clerk's request hook. **Next 16 renamed `middleware.ts` to `proxy.ts`**; it attaches the session and protects nothing
 - `web/src/lib/collab/clerkIdentity.ts` — the one boundary between Clerk and the app; nothing else imports `useUser` or `useAuth`. Also exports `useClerkToken()`, the sanctioned way an account ID reaches the sync server
