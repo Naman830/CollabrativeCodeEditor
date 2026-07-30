@@ -46,6 +46,19 @@ export const ghostButton = cn(
   "px-3 py-1.5 text-fg-muted hover:bg-raised hover:text-fg",
 );
 
+/**
+ * Irreversible actions, and only those — today the one caller is §10.7's
+ * "delete this snapshot", which has no undo and no second copy anywhere. It is
+ * the product's only red button, so keep it that way: a colour that appears on
+ * routine controls stops meaning "this cannot be taken back".
+ */
+export const dangerButton = cn(
+  buttonBase,
+  focusRing,
+  "bg-danger px-4 py-2 text-white hover:brightness-110",
+  "disabled:bg-raised disabled:text-fg-subtle disabled:brightness-100",
+);
+
 /** Run: the only green in the product, so it reads as "execute" and nothing else. */
 export const runButton = cn(
   buttonBase,

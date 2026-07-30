@@ -11,6 +11,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { auth } from "@clerk/nextjs/server";
+import DeleteSnapshotButton from "../../components/DeleteSnapshotButton";
 import ProfileShell, { ProfileSignInGate } from "../../components/ProfileShell";
 import SnapshotFile from "../../components/SnapshotFile";
 import { LockIcon } from "../../components/icons";
@@ -102,6 +103,10 @@ export default async function SnapshotPage(props: PageProps<"/profile/[deadRoomI
           <div className="flex flex-wrap items-center gap-2">
             <DeadControl label="Run" reason="A closed room's code can never be run again." />
             <DeadControl label="Rejoin" reason="This room no longer exists on the server." />
+            {/* Deliberately alongside the two dead controls: this is the one
+                thing you *can* still do to a closed room, so it belongs where
+                someone is already reading about what they cannot do. */}
+            <DeleteSnapshotButton deadRoomId={room.id} roomId={room.roomId} />
             <Link
               href="/"
               className="ml-auto rounded-lg border border-edge bg-raised px-3 py-1.5 text-xs font-medium text-fg transition-colors hover:border-edge-strong hover:bg-edge"

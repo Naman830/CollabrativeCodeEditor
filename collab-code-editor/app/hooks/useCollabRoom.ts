@@ -53,6 +53,14 @@ export type CollabRoom = {
   dismissToast: (id: string) => void;
   execState: ExecutionState;
   /**
+   * Whether *this* client has made an edit of its own (tasks.md §10.8).
+   *
+   * Half of the persistence estimate: the server only keeps a snapshot for a
+   * signed-in participant who stayed 60s **and** actually edited. It lives here
+   * because only this hook can see the doc and the binding.
+   */
+  didEdit: boolean;
+  /**
    * The live `Y.Doc`, or null while disconnected. A ref, never state: hoisting
    * the doc into state is exactly what the effect below must not do, and a ref
    * drives no render so it carries no such risk.
@@ -79,6 +87,9 @@ export function useCollabRoom({
   }, []);
 
   const [execState, setExecState] = useState<ExecutionState>(IDLE_EXECUTION);
+
+  // Latches true on this client's first real edit; see the observer below.
+  const [didEdit, setDidEdit] = useState(false);
 
   // The runner needs the live Y.Doc, but the doc must never live in component
   // state (see the effect below) — a ref triggers no render, so it is safe.
@@ -117,6 +128,7 @@ export function useCollabRoom({
     let provider: WebsocketProvider | null = null;
     let binding: MonacoBinding | null = null;
     let awarenessChangeHandler: (() => void) | null = null;
+    let editHandler: ((update: Uint8Array, origin: unknown) => void) | null = null;
     // Baseline for join/leave detection. Null until the first snapshot, so
     // people already in the room don't each fire a "joined" toast at us.
     let knownPeers: Map<number, Peer> | null = null;
@@ -272,6 +284,26 @@ export function useCollabRoom({
       const yText = yDoc.getText("monaco");
       binding = new MonacoBinding(yText, model, new Set([editor]), awareness);
 
+      // "Did *I* type anything" — half of the persistence estimate (§10.8).
+      //
+      // The origin filter is load-bearing, not tidiness. `doc.on("update")`
+      // fires for remote updates too, and the `DEFAULT_CODE` seed below is a
+      // local transaction as well (with a null origin) — without the filter
+      // every joiner would be marked as having edited within milliseconds of
+      // arriving, which is precisely the lurker case §6.1's threshold exists to
+      // exclude. `MonacoBinding` transacts with itself as the origin, which is
+      // the client-side mirror of the server's trick of taking the WebSocket as
+      // the transaction origin (see `server/roomState.js`).
+      //
+      // Note this is *stricter* than the server, which counts any update sent
+      // over your socket — the seed included. Erring that way is deliberate:
+      // the chip must never claim "saving" earlier than the server would.
+      const boundEditor = binding;
+      editHandler = (_update, origin) => {
+        if (origin === boundEditor) setDidEdit(true);
+      };
+      yDoc.on("update", editHandler);
+
       // Seed the starter snippet only once the server has said what the room
       // already contains — seeding earlier would merge the boilerplate into
       // everyone else's document.
@@ -288,6 +320,7 @@ export function useCollabRoom({
       docRef.current = null;
       clearInterval(staleRunWatchdog);
       executionMap.unobserve(applyExecutionState);
+      if (editHandler) yDoc.off("update", editHandler);
       if (provider && awarenessChangeHandler) {
         provider.awareness.off("change", awarenessChangeHandler);
         // Clear presence now so peers drop this cursor immediately instead of
@@ -303,8 +336,11 @@ export function useCollabRoom({
       setPeers([]);
       setToasts([]);
       setExecState(IDLE_EXECUTION);
+      // Belongs to the connection that just died: a new room has to be earned
+      // again, and so does a new session in the same one.
+      setDidEdit(false);
     };
   }, [editor, roomId, user]);
 
-  return { syncStatus, peers, toasts, dismissToast, execState, docRef };
+  return { syncStatus, peers, toasts, dismissToast, execState, didEdit, docRef };
 }
