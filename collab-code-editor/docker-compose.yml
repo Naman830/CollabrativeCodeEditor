@@ -5,7 +5,12 @@ services:
     restart: unless-stopped
     privileged: true
     ports:
-      - "2000:2000"
+      # Loopback only, deliberately. A bare "2000:2000" binds 0.0.0.0, so every
+      # device on the same wifi could POST to /api/v2/execute and run code on
+      # this machine — and the container is `privileged: true`, so isolate is
+      # the only boundary. Nothing needs Piston off-host: `next dev` reaches it
+      # at localhost, and there is no longer a tunnel in front of it.
+      - "127.0.0.1:2000:2000"
     environment:
       # Piston caps each stdio buffer at 1024 bytes by default, and does not
       # truncate when the cap is hit: it drops the offending chunk and SIGABRTs

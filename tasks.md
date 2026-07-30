@@ -733,6 +733,29 @@ whole point was that the room keeps working exactly as 7.1–7.4 left it.
 
 ---
 
+### 7.8 Shut down the public Piston tunnel (not originally listed; recorded because it shipped)
+
+Asked directly, not from this checklist: whether exposing a local Piston through ngrok risked
+the host machine. It did, more than expected, so the exposure was removed rather than patched.
+
+- [x] Established the actual risk by measurement, not reasoning. Arbitrary Python was executed
+      on the host **from the public ngrok hostname with no credential of any kind**, which also
+      proved the tunnel bypassed `route.ts`'s 10/min/IP limiter (that limiter runs on Vercel;
+      the tunnel reaches Piston directly). The container was confirmed to hold the **full Linux
+      capability set** (`CapEff: 000001ffffffffff`) from `privileged: true`, so `isolate` is the
+      sole boundary against root on the host. Two mitigations were confirmed present: the
+      sandbox has **no network** (`Errno 101 Network is unreachable`) and runs as an
+      unprivileged uid with none of the host filesystem mounted.
+- [x] Stopped and `systemctl --user disable`d `ngrok-piston.service`, so it does not return on
+      reboot. Verified: no `ngrok` process, and the public hostname now answers ngrok's own 404.
+- [x] Bound Piston to loopback — `127.0.0.1:2000:2000` in `docker-compose.yml`, replacing a bare
+      `2000:2000` that listened on `0.0.0.0` and so was reachable by every device on the same
+      wifi. Verified with `ss -tlnp`, and a local run still returns `4`.
+- [x] Rewrote `CLAUDE.md`'s "Production execution path" and the `PISTON_API_URL` row: execution
+      is now a **local-only** feature, the deployed Run button reporting `"Could not reach the
+      code execution service."` is expected rather than a fault, and any future tunnel must
+      carry a shared secret.
+
 ## 8. Explicitly out of scope for v2
 
 - Redis or any cache/session store beyond Postgres

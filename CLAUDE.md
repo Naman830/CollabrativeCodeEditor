@@ -1391,7 +1391,7 @@ that value as a *filename* and will try to open a file called `system`.
 | --- | --- | --- |
 | `NEXT_PUBLIC_WS_URL` | `collab-code-editor/.env.local` | WebSocket server URL. Defaults to `ws://localhost:8080`; production points at the Railway `wss://` URL. **Also the source of the room-routes HTTP base** — `app/lib/rooms.ts` swaps the scheme, so there is no separate variable to keep in sync. |
 | `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`, `CLERK_SECRET_KEY` | `collab-code-editor/.env.local` | Clerk API keys. `next build` still succeeds without them (`proxy.ts` doesn't run at build time) and `next dev` still boots, because `@clerk/nextjs` falls back to *keyless mode* and provisions a throwaway instance under `.clerk/` (gitignored, holds that instance's secret key). **An earlier version of this table claimed a production start 500s the whole site without them. That is false** — measured on `@clerk/nextjs` 7.6.2 by running `NODE_ENV=production next start` with both keys removed *and* `.clerk/` deleted, so keyless could not mask it: `/` served 200 and `/robots.txt` 404, exactly as with keys. Missing keys degrade auth; they do not take the site down. Do not use this as the explanation for a 5xx. |
-| `PISTON_API_URL` | `collab-code-editor` | Piston base URL. Defaults to `http://localhost:2000`. **No trailing slash** — `app/api/execute/route.ts` appends `/api/v2/execute`. On Vercel it holds the tunnel hostname (see "Production execution path"); Vercel env changes only reach a *new* deployment, so changing it requires a redeploy. |
+| `PISTON_API_URL` | `collab-code-editor` | Piston base URL. Defaults to `http://localhost:2000`. **No trailing slash** — `app/api/execute/route.ts` appends `/api/v2/execute`. On Vercel it **used to** hold an ngrok tunnel hostname, which has been shut down for the security reasons in "Production execution path"; the deployed value is now stale and execution is a local-only feature. Vercel env changes only reach a *new* deployment, so changing it requires a redeploy. |
 | `PISTON_OUTPUT_MAX_SIZE`, `PISTON_RUN_TIMEOUT`, `PISTON_RUN_CPU_TIME`, `PISTON_COMPILE_TIMEOUT`, `PISTON_COMPILE_CPU_TIME`, `PISTON_RUN_MEMORY_LIMIT`, `PISTON_COMPILE_MEMORY_LIMIT` | `collab-code-editor/docker-compose.yml` | Ceilings inside the Piston container, **not** app config — they exist only in compose, and Piston rejects any per-request limit above them. Keep in step with the constants in `app/api/execute/route.ts`. |
 | `PORT` | `server/.env` | Port for both the WebSocket upgrade and the room HTTP routes. Defaults to `8080`. |
 | `ROOM_GRACE_MS` | `server/.env` | How long an emptied room lingers before destruction. Defaults to `10000`. |
@@ -1411,9 +1411,36 @@ container (`isolate`, cgroups, `tmpfs … :exec`), which neither Vercel nor Rail
 The public Piston API at `emkc.org` is not a fallback — it went **whitelist-only on
 2026-02-15** and now `401`s every request.
 
-So the deployed `/api/execute` talks to a Piston running on a developer machine, reached
-through a **reserved ngrok hostname** held in `PISTON_API_URL`. Two facts follow, and both
-have already caused confusion once:
+**The ngrok tunnel described below has been shut down on purpose, and must not be brought back
+in this form.** `ngrok-piston.service` is stopped and `systemctl --user disable`d, and
+`docker-compose.yml` now binds Piston to `127.0.0.1:2000` instead of `0.0.0.0:2000`. So
+**execution works locally and is simply unavailable on the deployed site** — the Run button
+there reports `"Could not reach the code execution service."`, which is now the expected
+production behaviour rather than a fault to debug.
+
+Why it was removed, measured rather than assumed: the tunnel exposed
+`POST /api/v2/execute` to the public internet with **no authentication at all** (verified by
+executing Python on the host from the public hostname with no credential), which also bypassed
+`route.ts`'s 10/min/IP limiter entirely, since that limiter lives on Vercel and the tunnel goes
+straight to Piston. Worse, the container runs `privileged: true` and therefore holds the **full
+capability set** (`CapEff: 000001ffffffffff`, verified inside the container), so `isolate` is
+the *only* boundary between a stranger's code and root on the host. Two things that limit the
+damage were also verified and are worth knowing before re-enabling anything: the sandbox has
+**no network** (`socket.create_connection` → `Errno 101 Network is unreachable`), and a run
+executes as an unprivileged throwaway uid with none of the host filesystem mounted.
+
+**If a tunnel is ever needed again, authentication is not optional.** Put a shared secret on it
+(an ngrok traffic policy or `--basic-auth`) and have `route.ts` send it, so the endpoint is
+reachable by this app and not by anyone who learns the hostname — the old reserved hostname is
+in this repo's history and should be treated as public. The durable fix is a host that is not a
+personal machine; see the last paragraph of "Not built yet".
+
+Everything below describes how that tunnel was wired, and is kept because it is the design any
+replacement has to beat:
+
+So the deployed `/api/execute` talked to a Piston running on a developer machine, reached
+through a **reserved ngrok hostname** held in `PISTON_API_URL`. Two facts followed, and both
+caused confusion once:
 
 - **Run only works while that machine is online.** This is a property of the deployment, not
   a bug. Piston down → `"Could not reach the code execution service."`
@@ -1427,9 +1454,10 @@ mints a new URL on every restart, and since a Vercel env change only reaches a *
 deployment, each restart would cost an env edit **plus a redeploy**. The reserved hostname is
 set once and then survives reboots.
 
-On the current machine that tunnel is a `systemd --user` unit, `ngrok-piston.service`
-(`Restart=always`, so it recovers from network changes), and Piston itself is
-`restart: unless-stopped` in `docker-compose.yml`, so both return after a reboot.
+On the current machine that tunnel was a `systemd --user` unit, `ngrok-piston.service`
+(`Restart=always`, so it recovered from network changes). The unit file is still on disk but
+stopped and disabled; Piston itself is still `restart: unless-stopped`, so **Piston returns
+after a reboot and the tunnel does not**, which is the intended asymmetry.
 
 The five versions pinned in `LANGUAGE_MAP` match a stock `ghcr.io/engineer-man/piston`
 image, so pointing `PISTON_API_URL` at any self-hosted instance needs no code change. The
