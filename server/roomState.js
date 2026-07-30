@@ -471,6 +471,13 @@ function sanitizeSnapshotFileName(raw, language) {
  *
  * Order is derived exactly as `readRoomFiles` derives it on the client:
  * `createdAt`, tiebroken by id. Nothing on the wire carries an order.
+ *
+ * The cap is approached from below and then overshot by at most one marker per
+ * over-budget file — measured 262201 bytes for 4x100 KB against a 262144 byte
+ * cap. Bounded at MAX_FILES x ~57 bytes (~1.1 KB, 0.4%), and deliberately not
+ * "fixed": reserving the markers up front would shrink the *real* code every
+ * room may keep, to buy exactness in a number that only exists to stop a
+ * pathological write.
  */
 function snapshotFiles(doc, language) {
   const filesMap = doc.getMap(FILES_MAP_NAME);

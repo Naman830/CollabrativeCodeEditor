@@ -559,6 +559,108 @@ can bring Monaco back blank.
 used to clip a corner off a fixed-height output strip and would now hide the collapsed output
 bar — the one control that brings the output back.
 
+## Multi-file rooms (task 10.1)
+
+A room holds up to 20 files. The language is chosen **once, at room creation**, every file gets
+that language's extension, one file is starred as the **entry file** — the one Run executes —
+and Save produces `project.zip` when there is more than one. `app/lib/roomFiles.ts` is the only
+description of the shape:
+
+```
+yDoc
+ ├─ Y.Map  "files"     fileId -> { name, createdAt }
+ ├─ Y.Map  "roomMeta"  "entry" -> fileId
+ ├─ Y.Text "file:<id>" one per file
+ └─ Y.Map  "execution" unchanged
+```
+
+**`tasks.md` §10.1 says "each file = its own Yjs sub-document". That is not what shipped, and it
+could not be.** `setupWSConnection` in `y-websocket/bin/utils.js` syncs exactly one doc per
+socket and never handles `doc.on('subdocs')`, so real subdocs would need a provider and a
+separately-gated WebSocket per open file, N token-refresh paths, and child-doc handling in
+`server/rooms.js` and `server/roomState.js`. A `Y.Text` per file on the *same* doc is the trick
+the `execution` map already uses — y-websocket merges the whole document, so files reach every
+peer including late joiners with zero server protocol change. The checklist bullet was rewritten
+rather than silently ticked.
+
+**The first file's id is the literal string `"main"`, and it must stay fixed.** Two peers can
+sync into an empty room at the same instant and both run the seed. With random ids they create
+two identical `main.py` tabs which CRDT-merge into two entries; with a fixed key they write the
+same map entry and the same `Y.Text`, so they converge on one file and the seed's text insert
+degrades to the benign duplicate-insert v1 already had. Every *other* file gets a random id.
+
+**Tab order is derived, never stored** — `createdAt`, tiebroken by id. A shared ordering array
+would need its own conflict story (two peers reordering; an entry for a file someone else
+deleted). `server/roomState.js` derives the identical order when it writes the snapshot, so the
+zip, the tab strip and `/profile` all agree without anything on the wire carrying an order.
+
+**A file's metadata is replaced whole per key**, exactly as `EXECUTION_KEY` is. A rename writes
+`files.set(id, {...meta, name})`. Never a nested `Y.Map` per file: two peers touching different
+fields would interleave into a record neither wrote.
+
+**`readRoomFiles()` is a sanitizing boundary, in the same category as `readPeers()`.** Filenames
+are peer-supplied — a raw Yjs client writes whatever it likes into that map — and the name then
+reaches a tab label, an `<a download>`, a **zip entry key**, and ultimately `dead_rooms.files`.
+Path separators matter most, since those three interpret a name rather than merely displaying
+it. `server/roomState.js` repeats the whole check on its own side, because the client code never
+runs for a hostile peer; verified end to end by putting `../../etc/pa sswd<lone surrogate>.py`
+into a real room and finding `....etcpasswd.py` in Postgres. Nothing may read the raw map.
+
+### Monaco: one model and one binding per file, one editor forever
+
+**Switching files is the `path` prop on `EditorPane`, and nothing else.** Verified against
+`@monaco-editor/react@4.7`'s source: when `path` changes it resolves
+`editor.getModel(Uri.parse(path))`, creates the model if new, saves the outgoing view state and
+calls `editor.setModel(...)`. The editor instance is untouched and `onMount` does not re-fire —
+so the whole Yjs stack survives a tab switch. A `key`, or one `<EditorPane>` per file behind a
+ternary, would each do exactly what that file's three existing rules forbid.
+
+Model URIs are `inmemory://room/<roomId>/<fileId>` — the **id**, not the name, or every rename
+would orphan a model and its binding. The room id is in there because Monaco's model registry is
+global to the page, not to a component.
+
+**Bindings are long-lived: one per file, never rebuilt on a tab switch.** Two reasons, both
+verified against `y-monaco@0.1.6`:
+
+- It is unnecessary. `_rerenderDecorations`, `_beforeTransaction` and the cursor-selection
+  listener all guard on `editor.getModel() === monacoModel`, and decorations additionally check
+  `anchorAbs.type === ytext`. Every binding but the visible one is already a no-op.
+- It would leak. **`MonacoBinding.destroy()` does not dispose the `onDidChangeCursorSelection`
+  listener it registers on the editor** — only the content and dispose handlers. Churning
+  bindings per switch strands one listener per switch for the room's life.
+
+The reconciliation effect in `useCollabRoom` is **declared before the master effect**, because
+React runs effect cleanups in declaration order: this one must tear its bindings down while the
+`Y.Doc` is still alive. It is driven by the Yjs observer rather than by React state, so a file
+appearing never re-runs the effect (which would dispose every model). Inside `sync()`, **models
+are created before removed ones are disposed**, and the editor is moved off a model that is about
+to die — otherwise deleting the open file leaves the editor holding a disposed model until React
+catches up, which paints an unusable pane.
+
+**`didEdit` now tests `origin instanceof MonacoBinding`, not identity against one binding**,
+since typing in any file is typing. The four file actions (create/rename/delete/set-entry) latch
+it explicitly: they are local transactions with a null origin, exactly like the seed — which must
+*not* count — so the difference is intent, and only the call site knows it.
+
+### The language is server-authoritative
+
+`POST /rooms?language=python` — a **query parameter, not a body**, because a body means a
+`Content-Type` and a non-simple CORS request, i.e. a preflight round trip before every room
+creation (see "Rooms are minted by the server"). `GET /rooms/:roomId` hands it back, which is how
+someone who was *sent a link* opens the room in the language it was made in rather than a guess,
+and it is the reason the language is not seeded into the `Y.Doc`: a peer arriving before the
+creator has synced would otherwise see nothing.
+
+`ROOM_LANGUAGES` in `server/roomState.js` is the **sixth** hand-maintained cross-workspace
+duplication, after `rateLimit.js`/`rateLimit.ts`, `CLOSE_ROOM_NOT_FOUND`, `roomState.js`'s
+`sanitizeName`/`HEX_COLOR`, `TRUNCATION_MARKER` and `MEMBER_MIN_CONNECTED_MS`. It is an allowlist
+rather than "store whatever arrived" because that endpoint is anonymous and the value is written
+to `dead_rooms.language` and rendered on `/profile`; an unknown value falls back to `javascript`
+rather than 400ing, so a stale client never loses the ability to create a room.
+
+In the room the language is a **read-only chip** in `RoomChrome`. Changing it mid-room would make
+every existing file's extension a lie.
+
 ## Room lifetime
 
 A room has three stages, and `server/rooms.js` is the only module that knows about any of

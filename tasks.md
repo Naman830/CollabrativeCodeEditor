@@ -109,7 +109,7 @@ dead_rooms
 ├── id              (uuid, primary key)
 ├── room_id         (text, UNIQUE — the original ephemeral room ID)
 ├── files           (jsonb — array of { filename, content }, supports multi-file rooms)
-├── language        (text, NULLABLE — the room's single language, see Section 10.1)
+├── language        (text, NULLABLE — the room's single language; non-null since §10.1)
 ├── is_private      (boolean — was this room password-protected)
 ├── participants    (jsonb — names/colors of everyone who was in the room, optional)
 ├── created_at      (timestamptz — when the room was first created)
@@ -225,7 +225,8 @@ A creates the room, B joins later.
 > index that serves /profile. `language` is **nullable** because the language dropdown is a per-user editing
 > preference kept deliberately off the shared Yjs doc — the server has nothing to record until
 > §10.1 moves the selector to room creation, so `NOT NULL` would make 7.3 unbuildable before
-> then.
+> then. **§10.1 has since landed and every new row carries a real language**; the column stays
+> nullable for the rows written before it, which no migration can invent a language for.
 
 Rules:
 - Only written to **once**, when the last user disconnects.
@@ -349,7 +350,8 @@ columns are the easy part.
       it is the only thing in the process that knows when a room was created.
 - [x] On last-user-disconnect (same trigger point as v1's room cleanup), write **one**
       `dead_rooms` row plus **one `dead_room_members` row per qualifying user**, in a single
-      transaction. `language` stays null until 10.1 (see Section 6's note).
+      transaction. (`language` stayed null until §10.1, which now supplies it from the room
+      state — see Section 6's note.)
 - [x] If the member set is empty (all guests, or nobody cleared the threshold): skip the DB
       write entirely — behave exactly like v1. `buildSnapshot()` returns null *before* reading
       the `Y.Text`, so the common guest case never materialises the document at all.
@@ -473,11 +475,13 @@ Shipped alongside 7.3, not originally listed here:
       original `room_id` is therefore the name, rendered in mono so it is recognisable
       against a link someone still has open. Naming rooms is not a v2 item; if it becomes
       one, §10 is where it belongs.
-- [x] **`language` is null on 100% of rows, so the listing says "not recorded".** Not a
-      placeholder to backfill — the language dropdown is a per-user editing preference kept
-      deliberately off the shared `Y.Doc`, so the server has no single answer until §10.1
-      moves the selector to room creation. `is_private` is likewise `false` on every row
-      until §10.3, and is not rendered at all rather than shown as a meaningless "public".
+- [x] **`language` was null on 100% of rows, so the listing said "not recorded".** Not a
+      placeholder to backfill — the language dropdown was a per-user editing preference kept
+      deliberately off the shared `Y.Doc`, so the server had no single answer.
+      **§10.1 has since moved the selector to room creation and the column now carries a real
+      value**; "not recorded" survives only for rows written before it, which is the honest
+      answer for them. `is_private` is still `false` on every row until §10.3, and is still not
+      rendered at all rather than shown as a meaningless "public".
 - [x] **The read-only view is a `<pre>`, not a read-only Monaco.** Three reasons, in order:
       an editor is the one widget on this site that means "you can type here", which is the
       opposite of what the last bullet above asks for; there is nothing to highlight while
@@ -785,14 +789,90 @@ the host machine. It did, more than expected, so the exposure was removed rather
 - Only 1 file in the room → downloads that file directly, like v1.
 - 2+ files → "Save" zips everything into `project.zip` (via JSZip). Each file tab also has its own "download this file only" option.
 
-- [ ] Move language selector from editor toolbar to room-creation screen
-- [ ] Add "+ New file" button; auto-suggest correct extension based on room language
-- [ ] Each file = its own Yjs sub-document, shown as tabs
-- [ ] Right-click a tab → "Set as entry file" (starred, visible to everyone in room)
-- [ ] "Run" always executes the entry file
-- [ ] Save: single file → direct download; multiple files → zip via JSZip
-- [ ] Per-file "download this file only" option in each tab's menu
-- [ ] `dead_rooms.files` stores the full file array on snapshot (see Section 6)
+- [x] Move language selector from editor toolbar to room-creation screen — it is a `<select>`
+      on the landing card, directly above "Create a new room", and travels to the sync server as
+      `POST /rooms?language=…`. A **query parameter, not a JSON body**, because a body would add
+      a `Content-Type` and turn room creation into a non-simple CORS request, buying a preflight
+      round trip before every room. The server holds it in the in-memory room state and hands it
+      back from `GET /rooms/:roomId`, which is how someone who was *sent a link* gets the right
+      language rather than a guess. Read-only in the room (a chip in the chrome bar): changing it
+      mid-room would make every existing file's extension a lie.
+- [x] Add "+ New file" button; auto-suggest correct extension based on room language —
+      `newFileName()` in `app/lib/languages.ts`, which also numbers around a collision
+      (`file1.py`, `file2.py`). The name is typed into an inline field in the tab strip rather
+      than a modal; Enter on an untouched field just takes the suggestion.
+- [x] ~~Each file = its own Yjs sub-document~~, **shown as tabs** — one `Y.Text` per file
+      (`file:<id>`) plus a `Y.Map` of metadata, all on the room's existing `Y.Doc`.
+      **The sub-document wording was wrong and could not be built as written**: y-websocket's
+      `setupWSConnection` syncs exactly one doc per socket and never handles `doc.on('subdocs')`,
+      so real subdocs would need a provider and a separately-gated WebSocket per open file, plus
+      child-doc handling in `server/rooms.js` and `server/roomState.js`. A second shared type on
+      the same doc is the trick the `execution` map already uses (Section 5's note): y-websocket
+      merges the whole document, so files reach every peer including late joiners with **zero**
+      server protocol change. See `app/lib/roomFiles.ts`, which is the only description of the
+      shape.
+- [x] Right-click a tab → "Set as entry file" (starred, visible to everyone in room) — a filled
+      star on the tab, driven by `roomMeta.entry` on the shared doc. Right-click *and* a kebab
+      button open the same menu, because a right-click alone is unreachable by keyboard and by
+      touch.
+- [x] "Run" always executes the entry file — `useCodeRunner` reads the entry file's `Y.Text` at
+      click time, so it runs the right file even when you are looking at a different tab, and
+      even if that file has never been opened in this tab and so has no Monaco model.
+- [x] Save: single file → direct download; multiple files → zip via JSZip — `downloadZipFile` in
+      `app/lib/download.ts`, behind a **dynamic** `import("jszip")` so the zip library never
+      enters the room route's first chunk.
+- [x] Per-file "download this file only" option in each tab's menu
+- [x] `dead_rooms.files` stores the full file array on snapshot (see Section 6) — and
+      `dead_rooms.language` is finally non-null, which was the standing consequence recorded in
+      Section 6's note and on `/profile`. **No migration**: `files` has been a `jsonb` array
+      since 7.2 for exactly this, and `language` was already nullable.
+
+Shipped alongside 10.1, not originally listed here:
+
+- [x] **Rename and delete a file**, in the same tab menu. A room you can add files to but never
+      remove them from is a trap, and rename is nearly free once the new-file inline input
+      exists. Deleting the *last* file is refused — an editor with no model is a blank pane with
+      no way back — and deleting the entry file re-points `roomMeta.entry` at the first survivor
+      in the same transaction.
+- [x] **`app/lib/roomFiles.ts`'s `readRoomFiles()` is a sanitizing boundary**, in the same
+      category as `readPeers()` in `lib/awareness.ts`. Filenames are peer-supplied: a raw Yjs
+      client can write anything into the `files` map, and the name then reaches a tab label, an
+      `<a download>`, a zip entry key and ultimately `dead_rooms.files`. It strips control
+      characters, path separators and unpaired surrogates, caps the length by **code point**,
+      rejects `.`/`..`, and numbers duplicate names. `server/roomState.js` repeats the check on
+      its own side, because that client code never runs for a hostile peer. Verified: a file
+      named `../../etc/pa sswd<lone surrogate>.py` reached the database as `....etcpasswd.py`.
+- [x] **The first file's id is the fixed string `"main"`, never a random one.** Two peers can
+      sync into an empty room at the same instant and both run the seed; with random ids they
+      would create two identical `main.py` tabs that CRDT-merge rather than collide. A fixed key
+      makes them converge on one file, and the seed's text insert becomes the same benign
+      duplicate-insert v1 already had.
+- [x] **Tab order is derived, never stored** (`createdAt`, tiebroken by id), so no shared
+      ordering type has to survive two peers reordering concurrently — and the server derives the
+      identical order when it writes the snapshot.
+- [x] **Per-language starter code** (`starterCode()` in `app/lib/languages.ts`). Before this, a
+      new room was seeded with the same hardcoded `console.log` regardless of the language
+      chosen, so every non-JavaScript room opened on a program that could not run.
+- [x] **`ExecutionState.filename`**, required on all three non-idle variants for the same reason
+      `stdin` is (§10.4): Run executes the entry file, which need not be the tab the person
+      watching has open, so without it the output belongs to no visible file. The output panel's
+      caption now reads `Run by Ada L. · main.py · Python`.
+- [x] **A room's file count is capped at 20** (`MAX_FILES`), which bounds the tab strip, the
+      number of live Monaco models and `MonacoBinding`s, and the snapshot's entry count.
+- [x] **The 256 KB snapshot cap became a budget shared across files**, spent in tab order, so
+      twenty 100 KB files cannot defeat the one bound v2 places on an unbounded write. The entry
+      file is created first and is therefore the last thing to be lost.
+- [x] **"Download all (`project.zip`)" on `/profile`** for a multi-file snapshot, reusing the
+      same `downloadZipFile`.
+- [x] **End-to-end verification.** 22 browser assertions across two tabs in one context, all
+      passing — including the one that matters: run something, then switch files, flip the split,
+      collapse and expand, and the room's shared output is still there **in both tabs**, proving
+      `<Editor>` never remounted and the `Y.Doc` was never destroyed. Plus: Run executes the entry
+      file while another tab is open; the star, renames and deletes all propagate; Save yields
+      `project.zip` for two files and `utils.py` for one. Headlessly, a real room was driven to
+      death with a server-minted Clerk token and came back from Postgres with
+      `language="python"` and three files under their real names, then rendered on `/profile`
+      with zero Monaco references.
 
 ### 10.2 In-room chat
 
@@ -1079,13 +1159,16 @@ Shipped alongside 10.8, not originally listed here:
 
 Independent of each other except where noted, so this is by payoff, not dependency:
 
-1. **10.4 stdin** — the largest functional gap, and the smallest change
-2. **10.5 keyboard shortcuts** — an afternoon; Ctrl+S is a live wrong behaviour, not a gap
+1. ~~**10.4 stdin**~~ — done
+2. ~~**10.5 keyboard shortcuts**~~ — done
 3. **10.2 chat** — designed already, no schema, no new connection
-4. **10.1 multi-file** — the biggest capability gain and by far the most invasive; it is also
-   what finally gives `dead_rooms.language` a value and `files` more than one entry
-5. **10.6 room names** — small, but it needs a migration, so it pairs naturally with 10.1's
-6. **10.7 delete** — small, and the right thing to own before the profile fills up
-7. **10.8 leaving warning** — small, best done after 10.6 so both halves of the "is this room
-   being kept?" story land together
+4. ~~**10.1 multi-file**~~ — done. It was indeed the most invasive, and it did give
+   `dead_rooms.language` a value and `files` more than one entry. It needed **no** migration,
+   because 7.2 shaped both columns for it in advance.
+5. **10.6 room names** — small, but it needs a migration, and it is now the *only* remaining
+   item that does
+6. ~~**10.7 delete**~~ — done
+7. ~~**10.8 leaving warning**~~ — done
 8. **10.3 room passwords** — real, but narrow while room URLs are unguessable and short-lived
+
+What is left of section 10: **10.2 chat, 10.3 room passwords, 10.6 room names.**
