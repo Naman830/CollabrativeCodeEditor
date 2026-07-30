@@ -1,0 +1,37 @@
+# The Piston sandbox that `web/src/app/api/execute/route.ts` proxies to.
+#
+# Pinned to the pre-reorg project name so renaming the app directory does not
+# orphan the running container or the volume holding the installed languages.
+name: collab-code-editor
+
+services:
+  piston:
+    image: ghcr.io/engineer-man/piston
+    container_name: piston_api
+    restart: unless-stopped
+    privileged: true
+    ports:
+      # Loopback only. A bare "2000:2000" binds 0.0.0.0, and the container is
+      # privileged, so isolate would be the only boundary against the network.
+      - "127.0.0.1:2000:2000"
+    environment:
+      # INVARIANT: these are ceilings and Piston 400s any request exceeding one,
+      # so keep them >= the per-request limits in src/app/api/execute/route.ts.
+      # Wall time and CPU time are separate: raising one alone does nothing for
+      # `while True: pass`.
+      PISTON_RUN_TIMEOUT: 5000
+      PISTON_RUN_CPU_TIME: 5000
+      PISTON_COMPILE_TIMEOUT: 10000
+      PISTON_COMPILE_CPU_TIME: 10000
+      PISTON_RUN_MEMORY_LIMIT: 268435456 # 256 MB
+      PISTON_COMPILE_MEMORY_LIMIT: 536870912 # 512 MB — javac/g++ need the headroom
+      # Default is 1 KB, and Piston SIGABRTs the sandbox instead of truncating,
+      # so a program printing ~1 KB dies mid-write looking like a crash.
+      PISTON_OUTPUT_MAX_SIZE: 65536
+    volumes:
+      - piston_data:/piston
+    tmpfs:
+      - /piston/jobs:exec
+
+volumes:
+  piston_data:
