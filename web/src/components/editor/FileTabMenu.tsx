@@ -33,14 +33,59 @@ export default function FileTabMenu({
 }: FileTabMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null);
   const labelId = useId();
+  // Captured on mount so Escape can put focus back where it came from. Without this, closing
+  // dropped focus to <body> and the next Tab restarted from the top of the page.
+  const triggerRef = useRef<HTMLElement | null>(
+    typeof document !== "undefined" ? (document.activeElement as HTMLElement | null) : null,
+  );
 
+  const items = () =>
+    Array.from(
+      menuRef.current?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]:not([disabled])') ?? [],
+    );
+
+  // INVARIANT: role="menu" promises a keyboard model, and this component declared the role while
+  // implementing none of it — ArrowDown/Up/Home/End did nothing and focus parked on the container.
   useEffect(() => {
-    menuRef.current?.focus();
+    // Focus the first item, not the container: a menu whose only reachable path is Tab is the
+    // anti-pattern the role exists to avoid.
+    const first = items()[0];
+    if (first) first.focus();
+    else menuRef.current?.focus();
   }, []);
+
+  const restoreFocus = () => {
+    const trigger = triggerRef.current;
+    if (trigger && document.contains(trigger)) trigger.focus();
+  };
+
+  const onMenuKeyDown = (event: React.KeyboardEvent) => {
+    const list = items();
+    if (list.length === 0) return;
+    const current = list.indexOf(document.activeElement as HTMLButtonElement);
+
+    const move = (next: number) => {
+      event.preventDefault();
+      list[(next + list.length) % list.length]?.focus();
+    };
+
+    if (event.key === "ArrowDown") return move(current + 1);
+    if (event.key === "ArrowUp") return move(current - 1);
+    if (event.key === "Home") return move(0);
+    if (event.key === "End") return move(list.length - 1);
+    // A focus trap, so Tab cannot leave an open menu floating over the editor.
+    if (event.key === "Tab") {
+      event.preventDefault();
+      move(event.shiftKey ? current - 1 : current + 1);
+    }
+  };
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
+      if (event.key === "Escape") {
+        restoreFocus();
+        onClose();
+      }
     };
     // `pointerdown`, not `click`: a click listener added here would fire on the
     // very event that opened the menu.
@@ -73,6 +118,7 @@ export default function FileTabMenu({
       role="menu"
       aria-labelledby={labelId}
       tabIndex={-1}
+      onKeyDown={onMenuKeyDown}
       style={{ left, top }}
       className="fixed z-50 w-52 overflow-hidden rounded-xl border border-edge bg-panel py-1 shadow-xl shadow-[var(--shadow-color)] outline-none"
     >

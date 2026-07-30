@@ -29,6 +29,7 @@ function ToastRow({ toast, onDismiss }: ToastRowProps) {
         className="h-2.5 w-2.5 shrink-0 rounded-full ring-2 ring-panel"
         style={{ backgroundColor: toast.color }}
       />
+      {/* One text node, so the announcement reads as a sentence rather than two fragments. */}
       <span>
         <span className="font-medium text-fg">{toast.name}</span>{" "}
         <span className="text-fg-muted">
@@ -46,16 +47,30 @@ type ActivityToastsProps = {
 
 /** Names and colours arrive already sanitized, built from `readPeers`'s output. */
 export default function ActivityToasts({ toasts, onDismiss }: ActivityToastsProps) {
-  if (toasts.length === 0) return null;
-
   return (
+    // INVARIANT: this element is ALWAYS mounted, even with no toasts — it used to
+    // `return null` when the list was empty, and a live region that does not exist until its
+    // first message arrives is the classic case screen readers do not announce. Rendering an
+    // empty <ul> costs nothing and is what makes the announcement work.
+    //
+    // `role="log"` rather than `status`: this is a running stream of discrete events, and
+    // `aria-relevant="additions"` stops the auto-dismiss (a removal) being re-announced.
+    //
     // `env(safe-area-inset-bottom)`: a plain `bottom-4` hides these under iOS chrome.
-    <ul
-      className="pointer-events-none fixed inset-x-4 bottom-[max(1rem,env(safe-area-inset-bottom))] z-50 flex flex-col items-end gap-2 sm:inset-x-auto sm:right-4"
+    // The live region is this WRAPPER, not the <ul>: `log` is not an allowed role on a list
+    // element (axe: aria-allowed-role), so the roles are split across the two nodes.
+    <div
+      role="log"
+      aria-live="polite"
+      aria-relevant="additions"
+      aria-label="Room activity"
+      className="pointer-events-none fixed inset-x-4 bottom-[max(1rem,env(safe-area-inset-bottom))] z-50 sm:inset-x-auto sm:right-4"
     >
-      {toasts.map((toast) => (
-        <ToastRow key={toast.id} toast={toast} onDismiss={onDismiss} />
-      ))}
-    </ul>
+      <ul className="flex list-none flex-col items-end gap-2">
+        {toasts.map((toast) => (
+          <ToastRow key={toast.id} toast={toast} onDismiss={onDismiss} />
+        ))}
+      </ul>
+    </div>
   );
 }

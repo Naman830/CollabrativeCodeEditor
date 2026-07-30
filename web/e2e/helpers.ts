@@ -10,6 +10,9 @@ import { expect } from "@playwright/test";
  * - Room text must be read from the Monaco model, never document.body.innerText: Monaco keeps a
  *   hidden accessibility mirror, so innerText shows the content twice.
  */
+/** The file strip: a list of buttons with aria-current, not an ARIA tablist. */
+export const FILE_BUTTONS = "ul[aria-label='Files in this room'] button[aria-current], ul[aria-label='Files in this room'] button";
+
 export const NBSP = String.fromCharCode(160);
 
 export function normalise(text: string): string {
@@ -38,8 +41,10 @@ export async function enterIdentity(page: Page, first: string, last: string) {
  */
 export async function waitForRoomReady(page: Page, { seeded = true } = {}) {
   await expect(page.locator(".monaco-editor")).toBeVisible();
-  // The entry file's tab is the observable proof that the file map arrived.
-  await expect(page.locator('[role="tab"]').first()).toBeVisible();
+  // The entry file's button is the observable proof that the file map arrived. NOT role="tab":
+  // the strip is a list of buttons with aria-current, because the ARIA tabs pattern promised a
+  // tabpanel that does not exist and a tablist may not own the per-file kebab.
+  await expect(page.locator(FILE_BUTTONS).first()).toBeVisible();
   if (!seeded) return;
   // The direct signal, rather than a proxy: the document actually has text. (Save's disabled
   // state looked like a good proxy and is not — it tracks the local Monaco mirror, which lags.)

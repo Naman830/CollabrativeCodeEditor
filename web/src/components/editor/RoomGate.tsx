@@ -119,8 +119,14 @@ export default function RoomGate({ roomId }: RoomGateProps) {
     );
   }
 
+  // A landmark here too, not just in CodeEditor: these are the states the room route renders when
+  // the editor never mounts, and without it the closed-room screen had no <main> at all — axe
+  // reported landmark-one-main plus `region` for every node on the card.
   return (
-    <div className="wash relative flex h-full flex-col items-center justify-center px-6 text-center text-fg-muted">
+    <main
+      id="main-content"
+      className="wash relative flex h-full flex-col items-center justify-center px-6 text-center text-fg-muted"
+    >
       {state === "checking" && <GateSpinner label="Checking room…" />}
 
       {state === "missing" && (
@@ -162,6 +168,6 @@ export default function RoomGate({ roomId }: RoomGateProps) {
           We can&apos;t tell whether this room is still open. Check your connection and try again.
         </GateCard>
       )}
-    </div>
+    </main>
   );
 }

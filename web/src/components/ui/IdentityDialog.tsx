@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, type SubmitEventHandler } from "react";
+import { useEffect, useId, useRef, useState, type SubmitEventHandler } from "react";
 import {
   CURSOR_COLORS,
   loadNamePrefill,
@@ -40,6 +40,8 @@ export default function IdentityDialog({
   const [prefill] = useState(loadNamePrefill);
   // Clerk beats the stored prefill per-field: a null last name must fall back,
   // not blank the field.
+  // One id per instance: the hint is referenced by both inputs via aria-describedby.
+  const dialogId = useId();
   const [firstName, setFirstName] = useState(
     () => clerkPrefill?.firstName || prefill?.firstName || ""
   );
@@ -151,6 +153,9 @@ export default function IdentityDialog({
                 onChange={(e) => setFirstName(e.target.value)}
                 maxLength={24}
                 autoComplete="given-name"
+                id={`${dialogId}-first`}
+                aria-invalid={!isValid}
+                aria-describedby={`${dialogId}-hint`}
                 className={fieldClass}
               />
             </label>
@@ -162,6 +167,9 @@ export default function IdentityDialog({
                 onChange={(e) => setLastName(e.target.value)}
                 maxLength={24}
                 autoComplete="family-name"
+                id={`${dialogId}-last`}
+                aria-invalid={!isValid}
+                aria-describedby={`${dialogId}-hint`}
                 className={fieldClass}
               />
             </label>
@@ -231,7 +239,15 @@ export default function IdentityDialog({
             {submitLabel}
           </button>
 
-          <p className="text-center text-xs text-fg-muted">
+          {/* INVARIANT: this <p> is what both inputs' aria-describedby points at, and it is a
+              live region — the submit button is natively `disabled`, so it leaves the tab order
+              entirely and a keyboard user otherwise gets no explanation for why nothing happens. */}
+          <p
+            id={`${dialogId}-hint`}
+            role="status"
+            aria-live="polite"
+            className="text-center text-xs text-fg-muted"
+          >
             {!isValid
               ? "Enter both a first and last name to continue."
               : signedInAs

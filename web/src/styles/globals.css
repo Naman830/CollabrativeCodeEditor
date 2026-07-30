@@ -17,7 +17,9 @@
 
   --fg: #14171c;
   --fg-muted: #5a626e;
-  --fg-subtle: #858c99;
+  /* 4.5:1 on white, --app and --code-bg. Was #858c99, which measured 3.38:1 on white and
+     3.16:1 on --app — it carries the run attribution caption, the guest line and the footer. */
+  --fg-subtle: #656d7a;
 
   /* Deeper than the dark accent: #4c8dff fails contrast as text on white. */
   --accent: #2563eb;
@@ -27,9 +29,12 @@
 
   --success: #15803d;
   --success-strong: #166534;
+  /* Paired with --success as a BUTTON BACKGROUND. White is fine on this dark green (5.02:1). */
+  --success-contrast: #ffffff;
   --danger: #dc2626;
   --danger-soft: rgba(220, 38, 38, 0.08);
-  --warning: #b45309;
+  /* Was #b45309: 4.45:1 on --warning-soft, just under. */
+  --warning: #92400e;
   --warning-soft: rgba(180, 83, 9, 0.09);
 
   --code-bg: #fbfcfd;
@@ -53,15 +58,21 @@
 
   --fg: #e8eaed;
   --fg-muted: #9aa1ac;
-  --fg-subtle: #6b7280;
+  /* Was #6b7280: 3.58:1 on --panel. */
+  --fg-subtle: #8b93a1;
 
   --accent: #4c8dff;
   --accent-strong: #3b7cf0;
-  --accent-contrast: #ffffff;
+  /* INVARIANT: NOT white here. --accent is tuned to be legible as *text* on a dark background,
+     which necessarily makes it a bright *background* — white on it measured 3.20:1. This token
+     is the foreground used ON the accent, so it flips with the theme while --accent does not. */
+  --accent-contrast: #0d1117;
   --accent-soft: rgba(76, 141, 255, 0.14);
 
   --success: #3fb950;
   --success-strong: #2ea043;
+  /* White on #3fb950 measured 2.54:1 — the worst ratio on the site, on the Run button. */
+  --success-contrast: #0d1117;
   --danger: #f85149;
   --danger-soft: rgba(248, 81, 73, 0.12);
   --warning: #d29922;
@@ -95,6 +106,7 @@
 
   --color-success: var(--success);
   --color-success-strong: var(--success-strong);
+  --color-success-contrast: var(--success-contrast);
   --color-danger: var(--danger);
   --color-danger-soft: var(--danger-soft);
   --color-warning: var(--warning);

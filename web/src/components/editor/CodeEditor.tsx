@@ -162,9 +162,16 @@ export default function CodeEditor({ roomId, language, onRoomClosed }: CodeEdito
         isLastPeer={persistence.isLastPeer}
       />
 
-      {/* INVARIANT: ONE Group, never two behind a ternary, and never a `key`
-          between here and EditorPane — a remount destroys the Y.Doc. */}
-      <Group
+      {/* The room's only landmark and its only heading. Without them the page had no bypass
+          mechanism at all — axe reported landmark-one-main, page-has-heading-one AND region
+          (every control outside a landmark) on the app's most control-dense screen.
+          A static wrapper, so the Group below is still never remounted at runtime. */}
+      <main id="main-content" className="flex min-h-0 min-w-0 flex-1 flex-col">
+        <h1 className="sr-only">Collaborative editor — room {roomId}</h1>
+
+        {/* INVARIANT: ONE Group, never two behind a ternary, and never a `key`
+            between here and EditorPane — a remount destroys the Y.Doc. */}
+        <Group
         id="room-split"
         orientation={layout.orientation}
         defaultLayout={layout.defaultLayout}
@@ -238,7 +245,8 @@ export default function CodeEditor({ roomId, language, onRoomClosed }: CodeEdito
             onStdinKeyDown={handleStdinKeyDown}
           />
         </Panel>
-      </Group>
+        </Group>
+      </main>
 
       {identity.status === "absent" && <JoinRoomPrompt />}
     </div>

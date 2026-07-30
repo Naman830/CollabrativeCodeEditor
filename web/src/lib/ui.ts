@@ -42,7 +42,7 @@ export const dangerButton = cn(
 export const runButton = cn(
   buttonBase,
   focusRing,
-  "bg-success px-4 py-1.5 text-white hover:bg-success-strong",
+  "bg-success px-4 py-1.5 text-success-contrast hover:bg-success-strong",
   "disabled:bg-raised disabled:text-fg-subtle",
 );
 

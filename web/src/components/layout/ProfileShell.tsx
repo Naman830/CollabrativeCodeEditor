@@ -26,7 +26,9 @@ export function ProfilePanel({
   return (
     <div className={`relative mx-auto flex max-w-sm flex-col items-center gap-4 p-8 text-center ${card}`}>
       <PanelIcon>{icon}</PanelIcon>
-      <h2 className="text-xl font-semibold text-fg">{title}</h2>
+      {/* h1, not h2: this IS the page title, and an h2 with no h1 above it fails
+          page-has-heading-one on /profile and on the 404, which reuses this panel. */}
+      <h1 className="text-xl font-semibold text-fg">{title}</h1>
       {children}
     </div>
   );
@@ -42,7 +44,7 @@ export default function ProfileShell({ children, backHref, backLabel }: ProfileS
   return (
     <>
       <SiteNav backHref={backHref} backLabel={backLabel} />
-      <main className="wash relative flex-1 px-4 py-10">
+      <main id="main-content" className="wash relative flex-1 px-4 py-10">
         <div className="relative mx-auto w-full max-w-3xl">{children}</div>
       </main>
     </>

@@ -104,20 +104,63 @@ export default function EditorTabBar({
 
   const menuFile = menu ? files.find((file) => file.id === menu.fileId) : undefined;
 
+  const tabRefs = useRef(new Map<string, HTMLButtonElement>());
+
+  // INVARIANT: roving tabindex — exactly ONE tab is in the tab order, and Arrow/Home/End move
+  // between them. Without it every tab plus its kebab was a separate stop: 5 stops for 2 files,
+  // growing to 41 at MAX_FILES, and the arrow keys a screen reader promises did nothing.
+  const focusTab = (index: number) => {
+    const clamped = (index + files.length) % files.length;
+    const target = files[clamped];
+    if (!target) return;
+    onSelect(target.id);
+    // The tab is re-rendered with tabIndex 0 by the selection above; focus it once that lands.
+    requestAnimationFrame(() => {
+      tabRefs.current.get(target.id)?.focus();
+    });
+  };
+
+  const handleTabKeyDown = (event: React.KeyboardEvent, index: number) => {
+    const keys: Record<string, number> = {
+      ArrowRight: index + 1,
+      ArrowLeft: index - 1,
+      Home: 0,
+      End: files.length - 1,
+    };
+    const next = keys[event.key];
+    if (next === undefined) return;
+    event.preventDefault();
+    focusTab(next);
+  };
+
   return (
     <PanelStrip>
-      <div
-        role="tablist"
-        aria-label="Files in this room"
-        className="flex min-w-0 flex-1 items-stretch overflow-x-auto"
-      >
-        {files.map((file) => {
+      {/*
+        Deliberately a LIST of buttons, not role="tablist"/role="tab".
+
+        It used to declare the ARIA tabs pattern and honour almost none of it: there was no
+        role="tabpanel" anywhere and no aria-controls, so a screen reader announced "tab 1 of 2"
+        with nothing to navigate to; and the tablist owned the per-file kebab and the "New file"
+        button, which role="tablist" may not own — the app's only *critical* axe violation
+        (aria-required-children).
+
+        Completing the contract instead was considered and rejected: there is no panel per tab
+        (one editor swaps its model, and it must never be keyed or remounted), and a compliant
+        tablist cannot contain the per-file kebab, so it would have meant restructuring the UI to
+        satisfy a pattern this widget is not. `aria-current` states the same truth — "this is the
+        file being shown" — without promising a widget that does not exist. Roving tabindex and
+        Arrow/Home/End are implemented anyway, because 2 stops per file (41 at MAX_FILES) is the
+        real usability problem underneath.
+      */}
+      <div className="flex min-w-0 flex-1 items-stretch overflow-x-auto">
+      <ul aria-label="Files in this room" className="flex list-none items-stretch">
+        {files.map((file, index) => {
           const isActive = file.id === activeFileId;
           const isEntry = file.id === entryFileId;
 
           if (editing?.kind === "rename" && editing.fileId === file.id) {
             return (
-              <div
+              <li
                 key={file.id}
                 className="flex shrink-0 items-center border-r border-edge bg-code px-2"
               >
@@ -129,12 +172,12 @@ export default function EditorTabBar({
                   }}
                   onCancel={() => setEditing(null)}
                 />
-              </div>
+              </li>
             );
           }
 
           return (
-            <div
+            <li
               key={file.id}
               className={cn(
                 "group relative flex shrink-0 items-center gap-1.5 border-r border-edge pl-3 pr-1.5 text-xs",
@@ -149,8 +192,13 @@ export default function EditorTabBar({
             >
               <button
                 type="button"
-                role="tab"
-                aria-selected={isActive}
+                aria-current={isActive ? "true" : undefined}
+                tabIndex={isActive ? 0 : -1}
+                ref={(node) => {
+                  if (node) tabRefs.current.set(file.id, node);
+                  else tabRefs.current.delete(file.id);
+                }}
+                onKeyDown={(event) => handleTabKeyDown(event, index)}
                 onClick={() => onSelect(file.id)}
                 onDoubleClick={() => setEditing({ kind: "rename", fileId: file.id })}
                 title={isEntry ? `${file.name} — Run executes this file` : file.name}
@@ -181,11 +229,12 @@ export default function EditorTabBar({
               >
                 <MoreIcon className="h-3 w-3" />
               </button>
-            </div>
+            </li>
           );
         })}
+      </ul>
 
-        {editing?.kind === "create" && (
+      {editing?.kind === "create" && (
           <div className="flex shrink-0 items-center border-r border-edge bg-code px-2">
             <NameInput
               initial=""

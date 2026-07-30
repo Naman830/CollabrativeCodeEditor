@@ -162,8 +162,20 @@ export default function OutputPanel({
         </div>
       )}
 
-      {/* `min-h-0`, not just `flex-1`: without it `overflow-auto` never engages. */}
+      {/* `min-h-0`, not just `flex-1`: without it `overflow-auto` never engages.
+
+          INVARIANT: this is a live region. Running code is the app's headline action and its
+          result arrives asynchronously — without `aria-live` a screen-reader user pressed Run and
+          was told nothing, ever. `aria-busy` covers the gap while it runs.
+
+          `polite`, not `assertive`: the result must not interrupt someone mid-sentence, and it is
+          not an emergency. `aria-atomic={false}` so a long stdout is not re-read in full. */}
       <div
+        role="status"
+        aria-live="polite"
+        aria-atomic={false}
+        aria-busy={state.status === "running"}
+        aria-label="Run output"
         className={cn(
           "min-h-0 flex-1 overflow-auto px-4 py-3 font-mono text-sm transition-colors",
           failed ? "bg-code-failed" : "bg-code",

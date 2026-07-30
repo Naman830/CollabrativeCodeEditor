@@ -49,6 +49,15 @@ export default function RootLayout({
         <script dangerouslySetInnerHTML={{ __html: THEME_SCRIPT }} />
       </head>
       <body className="flex min-h-full flex-col bg-app text-fg">
+        {/* The first tab stop on every page. Visually hidden until focused, which is the whole
+            point — reaching the editor in a room otherwise costs 11 Tab presses, every time
+            focus resets. Every page's <main> carries id="main-content". */}
+        <a
+          href="#main-content"
+          className="sr-only rounded-lg bg-accent px-4 py-2 text-sm font-medium text-accent-contrast focus:not-sr-only focus:absolute focus:left-4 focus:top-4 focus:z-[100]"
+        >
+          Skip to main content
+        </a>
         <AppProviders>{children}</AppProviders>
       </body>
     </html>

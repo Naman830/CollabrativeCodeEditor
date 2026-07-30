@@ -14,7 +14,7 @@ export default function ProfileError({
   unstable_retry: () => void;
 }) {
   return (
-    <main className="relative flex flex-1 items-center justify-center px-4 py-10">
+    <main id="main-content" className="relative flex flex-1 items-center justify-center px-4 py-10">
       <ProfilePanel
         icon={
           <svg

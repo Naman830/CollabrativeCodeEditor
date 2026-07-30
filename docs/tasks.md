@@ -487,9 +487,14 @@ Shipped alongside 7.3, not originally listed here:
       opposite of what the last bullet above asks for; there is nothing to highlight while
       `language` is null, so Monaco would load ~5 MB to render plaintext; and
       `web/src/lib/editor/monacoLoader.ts` imports `monaco-editor` at module scope, which is why
-      `/room/[roomId]` returns HTTP 500 from the server on every request — keeping it out of
-      this route's import graph is what lets `/profile` actually server-render. Verified:
-      `/profile` answers 200 where `/room/<id>` answers 500.
+      `/room/[roomId]` used to return HTTP 500 from the server on every request — keeping it out
+      of this route's import graph is what lets `/profile` actually server-render.
+      **The stated evidence is out of date and has been rewritten rather than re-ticked**: the
+      §7.7 redesign fixed the room route with a `dynamic(..., { ssr: false })` boundary in
+      `RoomGate`, so both routes now answer 200 and the contrast this line rested on is gone. The
+      replacement check, asserted by `SEC-30a` on every run, is that
+      `curl -s /room/<id> | grep -c monaco` is **0** — a status code alone stopped being
+      sufficient the moment the route started succeeding.
 
 Shipped alongside 7.4, not originally listed here:
 
@@ -664,7 +669,9 @@ Shipped alongside 7.5, not originally listed here:
 
 - [x] **Full end-to-end verification pass** driven through a real browser (Playwright against
       system Chrome; nothing was added to either workspace's dependencies, and the scripts are
-      deliberately not committed — this repo has no test harness and 7.x did not ask for one).
+      deliberately not committed — at the time this repo had no test harness and 7.x did not ask
+      for one; **superseded by 7.10**, which commits one and re-derives these assertions as
+      reproducible tests).
       77 assertions, all passing: landing and Clerk chrome; room create/join; Yjs sync both
       ways and concurrent-edit merge; presence, remote-cursor styling and <300 ms departure
       (the `disableBc` regression); Run in all five languages against live Piston; the output
@@ -806,6 +813,113 @@ or a recruiter can read, without changing behaviour. No feature was added or rem
       four sync-server HTTP routes byte-identical, Python and Java still executing through
       `/api/execute` with stdin, and two Yjs clients still converging on one document with
       awareness, the `files` map, the `execution` map and the 4404 dead-room refusal all intact.
+
+### 7.10 Audit: test suite, CI and hardening (not originally listed; recorded because it shipped)
+
+An end-to-end audit of the shipped product. The full report — strategy, every case, every bug with
+its root cause and validating test, the security and performance checks, and the remaining
+limitations — is `docs/TESTING.md`. This section records only what shipped, per the rule at the top
+of `CLAUDE.md`. It supersedes 7.6's line "the scripts are deliberately not committed — this repo has
+no test harness and 7.x did not ask for one": there is a harness now, and it is committed.
+
+#### 7.10.1 The committed suite
+
+- [x] Four tiers, 281 tests, from zero. `web/tests/unit/` + `web/tests/unit/drift/` (vitest),
+      `server/tests/unit/` and `server/tests/integration/` (vitest), `web/e2e/` (Playwright).
+- [x] Tests live inside the workspace they test; `web/e2e/` is the only cross-service tier. Recorded
+      as a **fifth structural rule** in `CLAUDE.md`, and it exists to keep "there is no root
+      `package.json`" true — the gate is two commands and CI is a two-job matrix.
+- [x] The first three tiers are hermetic by construction: `web/tests/setup/no-ambient-secrets.ts`
+      deletes every secret and every `*_MS` knob and stubs `fetch` to throw, and the server tiers run
+      with `DATABASE_URL` and `CLERK_SECRET_KEY` cleared. A contributor with no credentials runs
+      exactly what CI runs.
+- [x] One adversarial corpus, duplicated per workspace (`hostile.ts` / `hostile.mjs`) — the **eighth
+      and ninth** hand-maintained cross-workspace duplications. Every dangerous character is built
+      with `String.fromCharCode` rather than written as an escape, because a literal one in a tool
+      argument becomes a real NUL byte.
+- [x] The ID/grep contract: every test title begins with its case ID, so any claim in the report is
+      traceable with `grep -rn "SEC-05d" web/tests server/tests web/e2e`.
+- [x] The integration tier drives the **real** `src/index.js` on an ephemeral port with raw `ws`
+      speaking the actual Yjs protocol — the 4404 gate as a post-handshake close, the 1012 restart
+      close, grace-window reconnect and expiry, abusive frames.
+- [x] `retries: 0` in Playwright, deliberately: a retry that goes green hides the CRDT and presence
+      races the suite exists to catch. Two flakes surfaced this way and both were real.
+
+#### 7.10.2 CI
+
+- [x] `.github/workflows/ci.yml`: two jobs. `web` runs lint, typecheck, unit+dom, then the drift tier
+      (which needs the sibling workspace installed). `server` runs lint, unit, integration.
+- [x] `prisma generate` is an explicit CI step, not left to `postinstall` — `web/generated/` is
+      gitignored and Vercel has been observed skipping `postinstall` on a cached `node_modules`.
+- [x] A third job states plainly what CI **cannot** cover and why, so a green tick is never mistaken
+      for full coverage: Piston needs a privileged container, Clerk needs real keys, Neon's cold
+      start cannot be reproduced against a plain service container, and the e2e tier drives all three
+      services.
+- [x] `server/` gets its first eslint config. `no-control-regex` is off there deliberately: matching
+      control characters is precisely what those sanitizers are for, so flagging them inverts intent.
+
+#### 7.10.3 Hardening (behaviour-changing)
+
+Each line names what an operator or user notices.
+
+- [x] **Three unauthenticated ways to kill the sync server, all fixed.** `GET /rooms/%` (URIError),
+      a malformed `Host` header (TypeError), and any malformed WebSocket frame (`ws` emits `error`
+      on the socket and y-websocket registers no listener; an unhandled `error` event throws). A
+      crash is not SIGTERM, so each one destroyed every live room's unsaved snapshot.
+- [x] `maxPayload` capped at 4 MiB — **and only safe because the per-socket `error` listener landed
+      in the same change.** A frame over the cap raises the same unhandled event, so the cap alone
+      would have converted memory pressure into a one-frame remote kill switch.
+- [x] `uncaughtException`/`unhandledRejection` handlers that drain snapshots before exiting non-zero,
+      so the next unknown fault is survivable rather than silently lossy.
+- [x] **`readExecutionState()`**, the third peer-input boundary. Before it, any participant could
+      write one record and permanently replace every *other* participant's room with the error page;
+      a forged `running` record with no `startedAt` also disabled Run room-wide forever.
+- [x] Rate-limit keys are no longer caller-chosen: `clientKey` reads the right-most trusted hop in
+      both workspaces (`TRUSTED_PROXY_HOPS`). This also re-closes the snapshot queue's per-key bounds,
+      whose pacing key is the same value.
+- [x] `/api/execute` reads its body through a streaming cap; a chunked POST with no `Content-Length`
+      used to be buffered whole before the 413 could fire.
+- [x] Security headers on every route, plus a **report-only** CSP. `COOP: same-origin-allow-popups`,
+      not `same-origin` — the latter severs Clerk's OAuth popup and hangs sign-in with no banner.
+- [x] `POST /rooms` refuses with 503 while draining, because the listener now stays open through the
+      flush so `/health` can actually serve its 503. Without it a room could be minted into a process
+      that will never flush it.
+- [x] Per-var floors on every numeric env var (`server/src/env.js`). `SNAPSHOT_WRITE_LIMIT=0` used to
+      pace every snapshot forever — silent data loss dressed as a tuning knob.
+- [x] Opt-in `CLERK_AUTHORIZED_PARTIES`, so a token minted for a different app on the same Clerk
+      instance stops earning a membership row.
+
+#### 7.10.4 New guardrails
+
+- [x] The drift tier closes the two gaps `CLAUDE.md` said nothing checked: `docker-compose.yml`'s six
+      `PISTON_*` ceilings vs the execute route's per-request limits, and `server/src/storage/db.js`'s
+      hand-written INSERT columns vs `prisma/schema.prisma` (both tables).
+- [x] `GUARD-01` scans every source file for NUL bytes and lone surrogates at the byte level. The
+      guard `CLAUDE.md` previously prescribed — `grep -P` for a NUL — has never worked: grep reports
+      nothing on a binary file without `-a`.
+- [x] `API-09f` is mutation-tested: breaking the rate limiter's re-insertion makes it fail. A test
+      that cannot fail is not evidence.
+- [x] A boot-time check that `DB_CONNECT_TIMEOUT_MS` stays under `SNAPSHOT_FLUSH_MS` — documented
+      before, enforced now.
+- [x] `ROOM_CREATE_LIMIT` / `ROOM_CREATE_WINDOW_MS` make `POST /rooms`' limit configurable (default
+      unchanged), because an e2e suite legitimately creates more rooms per minute than a person does.
+
+#### 7.10.5 What the audit disproved, and what it left alone
+
+- [x] Five statements in `CLAUDE.md` were stated as fact and were false; each was **rewritten in
+      place**, not annotated. They are listed in the commit and in `docs/TESTING.md`: the `readPeers`
+      "single point" claim, the sync-server limiter being "exact", `/health` answering 503 while
+      draining, the `grep -P` corruption guard, and one sanitized-filename example being off by a
+      character.
+- [x] `README.md`'s roadmap still told visitors Postgres persistence was "in progress" and that the
+      snapshot write and `/profile` "do not yet" exist. Both shipped in 7.3/7.4. Its features table
+      still described the pre-§10.1 per-user language dropdown.
+- [x] Two findings are **documented and not fixed**, with the argument recorded rather than the
+      symptom hidden: a multi-file snapshot exceeds the nominal 256 KB cap by one truncation marker
+      per starved file (~0.4% at twenty files, and hiding the marker would be worse), and the
+      unmetered `GET /rooms/:roomId` (a 429 there renders as "couldn't reach the sync server").
+- [x] §10.2 chat, §10.3 room passwords and §10.6 room names were **out of the audit's scope** and
+      remain unbuilt. "Complete coverage" in `docs/TESTING.md` never means those.
 
 ## 8. Explicitly out of scope for v2
 
@@ -1009,7 +1123,10 @@ and a global handler would fire Run while someone is typing in the language sele
 - [x] Ctrl/Cmd+Enter runs the code — respecting the same room-wide `"running"` lock that
       disables the Run button, so a shortcut cannot start a second concurrent run
 - [x] Ctrl/Cmd+S saves (downloads) and calls `preventDefault`, so the browser's save dialog
-      never appears
+      never appears **while the editor has focus**. Narrowed from "never appears": Monaco's
+      `preventDefault` only holds for its own keybindings, so with focus on a button the browser
+      dialog still opens. The stdin textarea therefore carries its own element-scoped
+      `onKeyDown` — see the limitation recorded further down this subsection.
 - [x] Both shortcuts are discoverable: show the binding in the Run and Save buttons' `title`
 - [x] Bindings live with the editor instance, not on `window`
 

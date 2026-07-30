@@ -16,7 +16,7 @@ export default function NotFound() {
   return (
     <>
       <SiteNav />
-      <main className="wash relative flex flex-1 items-center justify-center px-4 py-16">
+      <main id="main-content" className="wash relative flex flex-1 items-center justify-center px-4 py-16">
         <ProfilePanel icon={<SearchIcon className="h-5 w-5" />} title="Page not found">
           <p className="text-sm text-fg-muted">
             That address doesn&apos;t match anything here. If you were following a room link,

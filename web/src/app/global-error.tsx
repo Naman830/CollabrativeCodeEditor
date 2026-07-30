@@ -19,7 +19,7 @@ export default function GlobalError({
         <script dangerouslySetInnerHTML={{ __html: THEME_SCRIPT }} />
       </head>
       <body className="flex min-h-full flex-col bg-app text-fg">
-        <main className="flex flex-1 items-center justify-center px-4 py-16">
+        <main id="main-content" className="flex flex-1 items-center justify-center px-4 py-16">
           <div className="flex max-w-sm flex-col items-center gap-4 rounded-2xl border border-edge bg-panel p-8 text-center shadow-xl shadow-[var(--shadow-color)]">
             <span className="grid h-11 w-11 place-items-center rounded-xl border border-edge bg-raised text-danger">
               <svg

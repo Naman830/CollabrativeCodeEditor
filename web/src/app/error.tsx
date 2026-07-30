@@ -18,7 +18,7 @@ export default function RootError({
   return (
     <>
       <SiteNav />
-      <main className="wash relative flex flex-1 items-center justify-center px-4 py-16">
+      <main id="main-content" className="wash relative flex flex-1 items-center justify-center px-4 py-16">
         <ProfilePanel icon={<AlertIcon className="h-5 w-5" />} title="Something went wrong">
           <p className="text-sm text-fg-muted">
             This page failed to load. Nothing you were working on in a room is affected by

@@ -128,7 +128,7 @@ export default function Home() {
     <>
       <SiteNav />
 
-      <main className="wash relative flex-1 px-4 py-12 sm:py-20">
+      <main id="main-content" className="wash relative flex-1 px-4 py-12 sm:py-20">
         <div className="mx-auto grid w-full max-w-5xl items-center gap-12 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)]">
           <div className="flex flex-col gap-6">
             <div className="flex flex-col gap-4">

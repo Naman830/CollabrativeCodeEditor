@@ -646,7 +646,7 @@ Two peers typing at the same position produced `"BABBBAAA"`. That is a perfectly
 The invariant is **convergence plus character counts**, not contiguous substrings — asserting
 `toContain("AAAA")` encodes an ordering guarantee a CRDT never promised.
 
-### 11.6 ` ` in a tool argument becomes a real NUL byte
+### 11.6 `\u0000` in a tool argument becomes a real NUL byte
 
 Tool-call arguments JSON-decode `\uXXXX`, so writing that escape into a source file produces an
 actual NUL and git flags the file as binary. It corrupted two files while this suite was being

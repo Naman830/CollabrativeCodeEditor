@@ -3,6 +3,7 @@
 // The top bar for every screen that is not the room; the room has RoomChrome.
 
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { SignInButton, SignUpButton, UserButton } from "@clerk/nextjs";
 import ThemeToggle from "./ThemeToggle";
 import { ArrowLeftIcon, LogoMark } from "@/components/ui/icons";
@@ -22,6 +23,9 @@ type SiteNavProps = {
 
 export default function SiteNav({ backHref, backLabel }: SiteNavProps) {
   const clerk = useClerkIdentity();
+  // aria-current was absent app-wide, so a screen reader could not tell which nav item is the
+  // page you are already on.
+  const pathname = usePathname();
 
   return (
     <header className="flex items-center gap-2 border-b border-edge bg-panel/60 px-4 py-3 backdrop-blur">
@@ -49,7 +53,11 @@ export default function SiteNav({ backHref, backLabel }: SiteNavProps) {
         {clerk.ready &&
           (clerk.signedIn ? (
             <>
-              <Link href="/profile" className={navLink}>
+              <Link
+                href="/profile"
+                aria-current={pathname === "/profile" ? "page" : undefined}
+                className={navLink}
+              >
                 My rooms
               </Link>
               <UserButton />
