@@ -1,12 +1,12 @@
 {
-  "name": "collab-code-editor-server",
+  "name": "collabcode-server",
   "version": "0.1.0",
   "private": true,
   "description": "Standalone WebSocket server for the collaborative code editor",
-  "main": "index.js",
+  "main": "src/index.js",
   "scripts": {
-    "dev": "node index.js",
-    "start": "node index.js"
+    "dev": "node src/index.js",
+    "start": "node src/index.js"
   },
   "dependencies": {
     "@clerk/backend": "^3.13.2",

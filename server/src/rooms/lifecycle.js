@@ -18,9 +18,9 @@
 // See roomState.js for who a snapshot belongs to; this module only decides when.
 const { docs } = require("y-websocket/bin/utils");
 const crypto = require("crypto");
-const db = require("./db");
-const snapshotQueue = require("./snapshotQueue");
-const { createRoomState, deleteRoomState, buildSnapshot } = require("./roomState");
+const db = require("../storage/db");
+const snapshotQueue = require("../storage/snapshotQueue");
+const { createRoomState, deleteRoomState, buildSnapshot } = require("./state");
 
 // How long an emptied room lingers. Non-zero on purpose: the last person
 // pressing F5 briefly drops the connection count to zero, and instant

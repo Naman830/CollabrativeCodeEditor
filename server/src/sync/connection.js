@@ -2,14 +2,14 @@
 // `setupWSConnection` — sync steps, awareness, per-doc broadcast — is
 // y-websocket's job; this server never interprets messages itself.
 const { setupWSConnection, docs } = require("y-websocket/bin/utils");
-const { roomExists, claimRoom, scheduleEviction, isShuttingDown } = require("./rooms");
-const { verifyClerkToken } = require("./clerkAuth");
+const { roomExists, claimRoom, scheduleEviction, isShuttingDown } = require("../rooms/lifecycle");
+const { verifyClerkToken } = require("../auth/clerk");
 const {
   beginMemberSession,
   endMemberSession,
   forgetConn,
   bindRoomObservers,
-} = require("./roomState");
+} = require("../rooms/state");
 
 // Private-use close code for "this room is gone". The client keys its
 // closed-room screen off this exact number, which is why the connection is

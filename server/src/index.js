@@ -2,7 +2,7 @@ require("dotenv").config();
 
 const http = require("http");
 const { WebSocketServer } = require("ws");
-const { handleYjsConnection, CLOSE_SERVICE_RESTART } = require("./yjsConnection");
+const { handleYjsConnection, CLOSE_SERVICE_RESTART } = require("./sync/connection");
 const {
   reserveRoom,
   roomExists,
@@ -10,10 +10,10 @@ const {
   FLUSH_DEADLINE_MS,
   flushAndDestroyAll,
   isShuttingDown,
-} = require("./rooms");
-const { createRateLimiter, clientKey } = require("./rateLimit");
-const { getRoomLanguage, normalizeLanguage } = require("./roomState");
-const db = require("./db");
+} = require("./rooms/lifecycle");
+const { createRateLimiter, clientKey } = require("./http/rateLimit");
+const { getRoomLanguage, normalizeLanguage } = require("./rooms/state");
+const db = require("./storage/db");
 
 const PORT = process.env.PORT || 8080;
 

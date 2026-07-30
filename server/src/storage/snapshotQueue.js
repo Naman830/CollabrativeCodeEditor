@@ -25,7 +25,7 @@
 // closing thirty rooms at 5pm), not an attacker. Only the queue's own memory
 // bounds discard anything, and they log loudly when they do.
 
-const { createRateLimiter } = require("./rateLimit");
+const { createRateLimiter } = require("../http/rateLimit");
 const db = require("./db");
 
 // Deliberately NOT 10, which is what `POST /rooms` uses and what a first reading
