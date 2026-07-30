@@ -586,8 +586,12 @@ actually sends one.
 
 **The identity dialog opens *before* the room exists.** "Create a new room" opens the dialog,
 and `createRoom()` only runs when it is submitted, so the navigation to `/room/<id>` comes after
-"Create & Enter" — not before. Its inputs carry **no `id` or `name`**; match them on
-`autocomplete="given-name"` / `"family-name"`. And Monaco renders spaces as non-breaking
+"Create & Enter" — not before. **Its inputs now carry an `id`** (added by the accessibility pass so
+the validation hint can be referenced via `aria-describedby`), but the ids are `useId()`-generated
+and therefore unstable — so `autocomplete="given-name"` / `"family-name"` remains the matcher to
+use, and the committed helper additionally scopes to `role="dialog"`. That scoping is not
+decoration: the landing page has its own "Join" button *behind the modal scrim*, so a text match
+picks that one and the scrim then swallows every click until the test times out. And Monaco renders spaces as non-breaking
 spaces, so assertions against editor text must normalise ` ` first.
 
 **Monaco's AMD loader broke Clerk, and this is why `web/src/lib/editor/monacoLoader.ts` exists.**
@@ -1393,6 +1397,44 @@ inside the grace window. Over-warning there is the accepted trade.
 measuring presence in a tab it believes it closed, and every later "am I alone" assertion is
 wrong. Call `accept()`.
 
+## Accessibility: what is load-bearing
+
+The audit took this from "announced but not honoured" to zero axe violations in both themes. The
+parts a future edit could silently undo:
+
+**The room is the screen that needs a landmark most, and had none.** `<main id="main-content">`
+lives in *two* places — `CodeEditor` for the live editor and `RoomGate` for the closed/checking
+screens — because the editor never mounts in the latter. Removing either brings back three axe
+rules at once (`landmark-one-main`, `page-has-heading-one`, and `region` for every control). The
+`sr-only` `<h1>` and the skip link in `layout.tsx` are the other half; every page's `<main>` carries
+that exact id, and the skip link is the first tab stop.
+
+**The file strip is deliberately NOT an ARIA tablist.** It used to declare `role="tablist"` with
+`role="tab"` children and honour almost none of the contract: no `tabpanel` existed anywhere, no
+`aria-controls`, and the tablist owned the per-file kebab and "New file" buttons — which that role
+may not own, and which was the app's only *critical* violation. Do not "restore" the roles. There
+is no panel per tab (one editor swaps its model and must never be keyed or remounted), and a
+compliant tablist cannot contain the kebab. `aria-current` says the same thing honestly. The roving
+tabindex and Arrow/Home/End stay regardless — 2 tab stops per file is 41 at `MAX_FILES`.
+
+**Two live regions, and one subtlety that makes or breaks both.** `ActivityToasts` and the output
+panel announce join/leave and run results. `ActivityToasts` must stay **always mounted** — it used
+to `return null` when empty, and a live region that does not exist until its first message arrives
+is the classic case screen readers do not announce. Note the roles are split across two nodes:
+`role="log"` is not permitted on a `<ul>`, so the wrapper carries it.
+
+**Colour tokens have a foreground partner, and it flips with the theme.** `--accent` and
+`--success` are tuned to be legible as *text on a dark background*, which necessarily makes them
+*bright backgrounds*. Pairing them with white gave **2.54:1** on the dark theme's Run button — the
+worst ratio on the site. Hence `--success-contrast` and a theme-dependent `--accent-contrast`.
+**Never write `text-white` on `bg-accent` or `bg-success`.** When changing any of these, compute the
+ratio against every background the token is actually used on, hover states included — not just
+against white.
+
+**Known gap, deliberately not fixed:** Monaco is a forward keyboard trap (WCAG 2.1.2). Tab inserts a
+tab character; only Shift+Tab or Monaco's undiscoverable `Ctrl+M` escapes. Configuring
+`accessibilitySupport` or surfacing the hint is the fix if this is ever revisited.
+
 ## Rate limiting and payload size
 
 Both endpoints that cost real resources are limited to **10 requests/minute/IP**:
@@ -1840,6 +1882,15 @@ image, so pointing `PISTON_API_URL` at any self-hosted instance needs no code ch
 image is **amd64-only** (single-arch manifest) — ARM free tiers cannot host it.
 
 ## Not built yet
+
+**What the audit deliberately did not cover** (added because "295 tests, all green" otherwise
+reads as "everything was checked"): §10.2 chat, §10.3 room passwords and §10.6 room names are
+unbuilt and were out of scope; the CSP ships **report-only** pending a signed-in browser pass;
+there is **no signed-in e2e tier** (sign-in → snapshot → `/profile` → delete needs Clerk test
+users — the membership *arithmetic* is covered hermetically, the browser journey is not); no real
+screen-reader pass was done; and CI cannot run privileged Piston, real Clerk, or a Neon cold start.
+Full list with reasons: `docs/TESTING.md` §12.
+
 
 **Section 7 is complete: 7.1 (Clerk auth), 7.2 (Postgres), 7.3 (the dead-room snapshot),
 7.4 (`/profile`) and 7.5 (guardrails) are all done** — see "Accounts (Clerk)", "Persistence

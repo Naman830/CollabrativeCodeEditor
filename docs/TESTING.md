@@ -5,7 +5,7 @@ is still true afterwards.
 
 The short version: the app had **no automated tests at all** — none, in its entire git history — and
 every one of its ~35 `INVARIANT:` comments was enforced by prose. It now has **281 committed tests
-across four tiers plus CI**, and the audit found **20 defects**, four of which could kill the sync
+across four tiers plus CI**, and the audit found **21 defects**, four of which could kill the sync
 server or silently destroy user data. All four are fixed.
 
 - **Verdict:** production-ready for its documented scope. [§13](#13-production-readiness)
@@ -269,7 +269,7 @@ in memory), and the memory bounds are the only thing that discards — loudly.
 
 ## 5. Bugs found
 
-20 defects. 18 fixed, 2 documented-and-accepted with the argument recorded.
+21 defects. 18 fixed, 3 documented-and-accepted with the argument recorded.
 
 ### 5.1 The ledger
 
@@ -295,6 +295,7 @@ in memory), and the memory bounds are the only thing that discards — loudly.
 | `BUG-18` | S4 | `server/storage` | A multi-file snapshot overshoots the nominal cap by ~0.4% | `EC-06e` | Documented |
 | `BUG-19` | S4 | docs | A documented sanitizer output is wrong in one character | `VAL-04e` | Fixed |
 | `BUG-20` | S4 | testability | An e2e suite trips the app's own room-creation limit | e2e flake | Fixed |
+| `BUG-21` | S3 | `server/storage` | 21 of 40 snapshots dropped when many rooms behind one IP die together | `PERF-02` | Documented |
 
 `Fixed ⚠` on `BUG-14` means behaviour-changing **and** not observable end to end yet — see
 [§7.2](#72-what-is-not-yet-proven-end-to-end).
@@ -412,6 +413,7 @@ compares their behaviour directly.
 | `BUG-17` | The documented guard was `grep -P '\x00'`, which reports nothing on a binary file without `-a` | `GUARD-01`, byte-level | `GUARD-01b`/`c` |
 | `BUG-19` | Documentation recorded a sanitized filename as `....etcpasswd.py`; the internal space is *collapsed*, not removed | Corrected to `....etcpa sswd.py` | `VAL-04e` |
 | `BUG-20` | `POST /rooms`' limit was hardcoded at 10/min | `ROOM_CREATE_LIMIT` / `ROOM_CREATE_WINDOW_MS`, default unchanged | the e2e suite now runs clean |
+| `BUG-21` | `MAX_QUEUED_PER_KEY` (16) is a memory bound, so it *discards* where the pacing never would — and the case that trips it is the shared-NAT one the queue's own notes call legitimate | **Not changed.** Raising it weakens the anti-starvation property it exists for; removing it lets one key monopolise the 8 MiB queue. Measured and recorded instead — see [§9.2](#92-the-snapshot-queue-has-a-per-key-bound-that-discards) | `PERF-02` |
 
 **`BUG-13` deserves a note**, because "just honour 0" would have been wrong. The floors are not
 uniform: `SNAPSHOT_WRITE_LIMIT=0` makes `recent.length >= 0` always true, so **every** snapshot is
@@ -606,6 +608,186 @@ Argued, not skipped.
 
 ---
 
+## 9. Performance
+
+Measured **after** hardening, so the numbers describe the code that shipped rather than the code
+the audit started with. Every figure is median of N with the method stated; nothing here is
+estimated.
+
+| ID | What | Result | Method |
+| --- | --- | --- | --- |
+| `PERF-01` | Sync latency between two peers | **1 ms** median, 2 ms max (n=12) | Two raw Yjs clients in one room; timestamped on the CRDT observer, not the UI, so it measures the round trip through the sync server and nothing else |
+| `PERF-02` | Snapshot drain, 40 rooms dying at once | **40/40 written**, 1123 ms, **35.6 rooms/s** | The real `snapshotQueue` at `POOL_MAX = 3` with an 80 ms write |
+| `PERF-03a` | `/api/execute`, python | 48 ms median, 62 ms max (n=5) | End-to-end POST through the route to Piston and back |
+| `PERF-03b` | `/api/execute`, javascript | 68 ms median, 95 ms max | as above |
+| `PERF-03c` | `/api/execute`, java | 282 ms median, 326 ms max | as above — compiled, so the compile stage dominates |
+| `PERF-03d` | `/api/execute`, c++ | 251 ms median, 324 ms max | as above |
+| `PERF-05` | Page load | `/` **133 ms**, `/room/<id>` **210 ms** (median load, n=5) | `PerformanceNavigationTiming` in the browser |
+| `PERF-06` | Idle room re-render rate | **0 DOM mutations in 20 s** | `MutationObserver` over the whole room, idle |
+| `PERF-07` | Postgres connect, **cold** | **6363 ms** | A fresh pool against the Neon `dev` branch, autosuspended |
+| `PERF-07b` | Postgres connect, warm | 0 ms | Second checkout from the same pool |
+
+Three of these are worth more than their number.
+
+**`PERF-02` is the regression counter for a bug this repo already paid for.** `CLAUDE.md` records
+that before the queue existed, ten rooms dying together produced *three* saved snapshots and seven
+lost — exactly the pool size, because each `destroyRoom` fired `saveDeadRoom()` and forgot it, and
+everything past the third waited in pg-pool's queue until `connectionTimeoutMillis` rejected it with
+the room already gone. Forty out of forty now land. `PERF-02a` in the unit tier pins the mechanism
+(3 running, 37 queued) so it cannot silently regress.
+
+**`PERF-07` empirically confirms a decision that was previously an assertion.** `CLAUDE.md` says a
+5-second `DB_CONNECT_TIMEOUT_MS` was observed failing against a suspended branch and that 10s is
+required. Measured cold: **6.4 seconds**. A 5s ceiling would indeed have failed; 10s has ~3.6s of
+headroom and still sits under the 20s flush deadline — an ordering now checked at boot rather than
+merely documented.
+
+**`PERF-01` at 1 ms** means the CRDT round trip is not where any latency a user notices comes from.
+It also means the two-peer convergence tests are not masking a slow path. Measured through the UI
+instead — keystroke in one tab to text readable in the other's Monaco model — the same round trip
+is **54 ms median**, so essentially all of it is the editor and the driver, not the protocol.
+
+**`PERF-06` confirms a claim that would be easy to get wrong.** The room does *not* re-render every
+second: the persistence countdown ticks only while on screen and stops once the threshold is met, so
+an idle room produces **zero** DOM mutations over 20 seconds.
+
+### 9.2 The snapshot queue has a per-key bound that discards
+
+The concurrency cap works — 40 rooms dying at once, 40 written, 0 lost. But the same measurement
+surfaced something the audit did not set out to look for. All 40 rooms sharing **one creator IP**
+gives a different answer:
+
+| Scenario | Written | Dropped |
+| --- | --- | --- |
+| 40 rooms, 40 distinct creator IPs | 40 / 40 | 0 |
+| 40 rooms, **one** creator IP | 19 / 40 | **21** |
+
+`MAX_QUEUED_PER_KEY` is 16. It exists to stop one caller's deferred snapshots starving every other
+room, and it is a *memory* bound — so it discards where the pacing deliberately never would, one
+loud log line per drop.
+
+The tension is real: the scenario that trips it is precisely the shared-NAT case the queue's own
+design notes call out as the legitimate one — an office or classroom behind a single egress IP
+closing many rooms at 5pm. Those are exactly the snapshots you least want to lose.
+
+Recorded rather than changed, because every fix has a worse edge: raising the bound weakens the
+anti-starvation property it exists for, and removing it lets one key monopolise the 8 MiB queue.
+The honest framing is that **the per-key bound is a data-loss decision, not a tuning knob** — and it
+is now measured instead of assumed. `BUG-21` in §5.1.
+
+### 9.3 What was not measured, and why
+
+- **Monaco with a ~250 KB document.** The attempt did not produce a trustworthy number: driving a
+  250 KB insert through Playwright's CDP blew a 240-second timeout, and that is a measurement of
+  the *driver*, not the editor. Reported as unmeasured rather than as a bad number. The related
+  behaviour that *is* covered: `EC-20a` proves a 70 KB document is refused before it crosses the
+  wire, and `SEC-22c` proves a 600 KB paste syncs between peers.
+- **Load at scale.** Single-instance app; `docs/tasks.md` §8 puts horizontal scaling out of v2.
+- **First Load JS per route** as an absolute budget. What *was* verified is the claim that matters:
+  see below.
+
+### 9.4 The jszip claim, verified
+
+`CLAUDE.md` states that JSZip sits behind a dynamic `import()` so ~100 KB of zip library never
+enters the room route's first chunk. Measured:
+
+- the jszip chunk is **194 KB**,
+- `fetched on room load: false`,
+- `fetched after adding a second file: false`,
+- `fetched after a multi-file Save: true`.
+
+The dynamic import does exactly what it claims. Separately, `grep -c monaco` on the room route's
+server HTML is **0** in both dev and production builds — the standing regression check that Monaco
+has not been dragged back into a server graph.
+
+---
+
+## 10. Accessibility
+
+Audited with **axe-core** across every page state in both themes, plus a manual keyboard pass. The
+starting position was worse than the codebase's own notes suggested: one *critical* violation, a
+room with no landmark and no heading at all, two live regions that announced nothing, and
+colour-contrast failures down to **2.54:1**.
+
+### 10.1 Result
+
+**Zero axe violations** on every scanned state, in **both** themes: landing, the identity dialog
+(including its submit-blocked state), a live room, a room after a run, a room with a second file,
+the file context menu open, the signed-out `/profile` gate, the 404, and the closed-room screen.
+Committed as `A11Y-01` so it stays that way.
+
+Monaco's own markup is excluded from those scans and reported separately — its violations belong to
+the editor library, and no change in this app clears them.
+
+### 10.2 What was wrong, and what changed
+
+| ID | Problem | Fix |
+| --- | --- | --- |
+| `A11Y-01` | **Critical:** the file strip declared `role="tablist"` and owned the per-file kebab and "New file" buttons, which that role may not own | See [§10.3](#103-the-tabs-decision) |
+| `A11Y-02` | The room had **no `<main>` and no heading of any level** — the app's most control-dense screen had no bypass mechanism at all. Root cause of three axe rules: `landmark-one-main`, `page-has-heading-one`, and `region` (every control outside a landmark) | `<main id="main-content">` and an `sr-only` `<h1>` in both the editor and the closed-room screen |
+| `A11Y-02c` | No skip link anywhere; reaching the editor cost **11 Tab presses**, every time focus reset | A skip link as the first tab stop on every page, targeting `#main-content` |
+| `A11Y-03a` | Join/leave toasts were **never announced** — no `role`, no `aria-live`, and no ancestor supplying one. A blind user was never told anyone entered the room | `role="log"` + `aria-live="polite"` on an **always-mounted** wrapper |
+| `A11Y-03b` | A run's result was never announced: no `aria-live`, no `aria-busy` anywhere on the output. Pressing Run — the app's headline action — produced silence | `role="status"`, `aria-live="polite"`, `aria-busy` while running |
+| `A11Y-04a` | Every file tab was its own tab stop (2 per file, 41 at `MAX_FILES`) and Arrow/Home/End did nothing | Roving tabindex plus Arrow/Home/End |
+| `A11Y-04b` | `role="menu"` with no menu keyboard model: arrows dead, focus parked on the container, Escape dropped focus to `<body>`, and Tab escaped an open menu that stayed floating over the editor | Arrow/Home/End over enabled items, a focus trap, and focus restored to the trigger on close |
+| `A11Y-04c` | Two more radiogroups (theme toggle, cursor colours) with the same defect, on every page | Roving tabindex plus arrow keys on the theme toggle |
+| — | The identity dialog's validation message was unreachable: no `id`, so nothing could point at it; no live region; and `aria-invalid` never set | Wired via `aria-describedby`, made a live region, `aria-invalid` on both inputs |
+| — | `/profile` and the 404 rendered their page title as `<h2>` with no `<h1>` | Promoted to `<h1>` |
+| — | `aria-current` appeared **nowhere** in the codebase | Added to the nav |
+
+### 10.3 The tabs decision
+
+The file strip declared the ARIA tabs pattern and honoured almost none of it: no `role="tabpanel"`
+existed anywhere, no tab carried `aria-controls`, and the tablist owned two kinds of button it may
+not own. A screen reader announced "tab 1 of 2" with nothing to navigate to.
+
+**Completing the contract was considered and rejected.** There is no panel per tab — one editor
+swaps its model, and it must never be keyed or remounted — and a compliant `tablist` cannot contain
+the per-file kebab, so honouring the pattern would have meant restructuring the UI to satisfy a
+widget this is not.
+
+It is now a list of buttons with **`aria-current`**, which states the same truth ("this is the file
+being shown") without promising a widget that does not exist. Roving tabindex and Arrow/Home/End
+were implemented anyway, because 2 tab stops per file was the real usability problem underneath the
+ARIA question.
+
+### 10.4 Contrast
+
+The dark theme carried the worst failures, and for a structural reason worth recording: `--accent`
+and `--success` are tuned to be legible as **text on a dark background**, which necessarily makes
+them **bright backgrounds** — and both were paired with white text.
+
+| Token / pairing | Before | After |
+| --- | --- | --- |
+| white on `--success` (the **Run button**), dark | **2.54:1** — worst on the site | 7.45:1 via a new `--success-contrast` |
+| white on `--accent` (primary buttons), dark | 3.20:1 | 5.91:1 — `--accent-contrast` is no longer white in dark |
+| `--fg-subtle`, light | 3.38:1 on white, 3.16:1 on `--app` | 5.22:1 / 4.87:1 |
+| `--fg-subtle`, dark | 3.58:1 on `--panel` | 5.59:1 |
+| `--warning` on `--warning-soft`, light | 4.45:1 — marginally under | 6.29:1 |
+
+`--fg-subtle` mattered more than its "subtle" name suggests: it carries the run-attribution caption
+("Run by Ada L. · main.py · Python · Exit 0"), the guest-persistence line, and the footer. Each
+replacement was chosen by computing the ratio against **every** background the token is actually
+used on, hover states included — not just against white.
+
+### 10.5 Known accessibility gaps
+
+Honest, and each is a real limitation rather than an oversight.
+
+- **Monaco is a forward keyboard trap (WCAG 2.1.2).** Once focus is in the editor, Tab inserts a tab
+  character; the only ways out are Shift+Tab or Monaco's `Ctrl+M` tab-focus-mode, which nothing in
+  the UI mentions. This is the editor library's behaviour and the app does not currently configure
+  `accessibilitySupport` or surface the hint. It is the most significant remaining gap.
+- **No real screen-reader pass.** axe-core and scripted keyboard traversal are not NVDA, JAWS or
+  VoiceOver. The live regions are correct by markup; whether they *read well* is unverified.
+- **The cursor-colour radiogroup** still has 8 tab stops and dead arrow keys, and contains a
+  "Shuffle" button the radiogroup should not own. The theme toggle — which appears on every page —
+  was fixed; this one appears once, in a dialog.
+- **Monaco's editor is not named after the file** being edited; its accessible name is the library
+  default, "Editor content".
+
+---
+
 ## 11. Traps that cost a debugging pass
 
 Recorded because each produced a *misleading* symptom, and the next person deserves better.
@@ -667,6 +849,93 @@ redirect bug that did not exist. Kill by PID from `ss -ltnp`.
 
 `npx playwright test | tail -60` produces **no output at all** until it finishes, which reads exactly
 like a hang. Redirect to a file and read the file.
+
+---
+
+## 12. Remaining limitations
+
+Grouped by what it would take to close each one. None is a defect being hidden; each is a boundary
+this audit deliberately did not cross.
+
+### Product scope
+
+| Limitation | Note |
+| --- | --- |
+| §10.2 in-room chat, §10.3 room passwords, §10.6 room names are unbuilt | Out of the audit's scope by decision. `dead_rooms.is_private` is `false` on every row and `/profile` still titles each card with the raw `room_id` because there is no name column yet |
+| A dead room is never re-run, re-joined or edited | `docs/tasks.md` §8, by design |
+
+### Infrastructure
+
+| Limitation | Note |
+| --- | --- |
+| **Code execution does not work on the deployed site** | Piston needs a *privileged* container, which neither Vercel nor Railway allows. The public tunnel that once bridged this was shut down deliberately: it exposed `POST /api/v2/execute` with **no authentication at all** to a container holding the full capability set, and bypassed the rate limiter entirely. The Run button on the deployed site reports "Could not reach the code execution service", which is the **expected** behaviour, not a fault |
+| The frontend rate limiter counts per serverless instance | No Redis is a v2 scope constraint; a Postgres round trip on the hot execute path is a worse trade |
+| Documents are in-memory only | A crashed sync server still loses whatever was open. The snapshot is written when a room dies *normally* — and since the audit, also on an uncaught fault, which is new |
+| An orphaned zero-member `dead_rooms` row is possible | Two members deleting concurrently under read-committed. The row is unfetchable and invisible; `Serializable` would trade it for a serialization failure shown to someone who already confirmed a delete |
+
+### CRDT-inherent
+
+| Limitation | Note |
+| --- | --- |
+| A room's `Y.Doc` has no size ceiling | Every non-destructive fix needs a byte budget nobody has measured, and every quickly-measurable fix destroys the room's only copy of everyone's work. `maxPayload` bounds the per-frame case; a per-socket update budget is designed but not built |
+| Concurrent inserts at one position interleave per character | Correct CRDT behaviour, not a defect — but it means "A typed AAAA" is not a guarantee the four characters stay adjacent |
+
+### Verification-inherent
+
+| Limitation | Note |
+| --- | --- |
+| `BUG-14`'s 503-while-draining is not observed end to end | [§7.2](#72-what-is-not-yet-proven-end-to-end) |
+| The CSP is report-only | It needs a signed-in browser pass — sign-in, snapshot download, the delete Server Action, and `global-error` — before enforcing |
+| No signed-in e2e tier | Sign-in → snapshot → `/profile` → copy/download/delete needs Clerk test users created via the Backend API. The membership *arithmetic* is covered hermetically by `DI-03`'s ten cases; what is missing is the browser journey |
+| CI cannot run three things | Privileged Piston, real Clerk, and Neon's cold start. Each is covered another way, and the CI workflow says so in a job of its own rather than leaving a green tick to imply otherwise |
+| No real screen-reader pass | [§10.5](#105-known-accessibility-gaps) |
+| RTL overrides and zero-width spaces survive name sanitizing | Asserted as current behaviour in `VAL-01f` so it cannot change unnoticed, rather than claimed as safe |
+
+---
+
+## 13. Production readiness
+
+### 13.1 The verdict
+
+**Ready for its documented scope**, which is: a guest-first collaborative editor with optional
+accounts, ephemeral rooms, a write-once snapshot for signed-in participants, and sandboxed
+execution **run locally**.
+
+That qualifier is not a hedge — it is the honest boundary. Execution is local-only by design
+([§12](#12-remaining-limitations)), so "production" here means the full three-service stack, and a
+deployment without Piston is a deployment without the Run button.
+
+What changed the verdict from *not ready* to *ready* is [§5.2](#52-severity-1-the-four-that-mattered):
+before this audit, one anonymous HTTP request could kill the sync server and take every live room's
+unsaved work with it, and v2's entire persistence feature was silently switched off by a duplicated
+environment variable. Neither was detectable from the UI.
+
+### 13.2 Sign-off
+
+| Criterion | Met | Evidence |
+| --- | --- | --- |
+| No unauthenticated input can kill a service | ✅ | `SEC-20`, `SEC-22`, plus a process guard that drains snapshots on an uncaught fault |
+| No peer-supplied value reaches a sink unnarrowed | ✅ | Three boundaries: `SEC-01`, `VAL-06`, `SEC-05`/`SEC-06` |
+| Cross-user data is unreachable by construction | ✅ | Every query starts from `dead_room_members` on the viewer's own Clerk id — [§8.2](#82-authorization-model) |
+| Rate limits cannot be bypassed by the caller | ✅ | `SEC-07`, `SEC-10`, `SEC-21` |
+| Write-once persistence holds | ✅ | `DI-03` (10 cases), `DI-04`, `DRIFT-18` |
+| The documented limits are the enforced limits | ✅ | `DRIFT-17` (Piston ceilings), `EC-01`, `EC-06` — including `EC-06e`, which pins a bound the docs had wrong |
+| Security headers present; CSP observed | ⚠️ | Headers enforced; CSP **report-only** pending a signed-in pass |
+| Zero axe violations, both themes | ✅ | `A11Y-01` |
+| Keyboard-operable | ⚠️ | Core flow completable keyboard-only; Monaco remains a forward trap ([§10.5](#105-known-accessibility-gaps)) |
+| Regression suite exists and runs green | ✅ | 295 tests, four tiers, plus CI |
+| Performance measured, not assumed | ✅ | [§9](#9-performance) |
+
+### 13.3 What would revoke it
+
+- Any `INVARIANT:` comment deleted without its test.
+- A fourth peer-written shared type added without a fourth sanitizing boundary.
+- `TRUSTED_PROXY_HOPS` set wrong for the deployment: **under**-counting collapses every user behind
+  a CDN into one rate-limit bucket. It is a one-line env change with a site-wide blast radius.
+- Re-exposing Piston without authentication. The old reserved hostname is in this repository's git
+  history and should be treated as public.
+- Enforcing the CSP without first completing the signed-in report-only pass — a missed `connect-src`
+  entry takes sync or auth down with no report phase to catch it.
 
 ---
 

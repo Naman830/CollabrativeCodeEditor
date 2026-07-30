@@ -921,6 +921,56 @@ Each line names what an operator or user notices.
 - [x] §10.2 chat, §10.3 room passwords and §10.6 room names were **out of the audit's scope** and
       remain unbuilt. "Complete coverage" in `docs/TESTING.md` never means those.
 
+#### 7.10.6 Accessibility and measurement
+
+- [x] **Zero axe-core violations** on every page state in **both** themes — landing, the identity
+      dialog including its blocked state, a live room, a room after a run, a room with a second
+      file, the file menu open, the signed-out `/profile` gate, the 404 and the closed-room screen.
+      Committed as `A11Y-01` so it stays true. Monaco's own markup is excluded and reported
+      separately: those violations belong to the editor library.
+- [x] Fixed the one **critical** violation: the file strip declared `role="tablist"` and owned the
+      per-file kebab and "New file" buttons, which that role may not own. It is now a list of
+      buttons with `aria-current` — completing the ARIA tabs contract was rejected because there is
+      no panel per tab (one editor swaps its model and must never be remounted) and a compliant
+      tablist cannot contain the kebab.
+- [x] The room had **no `<main>` and no heading at all** — no bypass mechanism on the most
+      control-dense screen in the app, and the root cause of three separate axe rules. Added a
+      landmark and an `sr-only` `<h1>` to both the editor and the closed-room screen, plus a skip
+      link as the first tab stop on every page (reaching the editor previously cost 11 Tabs).
+- [x] Two silent live regions fixed: join/leave toasts were **never announced** (no role, no
+      `aria-live`, and the container did not exist until its first message — the classic case
+      screen readers miss), and a run's result was never announced either. Both are live regions
+      now, with `aria-busy` while a run is in flight.
+- [x] Roving tabindex and Arrow/Home/End on the file strip (was 2 tab stops per file, 41 at
+      `MAX_FILES`) and on the theme toggle. The file menu gained a real keyboard model: arrows over
+      enabled items, a focus trap, and focus restored to its trigger on Escape — it previously
+      dropped focus to `<body>` and let Tab escape while staying open over the editor.
+- [x] Contrast: the **worst ratio on the site was 2.54:1**, white on the dark theme's Run button.
+      `--accent` and `--success` are tuned to be legible as *text* on a dark background, which makes
+      them bright *backgrounds*; they were paired with white. New `--success-contrast`, a
+      theme-dependent `--accent-contrast`, and darker/lighter `--fg-subtle` per theme. Each value
+      was chosen by computing the ratio against every background the token is actually used on.
+- [x] Performance measured **after** hardening, so the numbers describe shipped code: sync latency
+      **1 ms** median between two peers; `/api/execute` 48 ms python, 282 ms java; **40 of 40**
+      snapshots written when 40 rooms die together (the documented pre-queue behaviour was 3 of 10);
+      Postgres cold connect **6.4 s**, which empirically confirms why `DB_CONNECT_TIMEOUT_MS` is 10s
+      and that the previously-tried 5s would indeed fail.
+- [x] Verified the jszip dynamic import actually defers: the 194 KB chunk is fetched **only** on a
+      multi-file Save — not on room load, not on adding a file.
+- [x] Responsiveness across 11 widths x 3 pages: zero horizontal overflow, zero overlapping
+      controls, Monaco always non-zero, and the stack switch at exactly 767px with the orientation
+      control correctly absent below it.
+- [x] Measuring the snapshot queue surfaced a bound nobody was looking for: 40 rooms dying together
+      write 40 of 40 from **distinct** creator IPs, but only **19 of 40** when they share one —
+      `MAX_QUEUED_PER_KEY` is 16, and being a *memory* bound it discards where the pacing
+      deliberately never would. The case that trips it is precisely the shared-NAT one the queue's
+      own design notes call legitimate (an office closing many rooms at 5pm). Recorded as `BUG-21`
+      and **not changed**: raising it weakens the anti-starvation property it exists for, removing
+      it lets one key monopolise the 8 MiB queue. It is now measured rather than assumed.
+- [x] Recorded honestly as **not** fixed: Monaco is a forward keyboard trap (WCAG 2.1.2 — Tab
+      inserts a tab character, and only the undiscoverable Ctrl+M escapes), no real screen-reader
+      pass was done, and the cursor-colour radiogroup keeps its 8 tab stops.
+
 ## 8. Explicitly out of scope for v2
 
 - Redis or any cache/session store beyond Postgres
