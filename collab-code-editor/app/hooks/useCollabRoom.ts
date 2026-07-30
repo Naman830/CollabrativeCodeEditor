@@ -144,6 +144,9 @@ export function useCollabRoom({
           status: "error",
           runId: current.runId,
           language: current.language,
+          // Carried through, not dropped: the input is what explains the
+          // output, and this record replaces the running one wholesale.
+          stdin: current.stdin,
           startedBy: current.startedBy,
           startedAt: current.startedAt,
           finishedAt: Date.now(),

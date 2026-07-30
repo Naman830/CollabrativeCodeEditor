@@ -43,12 +43,25 @@ export type RunAttribution = { name: string; color: string };
 
 // Lives in a Y.Map under one key, replaced whole, so every peer sees the same
 // run. `runId` lets a run that lost a race recognise its own result as stale.
+//
+// `stdin` (tasks.md §10.4) rides here rather than in local component state for
+// the same reason `language` does: the run is broadcast to the whole room, so a
+// peer watching the output has to be able to see what was fed in or the output
+// is unexplainable. It is part of the *run*, not part of the editor — the box
+// people type into stays local, and this is only the value a run actually used.
+//
+// Required rather than optional, unlike `notice`: a missing `notice` is the
+// common case, while a missing `stdin` is only possible across a mixed-bundle
+// window. Making it required is what forces the compiler to enumerate every
+// site that writes a record (four in `useCodeRunner`, one watchdog in
+// `useCollabRoom`); the output panel still guards on it before rendering.
 export type ExecutionState =
   | { status: "idle" }
   | {
       status: "running";
       runId: string;
       language: string;
+      stdin: string;
       startedBy: RunAttribution;
       startedAt: number;
     }
@@ -56,6 +69,7 @@ export type ExecutionState =
       status: "success";
       runId: string;
       language: string;
+      stdin: string;
       startedBy: RunAttribution;
       startedAt: number;
       finishedAt: number;
@@ -65,6 +79,7 @@ export type ExecutionState =
       status: "error";
       runId: string;
       language: string;
+      stdin: string;
       startedBy: RunAttribution;
       startedAt: number;
       finishedAt: number;

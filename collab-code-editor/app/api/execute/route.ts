@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { fileExtFor } from "../../lib/languages";
-import { MAX_CODE_BYTES, TOO_LARGE_MESSAGE, codeByteLength } from "../../lib/execution";
+import { MAX_CODE_BYTES, TOO_LARGE_MESSAGE, payloadTooLarge } from "../../lib/execution";
 import { clientKey, createRateLimiter } from "../../lib/rateLimit";
 
 const PISTON_EXECUTE_URL = `${process.env.PISTON_API_URL ?? "http://localhost:2000"}/api/v2/execute`;
@@ -32,8 +32,13 @@ const PISTON_TIMEOUT_MS = 18_000;
 // serialises runs within a room; this covers callers who skip the UI.
 const runLimiter = createRateLimiter({ limit: 10, windowMs: 60_000 });
 
-// Ceiling for the cheap Content-Length check: the code plus room for JSON
-// escaping, which can roughly double it.
+// Ceiling for the cheap Content-Length check: the decoded payload plus room for
+// JSON escaping, which can roughly double it.
+//
+// §10.4 added `stdin` to this body and this number did **not** have to move,
+// because code and stdin share one `MAX_CODE_BYTES` budget (`payloadTooLarge`).
+// A separate per-field cap would have doubled the worst case and forced this up
+// with it — which is the main reason the combined reading was chosen.
 const REQUEST_BYTE_CEILING = MAX_CODE_BYTES * 2 + 4 * 1024;
 
 // Pinned against Piston's /runtimes output — update after a Piston image
@@ -136,7 +141,11 @@ export async function POST(request: Request) {
     );
   }
 
-  const { language, code } = (body ?? {}) as { language?: unknown; code?: unknown };
+  const { language, code, stdin } = (body ?? {}) as {
+    language?: unknown;
+    code?: unknown;
+    stdin?: unknown;
+  };
 
   if (typeof language !== "string" || typeof code !== "string") {
     return NextResponse.json(
@@ -145,10 +154,22 @@ export async function POST(request: Request) {
     );
   }
 
-  // The authoritative size check: measured on the decoded program, so framing
-  // and escaping can't change the answer.
-  if (codeByteLength(code) > MAX_CODE_BYTES) {
-    return NextResponse.json({ success: false, error: TOO_LARGE_MESSAGE }, { status: 413 });
+  // Optional, because a client that never opens the input box sends nothing —
+  // but a present-and-wrong value is a bad request, not something to coerce.
+  if (stdin !== undefined && typeof stdin !== "string") {
+    return NextResponse.json(
+      { success: false, error: "'stdin' must be a string when present." },
+      { status: 400 }
+    );
+  }
+  const stdinText = stdin ?? "";
+
+  // The authoritative size check: measured on the decoded program *and* its
+  // input, so framing and escaping can't change the answer. One combined
+  // budget — see `payloadTooLarge` in `app/lib/execution.ts`.
+  const oversize = payloadTooLarge(code, stdinText);
+  if (oversize) {
+    return NextResponse.json({ success: false, error: oversize }, { status: 413 });
   }
 
   const mapping = LANGUAGE_MAP[language];
@@ -171,6 +192,9 @@ export async function POST(request: Request) {
           language: mapping.language,
           version: mapping.version,
           files: [{ name: `main.${fileExtFor(language)}`, content: code }],
+          // Piston feeds this to the process's stdin. Without it every program
+          // that reads input died on EOF or hung to the run timeout (§10.4).
+          stdin: stdinText,
           run_timeout: RUN_TIMEOUT_MS,
           run_cpu_time: RUN_CPU_TIME_MS,
           compile_timeout: COMPILE_TIMEOUT_MS,

@@ -199,6 +199,54 @@ export async function getDeadRoomForUser(
   };
 }
 
+/**
+ * Remove one snapshot from this user's profile (tasks.md §10.7).
+ *
+ * Returns false when there was nothing to delete — which covers "no such
+ * snapshot" and "not yours" with one answer, exactly as
+ * {@link getDeadRoomForUser} does, so the action cannot be used to probe which
+ * ids exist.
+ *
+ * **What gets deleted is the membership row, not the snapshot.** §6.1 puts one
+ * room on several profiles and gives it no owner, so deleting the `dead_rooms`
+ * row directly would erase another member's copy. The snapshot itself is
+ * garbage only once its last member is gone, and is dropped in that case in the
+ * same transaction. The write starts from the same composite primary key the
+ * read path uses, so a snapshot the viewer holds no membership row for is
+ * *undeletable*, not merely hidden — the HARD RULE at the top of this file
+ * applies to the write as much as to the reads.
+ *
+ * Known and accepted: under Postgres' default read-committed isolation, two
+ * members deleting concurrently each still see the other's uncommitted row, so
+ * neither takes the "last member" branch and a zero-member `dead_rooms` row is
+ * orphaned. It is unfetchable (every read starts from `dead_room_members`) and
+ * invisible. `Serializable` would trade that for a serialization failure shown
+ * to a user, which is worse for a delete they already confirmed.
+ */
+export async function deleteDeadRoomForUser(
+  userId: string,
+  deadRoomId: string
+): Promise<boolean> {
+  if (!DEAD_ROOM_ID.test(deadRoomId)) return false;
+
+  // The interactive form, because the "was that the last member?" count has to
+  // see the delete above it and be seen by the delete below it.
+  return prisma.$transaction(async (tx) => {
+    // `deleteMany`, not `delete`: a row that isn't there is an ordinary "no",
+    // not an exception to catch and translate.
+    const removed = await tx.deadRoomMember.deleteMany({
+      where: { userId, deadRoomId },
+    });
+    if (removed.count === 0) return false;
+
+    const remaining = await tx.deadRoomMember.count({ where: { deadRoomId } });
+    if (remaining === 0) {
+      await tx.deadRoom.delete({ where: { id: deadRoomId } });
+    }
+    return true;
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Presentation helpers.
 //

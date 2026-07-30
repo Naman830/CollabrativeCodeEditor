@@ -17,6 +17,7 @@ import { useCopyToClipboard } from "../hooks/useCopyToClipboard";
 import type { SyncStatus } from "../hooks/useCollabRoom";
 import type { Peer } from "../lib/awareness";
 import { downloadFileName } from "../lib/languages";
+import { shortcutLabel } from "../lib/platform";
 import { cn, focusRing, runButton } from "../lib/ui";
 import { CheckIcon, CopyIcon, DownloadIcon, LogoMark, PlayIcon } from "./icons";
 
@@ -89,6 +90,12 @@ export default function RoomChrome({
   canSave,
   onSave,
 }: RoomChromeProps) {
+  // §10.5's "show the binding in the Run and Save buttons' title". Read at
+  // render, which is safe here: this tree only ever reaches the browser (see
+  // `lib/platform.ts`).
+  const runShortcut = shortcutLabel("Enter");
+  const saveShortcut = shortcutLabel("S");
+
   return (
     // Wraps to two rows below `sm` rather than hiding controls behind a
     // breakpoint. An earlier draft hid the language select and the theme toggle
@@ -126,7 +133,7 @@ export default function RoomChrome({
           // No room-wide lock here — Save touches no shared state, so an empty
           // editor is the only thing worth guarding against.
           disabled={!canSave}
-          title={`Download ${downloadFileName(language)}`}
+          title={`Download ${downloadFileName(language)} (${saveShortcut})`}
           aria-label={`Save as ${downloadFileName(language)}`}
           className={cn(
             "inline-flex items-center gap-2 rounded-lg border border-edge bg-raised px-2.5 py-1.5",
@@ -143,6 +150,11 @@ export default function RoomChrome({
           type="button"
           onClick={onRun}
           disabled={isRunning}
+          title={
+            isRunning
+              ? "Someone in this room is already running the code"
+              : `Run the code (${runShortcut})`
+          }
           className={cn(runButton, "px-3 text-xs sm:px-4")}
         >
           {isRunning ? (

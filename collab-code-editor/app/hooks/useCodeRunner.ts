@@ -9,7 +9,7 @@
 
 import { useCallback, useRef } from "react";
 import type * as Y from "yjs";
-import { MAX_CODE_BYTES, TOO_LARGE_MESSAGE, codeByteLength } from "../lib/execution";
+import { payloadTooLarge } from "../lib/execution";
 import {
   EXECUTION_KEY,
   EXECUTION_MAP_NAME,
@@ -25,10 +25,12 @@ type UseCodeRunnerOptions = {
   docRef: React.RefObject<Y.Doc | null>;
   code: string;
   language: string;
+  /** The local draft from the output panel's input box; "" when unused. */
+  stdin: string;
   user: CollabUser | null;
 };
 
-export function useCodeRunner({ docRef, code, language, user }: UseCodeRunnerOptions) {
+export function useCodeRunner({ docRef, code, language, stdin, user }: UseCodeRunnerOptions) {
   const runCounterRef = useRef(0);
 
   return useCallback(async () => {
@@ -48,15 +50,18 @@ export function useCodeRunner({ docRef, code, language, user }: UseCodeRunnerOpt
     // The route enforces this too (it is reachable without the UI); checking
     // here just avoids sending a payload that will be refused. The failure goes
     // into the shared map because the oversized document is shared as well.
-    if (codeByteLength(code) > MAX_CODE_BYTES) {
+    // One combined budget for code and stdin — see `payloadTooLarge`.
+    const oversize = payloadTooLarge(code, stdin);
+    if (oversize) {
       executionMap.set(EXECUTION_KEY, {
         status: "error",
         runId,
         language,
+        stdin,
         startedBy,
         startedAt,
         finishedAt: Date.now(),
-        error: TOO_LARGE_MESSAGE,
+        error: oversize,
       });
       return;
     }
@@ -65,6 +70,7 @@ export function useCodeRunner({ docRef, code, language, user }: UseCodeRunnerOpt
       status: "running",
       runId,
       language,
+      stdin,
       startedBy,
       startedAt,
     });
@@ -82,7 +88,7 @@ export function useCodeRunner({ docRef, code, language, user }: UseCodeRunnerOpt
       const res = await fetch("/api/execute", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ language, code }),
+        body: JSON.stringify({ language, code, stdin }),
       });
 
       const data: ExecuteSuccess | ExecuteFailure = await res.json();
@@ -94,6 +100,7 @@ export function useCodeRunner({ docRef, code, language, user }: UseCodeRunnerOpt
           status: "error",
           runId,
           language,
+          stdin,
           startedBy,
           startedAt,
           finishedAt,
@@ -106,6 +113,7 @@ export function useCodeRunner({ docRef, code, language, user }: UseCodeRunnerOpt
         status: "success",
         runId,
         language,
+        stdin,
         startedBy,
         startedAt,
         finishedAt,
@@ -117,11 +125,12 @@ export function useCodeRunner({ docRef, code, language, user }: UseCodeRunnerOpt
         status: "error",
         runId,
         language,
+        stdin,
         startedBy,
         startedAt,
         finishedAt: Date.now(),
         error: "Could not reach the execution service. Please try again.",
       });
     }
-  }, [code, docRef, language, user]);
+  }, [code, docRef, language, stdin, user]);
 }

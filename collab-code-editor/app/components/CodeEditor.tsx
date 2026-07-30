@@ -12,7 +12,7 @@
 // editing preference, and `code` is only a mirror of Monaco's model for the size
 // pre-check and Save. Neither belongs on the shared doc.
 
-import { useCallback, useState, useSyncExternalStore } from "react";
+import { useCallback, useState, useSyncExternalStore, type KeyboardEvent } from "react";
 import type { OnChange, OnMount } from "@monaco-editor/react";
 import { Group, Panel } from "react-resizable-panels";
 import ActivityToasts from "./ActivityToasts";
@@ -26,11 +26,12 @@ import { IconButton, PANEL_STRIP_HEIGHT } from "./PanelStrip";
 import { TerminalIcon } from "./icons";
 import { useCodeRunner } from "../hooks/useCodeRunner";
 import { useCollabRoom } from "../hooks/useCollabRoom";
+import { useEditorShortcuts } from "../hooks/useEditorShortcuts";
 import { EDITOR_PANEL_ID, OUTPUT_PANEL_ID, useRoomLayout } from "../hooks/useRoomLayout";
 import { downloadTextFile } from "../lib/download";
 import { downloadFileName } from "../lib/languages";
 import { configureMonacoLoader } from "../lib/monacoLoader";
-import type { MonacoEditor } from "../lib/monacoTypes";
+import type { MonacoApi, MonacoEditor } from "../lib/monacoTypes";
 import {
   getIdentityServerSnapshot,
   getIdentitySnapshot,
@@ -52,9 +53,19 @@ export default function CodeEditor({ roomId, onRoomClosed }: CodeEditorProps) {
   // binding attaches, and Monaco's onChange fires then, so this catches up.
   const [code, setCode] = useState<string>("");
 
+  // The stdin draft (§10.4). Local for the same reason `language` is: the box
+  // you type into is yours, and only the value a run *used* is shared — it
+  // travels on the `ExecutionState` record, so a remote run can never overwrite
+  // what someone is halfway through typing.
+  const [stdin, setStdin] = useState<string>("");
+  const [stdinOpen, setStdinOpen] = useState<boolean>(false);
+
   // State rather than a ref, so the collab hook's effect can depend on it and
   // run once Monaco has actually mounted.
   const [editor, setEditor] = useState<MonacoEditor | null>(null);
+  // The namespace from `onMount`, kept because `KeyMod`/`KeyCode` cannot be
+  // statically imported here — see `lib/monacoTypes.ts`.
+  const [monacoApi, setMonacoApi] = useState<MonacoApi | null>(null);
 
   // "unknown" until hydration resolves, then "absent" (prompt) or "present"
   // (connect). Arriving from the landing page means it is already present.
@@ -72,29 +83,58 @@ export default function CodeEditor({ roomId, onRoomClosed }: CodeEditorProps) {
     onRoomClosed,
   });
 
-  const handleRun = useCodeRunner({ docRef, code, language, user });
+  const handleRun = useCodeRunner({ docRef, code, language, stdin, user });
   const layout = useRoomLayout();
 
   // Purely local, unlike Run: nothing is written to the Y.Doc and no request
   // leaves the browser. `language` is per-user, so each peer downloads the same
   // text under their own extension.
   //
+  // The empty-document guard lives here rather than only on the button, so the
+  // Ctrl+S shortcut has exactly the same disabled state as the control it
+  // mirrors instead of silently downloading an empty file.
+  //
   // `code` changes on every keystroke, so this and `handleRun` are new functions
   // on every keystroke too. They may only travel *up* into `RoomChrome` — never
   // down into the editor Panel, whose subtree has to stay referentially stable
   // for `EditorPane`'s `memo` to mean anything.
   const handleSave = useCallback(() => {
+    if (code.length === 0) return;
     downloadTextFile(downloadFileName(language), code);
   }, [code, language]);
 
+  // Both shortcuts, registered on the Monaco instance rather than on `window`.
+  useEditorShortcuts({ editor, monaco: monacoApi, onRun: handleRun, onSave: handleSave });
+
+  // The stdin box is a real focusable control outside the editor, so Monaco's
+  // keybindings — and its `preventDefault` — do not reach it. This is
+  // element-scoped, not a `window` listener, so it keeps §10.5's rule while
+  // closing the one gap §10.4 opened.
+  const handleStdinKeyDown = useCallback(
+    (event: KeyboardEvent<HTMLTextAreaElement>) => {
+      if (!event.metaKey && !event.ctrlKey) return;
+      if (event.key === "Enter") {
+        event.preventDefault();
+        void handleRun();
+      } else if (event.key.toLowerCase() === "s") {
+        event.preventDefault();
+        handleSave();
+      }
+    },
+    [handleRun, handleSave],
+  );
+
   // Stable for the life of the component, which is what lets `EditorPane` skip
-  // re-rendering on every keystroke.
-  const handleEditorMount = useCallback<OnMount>((mountedEditor) => {
+  // re-rendering on every keystroke. Both setters land in one render.
+  const handleEditorMount = useCallback<OnMount>((mountedEditor, monaco) => {
     setEditor(mountedEditor);
+    setMonacoApi(monaco);
   }, []);
   const handleEditorChange = useCallback<OnChange>((value) => {
     setCode(value ?? "");
   }, []);
+
+  const toggleStdin = useCallback(() => setStdinOpen((open) => !open), []);
 
   // Side by side there is nothing legible to leave in a 36px-wide column, so the
   // output collapses to nothing and borrows the editor's strip for its restore
@@ -193,6 +233,11 @@ export default function CodeEditor({ roomId, onRoomClosed }: CodeEditorProps) {
             canToggleOrientation={layout.canToggleOrientation}
             onToggleCollapsed={layout.toggleOutput}
             onToggleOrientation={layout.toggleOrientation}
+            stdin={stdin}
+            stdinOpen={stdinOpen}
+            onStdinChange={setStdin}
+            onToggleStdin={toggleStdin}
+            onStdinKeyDown={handleStdinKeyDown}
           />
         </Panel>
       </Group>

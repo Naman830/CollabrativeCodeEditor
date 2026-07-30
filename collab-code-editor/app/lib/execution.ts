@@ -22,3 +22,25 @@ export function codeByteLength(code: string): number {
 export const TOO_LARGE_MESSAGE = `Code is too large to run (limit ${Math.floor(
   MAX_CODE_BYTES / 1024
 )} KB).`;
+
+/** The same cap, worded for a request that also carried stdin (tasks.md §10.4). */
+export const TOO_LARGE_WITH_STDIN_MESSAGE = `Code and input are too large to run (limit ${Math.floor(
+  MAX_CODE_BYTES / 1024
+)} KB combined).`;
+
+/**
+ * The single budget rule, so the client pre-check and the route's 413 cannot
+ * drift — the same reason `codeByteLength` lives here rather than in the route.
+ *
+ * §10.4 says to count stdin "against the same UTF-8 byte budget as the code", so
+ * this is one combined allowance rather than two. That reading is also what lets
+ * `REQUEST_BYTE_CEILING` in the route stay untouched: the decoded payload still
+ * caps at `MAX_CODE_BYTES`, so the existing "doubled for JSON escaping" headroom
+ * still covers the whole envelope.
+ *
+ * Returns the message to show, or null when the payload is within budget.
+ */
+export function payloadTooLarge(code: string, stdin: string): string | null {
+  if (codeByteLength(code) + codeByteLength(stdin) <= MAX_CODE_BYTES) return null;
+  return stdin.length > 0 ? TOO_LARGE_WITH_STDIN_MESSAGE : TOO_LARGE_MESSAGE;
+}
