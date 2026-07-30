@@ -85,14 +85,20 @@ function unref(timer) {
  * address — `destroyRoom` has no request and no socket — and task 7.5's write
  * pacing needs one, so it is recorded here and carried on the room state. It
  * never leaves memory.
+ *
+ * `language` (§10.1) is recorded here for the same structural reason: a room's
+ * language is chosen once, on the creation screen, and this request is the only
+ * moment anyone states it. Unlike `creatorKey` it is written — see
+ * `roomState.js`'s `buildSnapshot`.
  */
-function reserveRoom(creatorKey = null) {
+function reserveRoom(creatorKey = null, language = null) {
   if (reservations.size >= MAX_RESERVATIONS) return null;
 
   const roomId = crypto.randomUUID();
   // The only place that knows when a room was created — `created_at` on the
-  // snapshot comes from here, and nothing else in the process records it.
-  createRoomState(roomId, creatorKey);
+  // snapshot comes from here, and nothing else in the process records it. Same
+  // for the language.
+  createRoomState(roomId, creatorKey, language);
   reservations.set(
     roomId,
     unref(

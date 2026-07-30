@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
+import { DEFAULT_LANGUAGE, type LanguageValue } from "../lib/languages";
 import { checkRoom } from "../lib/rooms";
 import { card, primaryButton, secondaryButton } from "../lib/ui";
 import { LockIcon, WifiOffIcon } from "./icons";
@@ -87,6 +88,11 @@ function GateCard({
 export default function RoomGate({ roomId }: RoomGateProps) {
   const router = useRouter();
   const [state, setState] = useState<GateState>("checking");
+  // The room's language (§10.1). It arrives with the existence check because the
+  // sync server is the one that knows it — which is what lets someone who was
+  // sent a link open the room in the language it was created in, rather than
+  // guessing from their own last choice.
+  const [language, setLanguage] = useState<LanguageValue>(DEFAULT_LANGUAGE);
   const [secondsLeft, setSecondsLeft] = useState(REDIRECT_SECONDS);
   // Bumped by Retry to re-run the check below.
   const [attempt, setAttempt] = useState(0);
@@ -96,7 +102,9 @@ export default function RoomGate({ roomId }: RoomGateProps) {
   useEffect(() => {
     let cancelled = false;
     checkRoom(roomId).then((result) => {
-      if (!cancelled) setState(result);
+      if (cancelled) return;
+      setLanguage(result.language);
+      setState(result.status);
     });
     return () => {
       cancelled = true;
@@ -133,7 +141,9 @@ export default function RoomGate({ roomId }: RoomGateProps) {
   }, [state, goHome]);
 
   if (state === "open") {
-    return <CodeEditor roomId={roomId} onRoomClosed={handleRoomClosed} />;
+    return (
+      <CodeEditor roomId={roomId} language={language} onRoomClosed={handleRoomClosed} />
+    );
   }
 
   return (

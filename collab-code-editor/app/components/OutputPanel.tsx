@@ -88,8 +88,15 @@ export default function OutputPanel({
                 className="h-2 w-2 shrink-0 rounded-full"
                 style={{ backgroundColor: state.startedBy.color }}
               />
+              {/* The run's own file and language, never the viewer's open tab:
+                  Run executes the room's entry file (§10.1), so the person
+                  watching may well be looking at something else entirely.
+                  `filename` is guarded because a record written by an older
+                  bundle carries none. */}
               <span className="truncate">
-                Run by {state.startedBy.name} · {languageLabel(state.language)}
+                Run by {state.startedBy.name}
+                {state.filename && <> · {state.filename}</>} ·{" "}
+                {languageLabel(state.language)}
                 {state.status === "success" && <> · Exit {state.result.exitCode ?? "—"}</>}
               </span>
             </span>

@@ -18,34 +18,72 @@ import {
   type ExecutionState,
   type RunAttribution,
 } from "../lib/executionState";
+import { fileTextName, type RoomFile } from "../lib/roomFiles";
 import { displayName, type CollabUser } from "../lib/user";
 
 type UseCodeRunnerOptions = {
   /** The live doc from `useCollabRoom`; null while disconnected. */
   docRef: React.RefObject<Y.Doc | null>;
-  code: string;
+  /**
+   * The file Run executes (§10.1's "Run always executes the entry file"), which
+   * is not necessarily the tab this client has open. Only its identity is passed
+   * — the *text* is read from the doc at click time, below.
+   */
+  entryFile: RoomFile | null;
+  /** The room's language, chosen at creation. Not a per-user preference. */
   language: string;
   /** The local draft from the output panel's input box; "" when unused. */
   stdin: string;
   user: CollabUser | null;
 };
 
-export function useCodeRunner({ docRef, code, language, stdin, user }: UseCodeRunnerOptions) {
+export function useCodeRunner({
+  docRef,
+  entryFile,
+  language,
+  stdin,
+  user,
+}: UseCodeRunnerOptions) {
   const runCounterRef = useRef(0);
 
   return useCallback(async () => {
     const yDoc = docRef.current;
-    if (!yDoc || !user) return;
+    if (!yDoc || !user || !entryFile) return;
 
     const executionMap = yDoc.getMap<ExecutionState>(EXECUTION_MAP_NAME);
     // Guards a same-tab double-click. A different peer's concurrent click is
     // handled by the runId check below.
     if (executionMap.get(EXECUTION_KEY)?.status === "running") return;
 
+    // Read at click time, out of the shared doc rather than out of Monaco. The
+    // entry file usually has a model, but it need not be the one on screen and
+    // need not have been opened at all this session — the Y.Text is the only
+    // place its text is guaranteed to be current.
+    const code = yDoc.getText(fileTextName(entryFile.id)).toString();
+    const filename = entryFile.name;
+
     runCounterRef.current += 1;
     const runId = `${yDoc.clientID}-${runCounterRef.current}`;
     const startedBy: RunAttribution = { name: displayName(user), color: user.color };
     const startedAt = Date.now();
+
+    // Says which file is empty rather than running nothing and reporting "(no
+    // output)". Worth its own branch since §10.1: the entry file need not be the
+    // tab you are looking at, so an empty one is invisible from where you sit.
+    if (code.length === 0) {
+      executionMap.set(EXECUTION_KEY, {
+        status: "error",
+        runId,
+        language,
+        filename,
+        stdin,
+        startedBy,
+        startedAt,
+        finishedAt: Date.now(),
+        error: `Nothing to run — the entry file (${filename}) is empty.`,
+      });
+      return;
+    }
 
     // The route enforces this too (it is reachable without the UI); checking
     // here just avoids sending a payload that will be refused. The failure goes
@@ -57,6 +95,7 @@ export function useCodeRunner({ docRef, code, language, stdin, user }: UseCodeRu
         status: "error",
         runId,
         language,
+        filename,
         stdin,
         startedBy,
         startedAt,
@@ -70,6 +109,7 @@ export function useCodeRunner({ docRef, code, language, stdin, user }: UseCodeRu
       status: "running",
       runId,
       language,
+      filename,
       stdin,
       startedBy,
       startedAt,
@@ -100,6 +140,7 @@ export function useCodeRunner({ docRef, code, language, stdin, user }: UseCodeRu
           status: "error",
           runId,
           language,
+          filename,
           stdin,
           startedBy,
           startedAt,
@@ -113,6 +154,7 @@ export function useCodeRunner({ docRef, code, language, stdin, user }: UseCodeRu
         status: "success",
         runId,
         language,
+        filename,
         stdin,
         startedBy,
         startedAt,
@@ -125,6 +167,7 @@ export function useCodeRunner({ docRef, code, language, stdin, user }: UseCodeRu
         status: "error",
         runId,
         language,
+        filename,
         stdin,
         startedBy,
         startedAt,
@@ -132,5 +175,5 @@ export function useCodeRunner({ docRef, code, language, stdin, user }: UseCodeRu
         error: "Could not reach the execution service. Please try again.",
       });
     }
-  }, [code, docRef, language, stdin, user]);
+  }, [docRef, entryFile, language, stdin, user]);
 }

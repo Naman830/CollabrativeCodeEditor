@@ -56,6 +56,52 @@ const MAX_NAME_LENGTH = 24; // == app/lib/user.ts
 const HEX_COLOR = /^#[0-9a-f]{6}$/i; // == app/lib/awareness.ts
 const FALLBACK_COLOR = "#9e9e9e"; // == app/lib/awareness.ts
 
+// ── Multi-file rooms (tasks.md §10.1) ──────────────────────────────────────
+// The shared-document names, mirroring app/lib/roomFiles.ts. This server never
+// writes them — it only reads the room's final state at the moment it dies.
+const FILES_MAP_NAME = "files";
+const FILE_TEXT_PREFIX = "file:";
+// Pre-§10.1 rooms kept their whole contents in this one Y.Text. Nothing creates
+// one any more, but the fallback in `snapshotFiles` costs a branch and the
+// alternative is a silently empty snapshot.
+const LEGACY_TEXT_NAME = "monaco";
+const MAX_FILES = 20; // == app/lib/roomFiles.ts
+const MAX_FILENAME_LENGTH = 64; // == app/lib/roomFiles.ts
+
+// The **sixth** hand-maintained cross-workspace duplication, after
+// rateLimit.js/rateLimit.ts, CLOSE_ROOM_NOT_FOUND, sanitizeName/HEX_COLOR above,
+// TRUNCATION_MARKER and MEMBER_MIN_CONNECTED_MS. It is the `value` column of
+// LANGUAGES in app/lib/languages.ts.
+//
+// An allowlist rather than "store whatever arrived": `POST /rooms?language=` is
+// an anonymous, unauthenticated endpoint, and this value is written to
+// `dead_rooms.language` and rendered on /profile. Five known strings cost
+// nothing to check and mean nothing arbitrary can ever reach the column.
+const ROOM_LANGUAGES = ["javascript", "python", "typescript", "java", "cpp"];
+const DEFAULT_LANGUAGE = "javascript"; // == app/lib/languages.ts
+
+// Only used to name a fallback file — a room that died before its first sync
+// seeded one, or a pre-§10.1 room. Every file a client actually created carries
+// its own name. == `ext` in app/lib/languages.ts.
+const LANGUAGE_EXT = {
+  javascript: "js",
+  python: "py",
+  typescript: "ts",
+  java: "java",
+  cpp: "cpp",
+};
+
+/** `Main.java` / `main.py`, matching `downloadFileName` in app/lib/languages.ts. */
+function defaultFileName(language) {
+  if (language === "java") return "Main.java";
+  return `main.${LANGUAGE_EXT[language] ?? "txt"}`;
+}
+
+/** Narrows the `?language=` query parameter. Anything unknown is the default. */
+function normalizeLanguage(raw) {
+  return ROOM_LANGUAGES.includes(raw) ? raw : DEFAULT_LANGUAGE;
+}
+
 /**
  * Characters that cannot survive the trip into Postgres, and take the whole
  * snapshot with them if they try.
@@ -95,6 +141,7 @@ function stripUnstorable(raw) {
  * @type {Map<string, {
  *   createdAt: number,
  *   creatorKey: string | null,
+ *   language: string,
  *   members: Map<string, Member>,
  *   participants: Map<string, {name: string, color: string}>,
  *   connUsers: Map<object, string>,
@@ -116,14 +163,21 @@ const states = new Map();
  * `creatorKey` is the creating caller's IP (task 7.5's pacing key). It lives
  * only here, dies with the room, and is never written to Postgres — see
  * `db.js`'s `saveDeadRoom`.
+ *
+ * `language` (task §10.1) is the same story with the opposite ending: also
+ * recorded once, at `POST /rooms`, because that is the only moment anyone states
+ * it — but this one *is* written, and is what finally gives `dead_rooms.language`
+ * a value. It is normalized here rather than at the route so there is one place
+ * that decides what a room's language may be.
  */
-function createRoomState(roomId, creatorKey = null) {
+function createRoomState(roomId, creatorKey = null, language = null) {
   const existing = states.get(roomId);
   if (existing) return existing;
 
   const state = {
     createdAt: Date.now(),
     creatorKey,
+    language: normalizeLanguage(language),
     members: new Map(),
     participants: new Map(),
     // Socket -> verified user ID. Needed because Yjs hands us the *socket* as a
@@ -373,13 +427,87 @@ function qualifyingMembers(state, now) {
  *    "unsupported Unicode escape sequence", losing the snapshot. Node's decoder
  *    substitutes U+FFFD instead. Only reachable with emoji or CJK near the cap.
  */
-function snapshotText(yText) {
+function snapshotText(yText, budgetBytes = MAX_SNAPSHOT_BYTES) {
   const raw = stripUnstorable(yText.toString());
   const buf = Buffer.from(raw, "utf8");
-  if (buf.byteLength <= MAX_SNAPSHOT_BYTES) return raw;
+  if (buf.byteLength <= budgetBytes) return raw;
 
-  const room = MAX_SNAPSHOT_BYTES - Buffer.byteLength(TRUNCATION_MARKER, "utf8");
+  const room = Math.max(0, budgetBytes - Buffer.byteLength(TRUNCATION_MARKER, "utf8"));
   return buf.subarray(0, room).toString("utf8") + TRUNCATION_MARKER;
+}
+
+/**
+ * A filename safe to store and to render on /profile.
+ *
+ * The server's copy of `sanitizeFileName` in `app/lib/roomFiles.ts` — the client
+ * sanitizes what it puts into the shared map, but the map is peer-supplied and a
+ * raw Yjs client never runs that code. The path-separator strip is the part that
+ * matters most: /profile hands this straight to an `<a download>`.
+ */
+function sanitizeSnapshotFileName(raw, language) {
+  const cleaned =
+    typeof raw === "string"
+      ? stripUnstorable(raw)
+          .replace(/[\u0000-\u001F\u007F]/g, "")
+          .replace(/[/\\]/g, "")
+          .replace(/\s+/g, " ")
+          .trim()
+      : "";
+  const cut = [...cleaned].slice(0, MAX_FILENAME_LENGTH).join("").trim();
+  // "." and ".." survive every replacement above and are not filenames.
+  return /[^.]/.test(cut) ? cut : `untitled.${language === "java" ? "java" : "txt"}`;
+}
+
+/**
+ * The room's files, in tab order, inside one shared 256 KB budget.
+ *
+ * The cap is per **snapshot**, not per file: it exists to bound the one
+ * unbounded write v2 adds, and twenty files of 256 KB each would defeat that
+ * entirely. Files are filled in tab order and the one that crosses the boundary
+ * is cut, so the entry file — created first, and the one Run executes — is the
+ * last thing to be lost. Files past the budget are stored as the marker alone,
+ * which /profile already renders as its amber "this room grew past the cap"
+ * notice (`isTruncated` matches with `endsWith`).
+ *
+ * Order is derived exactly as `readRoomFiles` derives it on the client:
+ * `createdAt`, tiebroken by id. Nothing on the wire carries an order.
+ */
+function snapshotFiles(doc, language) {
+  const filesMap = doc.getMap(FILES_MAP_NAME);
+
+  const entries = [];
+  filesMap.forEach((meta, id) => {
+    if (typeof id !== "string" || !meta || typeof meta !== "object") return;
+    entries.push({
+      id,
+      name: sanitizeSnapshotFileName(meta.name, language),
+      createdAt: Number.isFinite(meta.createdAt) ? meta.createdAt : 0,
+    });
+  });
+
+  // Pre-§10.1 room, or one destroyed before its first sync ever seeded a file.
+  if (entries.length === 0) {
+    return [
+      {
+        filename: defaultFileName(language),
+        content: snapshotText(doc.getText(LEGACY_TEXT_NAME)),
+      },
+    ];
+  }
+
+  entries.sort((a, b) => a.createdAt - b.createdAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+
+  let remaining = MAX_SNAPSHOT_BYTES;
+  const files = [];
+  for (const entry of entries.slice(0, MAX_FILES)) {
+    const content =
+      remaining > 0
+        ? snapshotText(doc.getText(FILE_TEXT_PREFIX + entry.id), remaining)
+        : TRUNCATION_MARKER;
+    remaining -= Buffer.byteLength(content, "utf8");
+    files.push({ filename: entry.name, content });
+  }
+  return files;
 }
 
 /**
@@ -394,7 +522,7 @@ function snapshotText(yText) {
  *   roomId: string,
  *   userIds: string[],
  *   files: Array<{filename: string, content: string}>,
- *   language: null,
+ *   language: string,
  *   isPrivate: boolean,
  *   participants: Array<{name: string, color: string}> | null,
  *   createdAt: Date,
@@ -409,21 +537,20 @@ function buildSnapshot(roomId, doc, now) {
   const userIds = qualifyingMembers(state, now);
   if (userIds.length === 0) return null;
 
+  const language = state.language ?? DEFAULT_LANGUAGE;
+
   return {
     roomId,
     userIds,
-    files: [
-      {
-        // A placeholder until §10.1 moves the language selector to room creation.
-        // The extension cannot be derived today: the dropdown is a per-user
-        // editing preference kept deliberately off the shared Y.Doc, so two peers
-        // in one room can legitimately be on different languages and the server
-        // has no single answer. Same reason `language` below is null.
-        filename: "main.txt",
-        content: snapshotText(doc.getText("monaco")),
-      },
-    ],
-    language: null,
+    // Every file in the room, under its real name, inside one shared 256 KB
+    // budget (§10.1). Before it, this was always the single literal `main.txt`,
+    // because the language was a per-user editing preference and the server had
+    // no room-wide answer to derive an extension from.
+    files: snapshotFiles(doc, language),
+    // Written for the first time by §10.1: the language is now chosen once at
+    // room creation, so `dead_rooms.language` — null on every row written before
+    // this — finally has a value, and /profile stops saying "not recorded".
+    language,
     isPrivate: false, // until §10.3 adds room passwords
     participants: state.participants.size > 0 ? [...state.participants.values()] : null,
     // `created_at` is NOT NULL in the migration, so no path may pass null here.
@@ -444,9 +571,18 @@ function buildSnapshot(roomId, doc, now) {
   };
 }
 
+/** The room's language, for `GET /rooms/:roomId` (§10.1). Null if unknown. */
+function getRoomLanguage(roomId) {
+  return states.get(roomId)?.language ?? null;
+}
+
 module.exports = {
   MEMBER_MIN_CONNECTED_MS,
   MAX_SNAPSHOT_BYTES,
+  ROOM_LANGUAGES,
+  DEFAULT_LANGUAGE,
+  normalizeLanguage,
+  getRoomLanguage,
   createRoomState,
   getRoomState,
   deleteRoomState,

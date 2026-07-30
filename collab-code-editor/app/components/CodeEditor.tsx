@@ -2,15 +2,17 @@
 
 // The room screen. It composes the pieces and owns nothing but local UI state:
 //
-//   hooks/useCollabRoom    the whole Yjs stack (doc, provider, awareness,
-//                          binding) plus peers, toasts and shared run state
+//   hooks/useCollabRoom    the whole Yjs stack (doc, provider, awareness, the
+//                          per-file bindings) plus peers, toasts, the file list
+//                          and shared run state
 //   hooks/useCodeRunner    the Run button's POST -> shared-map write
 //   hooks/useRoomLayout    which way the split runs and how big each side is
 //   components/RoomChrome, EditorTabBar, OutputPanel, ActivityToasts   the chrome
 //
-// `language` and `code` stay here because both are per-user: the dropdown is an
-// editing preference, and `code` is only a mirror of Monaco's model for the size
-// pre-check and Save. Neither belongs on the shared doc.
+// `language` is no longer state here: since §10.1 it is a property of the room,
+// chosen once at creation and handed down by `RoomGate`. `code` stays, and stays
+// per-user, because it is only a mirror of whichever model Monaco currently has
+// on screen — Save and Run both read the *shared doc* instead (see below).
 
 import { useCallback, useState, useSyncExternalStore, type KeyboardEvent } from "react";
 import type { OnChange, OnMount } from "@monaco-editor/react";
@@ -29,10 +31,10 @@ import { useCollabRoom } from "../hooks/useCollabRoom";
 import { useEditorShortcuts } from "../hooks/useEditorShortcuts";
 import { EDITOR_PANEL_ID, OUTPUT_PANEL_ID, useRoomLayout } from "../hooks/useRoomLayout";
 import { useRoomPersistence } from "../hooks/useRoomPersistence";
-import { downloadTextFile } from "../lib/download";
-import { downloadFileName } from "../lib/languages";
+import { PROJECT_ZIP_NAME, downloadTextFile, downloadZipFile } from "../lib/download";
 import { configureMonacoLoader } from "../lib/monacoLoader";
 import type { MonacoApi, MonacoEditor } from "../lib/monacoTypes";
+import { modelPathFor } from "../lib/roomFiles";
 import {
   getIdentityServerSnapshot,
   getIdentitySnapshot,
@@ -44,28 +46,31 @@ configureMonacoLoader();
 
 type CodeEditorProps = {
   roomId: string;
+  /** The room's language, from `GET /rooms/:roomId` via `RoomGate`. */
+  language: string;
   /** Fired when the server refuses this room. Only `RoomGate` can act on it. */
   onRoomClosed?: () => void;
 };
 
-export default function CodeEditor({ roomId, onRoomClosed }: CodeEditorProps) {
-  const [language, setLanguage] = useState<string>("javascript");
-  // Starts empty, not at DEFAULT_CODE: the editor really is empty until the
+export default function CodeEditor({ roomId, language, onRoomClosed }: CodeEditorProps) {
+  // Starts empty, not at a starter snippet: the editor really is empty until a
   // binding attaches, and Monaco's onChange fires then, so this catches up.
+  // Mirrors only the *active* file — see `handleSave` for why that is enough.
   const [code, setCode] = useState<string>("");
 
-  // The stdin draft (§10.4). Local for the same reason `language` is: the box
-  // you type into is yours, and only the value a run *used* is shared — it
+  // The stdin draft (§10.4). Local for the same reason the active tab is: the
+  // box you type into is yours, and only the value a run *used* is shared — it
   // travels on the `ExecutionState` record, so a remote run can never overwrite
   // what someone is halfway through typing.
   const [stdin, setStdin] = useState<string>("");
   const [stdinOpen, setStdinOpen] = useState<boolean>(false);
 
-  // State rather than a ref, so the collab hook's effect can depend on it and
+  // State rather than a ref, so the collab hook's effects can depend on both and
   // run once Monaco has actually mounted.
   const [editor, setEditor] = useState<MonacoEditor | null>(null);
-  // The namespace from `onMount`, kept because `KeyMod`/`KeyCode` cannot be
-  // statically imported here — see `lib/monacoTypes.ts`.
+  // The namespace from `onMount`. Needed for `KeyMod`/`KeyCode` (which cannot be
+  // statically imported — see `lib/monacoTypes.ts`) and, since §10.1, to create
+  // one model per file.
   const [monacoApi, setMonacoApi] = useState<MonacoApi | null>(null);
 
   // "unknown" until hydration resolves, then "absent" (prompt) or "present"
@@ -77,38 +82,75 @@ export default function CodeEditor({ roomId, onRoomClosed }: CodeEditorProps) {
   );
   const user = identity.status === "present" ? identity.user : null;
 
-  const { syncStatus, peers, toasts, dismissToast, execState, didEdit, docRef } =
-    useCollabRoom({
-      roomId,
-      editor,
-      user,
-      onRoomClosed,
-    });
+  const room = useCollabRoom({
+    roomId,
+    language,
+    editor,
+    monaco: monacoApi,
+    user,
+    onRoomClosed,
+  });
 
   // The leaving warning and the "is this being kept?" estimate (§10.8). One
   // hook because they are one idea: the warning is only actionable if you know
   // what closing the tab actually costs.
-  const persistence = useRoomPersistence({ peers, syncStatus, user, didEdit });
+  const persistence = useRoomPersistence({
+    peers: room.peers,
+    syncStatus: room.syncStatus,
+    user,
+    didEdit: room.didEdit,
+  });
 
-  const handleRun = useCodeRunner({ docRef, code, language, stdin, user });
+  // Run executes the room's *entry* file, which need not be the tab this client
+  // has open (§10.1) — so the runner takes the file, not this component's `code`.
+  const handleRun = useCodeRunner({
+    docRef: room.docRef,
+    entryFile: room.entryFile,
+    language,
+    stdin,
+    user,
+  });
   const layout = useRoomLayout();
 
   // Purely local, unlike Run: nothing is written to the Y.Doc and no request
-  // leaves the browser. `language` is per-user, so each peer downloads the same
-  // text under their own extension.
+  // leaves the browser.
   //
-  // The empty-document guard lives here rather than only on the button, so the
-  // Ctrl+S shortcut has exactly the same disabled state as the control it
-  // mirrors instead of silently downloading an empty file.
+  // §10.1's two shapes: one file downloads directly as it always did, 2+ zip
+  // into `project.zip`. Contents come from the shared doc rather than from
+  // Monaco, because a file that has never been opened in this tab has no model
+  // to read — the `Y.Text` is the only place every file's text is current.
   //
-  // `code` changes on every keystroke, so this and `handleRun` are new functions
-  // on every keystroke too. They may only travel *up* into `RoomChrome` — never
-  // down into the editor Panel, whose subtree has to stay referentially stable
-  // for `EditorPane`'s `memo` to mean anything.
+  // `readFile` and the file list are stable-ish, but `code` changes on every
+  // keystroke, so this and `handleRun` are new functions on every keystroke too.
+  // They may only travel *up* into `RoomChrome` — never down into the editor
+  // Panel, whose subtree has to stay referentially stable for `EditorPane`'s
+  // `memo` to mean anything.
   const handleSave = useCallback(() => {
-    if (code.length === 0) return;
-    downloadTextFile(downloadFileName(language), code);
-  }, [code, language]);
+    const files = room.files.map((file) => ({
+      filename: file.name,
+      content: room.readFile(file.id),
+    }));
+    if (files.length === 0) return;
+    if (files.length === 1) {
+      // The empty-document guard lives here rather than only on the button, so
+      // the Ctrl+S shortcut has exactly the same disabled state as the control
+      // it mirrors instead of silently downloading an empty file.
+      if (files[0].content.length === 0) return;
+      downloadTextFile(files[0].filename, files[0].content);
+      return;
+    }
+    void downloadZipFile(files);
+  }, [room]);
+
+  /** §10.1's per-file "download this file only", from a tab's own menu. */
+  const handleDownloadFile = useCallback(
+    (fileId: string) => {
+      const file = room.files.find((entry) => entry.id === fileId);
+      if (!file) return;
+      downloadTextFile(file.name, room.readFile(fileId));
+    },
+    [room],
+  );
 
   // Both shortcuts, registered on the Monaco instance rather than on `window`.
   useEditorShortcuts({ editor, monaco: monacoApi, onRun: handleRun, onSave: handleSave });
@@ -148,18 +190,25 @@ export default function CodeEditor({ roomId, onRoomClosed }: CodeEditorProps) {
   // button. Stacked, it collapses to its own tab strip and keeps it.
   const outputFullyHidden = layout.outputCollapsed && layout.orientation === "horizontal";
 
+  // Save is off only for a room whose single file is empty. With more than one
+  // file there is always an archive worth producing, and `handleSave` still
+  // refuses an empty single file if the shortcut gets here first.
+  const canSave = room.files.length > 1 || code.length > 0;
+
   return (
     <div className="flex h-full min-h-0 flex-col bg-app text-fg">
-      <ActivityToasts toasts={toasts} onDismiss={dismissToast} />
+      <ActivityToasts toasts={room.toasts} onDismiss={room.dismissToast} />
 
       <RoomChrome
         roomId={roomId}
         language={language}
-        syncStatus={syncStatus}
-        peers={peers}
-        isRunning={execState.status === "running"}
+        saveName={room.files.length > 1 ? PROJECT_ZIP_NAME : (room.files[0]?.name ?? "")}
+        syncStatus={room.syncStatus}
+        peers={room.peers}
+        isRunning={room.execState.status === "running"}
+        entryFileName={room.entryFile?.name ?? null}
         onRun={handleRun}
-        canSave={code.length > 0}
+        canSave={canSave}
         onSave={handleSave}
         persistenceStatus={persistence.status}
         persistenceRemainingMs={persistence.remainingMs}
@@ -170,14 +219,15 @@ export default function CodeEditor({ roomId, onRoomClosed }: CodeEditorProps) {
           Never two Groups behind a ternary, and never a `key` on anything
           between here and `EditorPane`. `useCollabRoom`'s master effect is keyed
           on the Monaco instance, so remounting the editor destroys the Y.Doc,
-          the provider, the awareness handler and the MonacoBinding — wiping the
-          room's shared output for everyone and re-firing every join toast.
+          the provider, the awareness handler and every MonacoBinding — wiping
+          the room's shared output for everyone and re-firing every join toast.
 
           Verified against react-resizable-panels@4.12.2's own source: `Group`
           and `Panel` both render `children` unconditionally, `orientation` only
           flips the container's flex-direction, and collapsing a Panel changes
           nothing but inline flex-grow/flex-basis. Nothing here can unmount
-          Monaco. */}
+          Monaco — and neither can switching files, which is a `path` prop and
+          not a remount (see `EditorPane`'s fourth rule). */}
       <Group
         id="room-split"
         orientation={layout.orientation}
@@ -203,8 +253,15 @@ export default function CodeEditor({ roomId, onRoomClosed }: CodeEditorProps) {
           minSize="25"
         >
           <EditorTabBar
-            language={language}
-            onLanguageChange={setLanguage}
+            files={room.files}
+            activeFileId={room.activeFile?.id ?? null}
+            entryFileId={room.entryFile?.id ?? null}
+            onSelect={room.setActiveFileId}
+            onCreate={room.createFile}
+            onRename={room.renameFile}
+            onDelete={room.deleteFile}
+            onSetEntry={room.setEntryFileId}
+            onDownload={handleDownloadFile}
             actions={
               outputFullyHidden ? (
                 <IconButton label="Show output" onClick={layout.toggleOutput}>
@@ -217,6 +274,7 @@ export default function CodeEditor({ roomId, onRoomClosed }: CodeEditorProps) {
           <div className="min-h-0 flex-1">
             <EditorPane
               language={language}
+              path={room.activeFile ? modelPathFor(roomId, room.activeFile.id) : undefined}
               onMount={handleEditorMount}
               onChange={handleEditorChange}
               compact={layout.isNarrow}
@@ -237,7 +295,7 @@ export default function CodeEditor({ roomId, onRoomClosed }: CodeEditorProps) {
           maxSize="75"
         >
           <OutputPanel
-            state={execState}
+            state={room.execState}
             collapsed={layout.outputCollapsed}
             orientation={layout.orientation}
             canToggleOrientation={layout.canToggleOrientation}

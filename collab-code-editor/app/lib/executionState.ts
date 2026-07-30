@@ -50,17 +50,25 @@ export type RunAttribution = { name: string; color: string };
 // is unexplainable. It is part of the *run*, not part of the editor — the box
 // people type into stays local, and this is only the value a run actually used.
 //
-// Required rather than optional, unlike `notice`: a missing `notice` is the
-// common case, while a missing `stdin` is only possible across a mixed-bundle
-// window. Making it required is what forces the compiler to enumerate every
-// site that writes a record (four in `useCodeRunner`, one watchdog in
-// `useCollabRoom`); the output panel still guards on it before rendering.
+// `filename` (tasks.md §10.1) is there for exactly the same reason. Run always
+// executes the room's *entry* file, which is not necessarily the tab the person
+// watching has open — so without it the output belongs to no visible file and a
+// peer cannot tell whether they are looking at the result of the code in front
+// of them. Sourced from the shared file list, never from the viewer's own tab.
+//
+// Both are required rather than optional, unlike `notice`: a missing `notice` is
+// the common case, while a missing `stdin` or `filename` is only possible across
+// a mixed-bundle window. Making them required is what forces the compiler to
+// enumerate every site that writes a record (four in `useCodeRunner`, one
+// watchdog in `useCollabRoom`); the output panel still guards on them before
+// rendering.
 export type ExecutionState =
   | { status: "idle" }
   | {
       status: "running";
       runId: string;
       language: string;
+      filename: string;
       stdin: string;
       startedBy: RunAttribution;
       startedAt: number;
@@ -69,6 +77,7 @@ export type ExecutionState =
       status: "success";
       runId: string;
       language: string;
+      filename: string;
       stdin: string;
       startedBy: RunAttribution;
       startedAt: number;
@@ -79,6 +88,7 @@ export type ExecutionState =
       status: "error";
       runId: string;
       language: string;
+      filename: string;
       stdin: string;
       startedBy: RunAttribution;
       startedAt: number;

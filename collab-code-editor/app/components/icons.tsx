@@ -168,6 +168,58 @@ export function TerminalIcon({ className }: IconProps = {}) {
   );
 }
 
+/* --- Multi-file rooms (tasks.md §10.1) --- */
+
+/**
+ * The entry-file marker. `filled` is the state, not a variant: an outline star
+ * on every tab would read as "you may star this", which is exactly right for the
+ * menu item and exactly wrong for the tab strip — so the tab only ever renders
+ * the filled one.
+ */
+export function StarIcon({ className = "h-3.5 w-3.5", filled = false }: IconProps & { filled?: boolean }) {
+  const path = "m12 4 2.4 4.9 5.4.8-3.9 3.8.9 5.4-4.8-2.5-4.8 2.5.9-5.4L4.2 9.7l5.4-.8z";
+  if (!filled) {
+    return (
+      <Stroke className={className}>
+        <path d={path} />
+      </Stroke>
+    );
+  }
+  return (
+    <svg aria-hidden viewBox="0 0 24 24" fill="currentColor" className={className}>
+      <path d={path} />
+    </svg>
+  );
+}
+
+export function PlusIcon({ className }: IconProps = {}) {
+  return (
+    <Stroke className={className}>
+      <path d="M12 5v14M5 12h14" />
+    </Stroke>
+  );
+}
+
+/** The kebab that opens a file tab's menu without needing a right-click. */
+export function MoreIcon({ className }: IconProps = {}) {
+  return (
+    <svg aria-hidden viewBox="0 0 24 24" fill="currentColor" className={className ?? "h-3.5 w-3.5"}>
+      <circle cx="12" cy="5" r="1.6" />
+      <circle cx="12" cy="12" r="1.6" />
+      <circle cx="12" cy="19" r="1.6" />
+    </svg>
+  );
+}
+
+export function PencilIcon({ className }: IconProps = {}) {
+  return (
+    <Stroke className={className}>
+      <path d="M4 20h4L19 9a2.1 2.1 0 0 0-3-3L5 17z" />
+      <path d="m14.5 6.5 3 3" />
+    </Stroke>
+  );
+}
+
 export function FileCodeIcon({ className }: IconProps = {}) {
   return (
     <Stroke className={className}>

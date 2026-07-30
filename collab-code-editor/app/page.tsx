@@ -6,6 +6,7 @@ import IdentityDialog from "./components/IdentityDialog";
 import SiteNav from "./components/SiteNav";
 import { BoltIcon, CursorIcon, ShieldIcon } from "./components/icons";
 import { signedInUser, useClerkIdentity } from "./lib/clerkIdentity";
+import { DEFAULT_LANGUAGE, LANGUAGES, type LanguageValue } from "./lib/languages";
 import { RoomCreateError, createRoom } from "./lib/rooms";
 import { cn, inputField, primaryButton, secondaryButton } from "./lib/ui";
 import { setActiveUser, type CollabUser } from "./lib/user";
@@ -84,6 +85,12 @@ export default function Home() {
   const clerk = useClerkIdentity();
   const clerkUser = signedInUser(clerk);
   const [roomId, setRoomId] = useState("");
+  // §10.1 moved the language selector out of the editor and onto this screen: a
+  // room is created in one language, every file in it gets that extension, and
+  // the sync server records it so it can finally reach `dead_rooms.language`.
+  // It is deliberately not remembered between visits — a room's language is a
+  // decision about the room, not a standing preference.
+  const [language, setLanguage] = useState<LanguageValue>(DEFAULT_LANGUAGE);
   // The identity dialog for a new room is open. The ID isn't known until submit
   // — the server mints it, so an ID it never handed out can be refused later.
   const [creating, setCreating] = useState(false);
@@ -114,7 +121,7 @@ export default function Home() {
     setReserving(true);
     try {
       // Fails closed: an error here beats entering a room that can never sync.
-      const newRoomId = await createRoom();
+      const newRoomId = await createRoom(language);
       goToRoom(newRoomId);
     } catch (err) {
       setCreating(false);
@@ -148,6 +155,27 @@ export default function Home() {
             </div>
 
             <div className={cn("flex flex-col gap-4 rounded-2xl border border-edge bg-panel p-5 shadow-xl shadow-[var(--shadow-color)]")}>
+              {/* Directly above the button it belongs to, because it is part of
+                  creating the room and not a setting: it is fixed for the room's
+                  lifetime, so there is no second chance to pick it. */}
+              <div className="flex flex-col gap-2">
+                <label htmlFor="room-language" className="text-xs font-medium text-fg-muted">
+                  Language for this room
+                </label>
+                <select
+                  id="room-language"
+                  value={language}
+                  onChange={(e) => setLanguage(e.target.value as LanguageValue)}
+                  className={cn(inputField, "cursor-pointer")}
+                >
+                  {LANGUAGES.map((lang) => (
+                    <option key={lang.value} value={lang.value}>
+                      {lang.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
               <button type="button" onClick={handleCreate} className={cn(primaryButton, "w-full py-2.5")}>
                 Create a new room
               </button>

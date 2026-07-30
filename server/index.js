@@ -12,6 +12,7 @@ const {
   isShuttingDown,
 } = require("./rooms");
 const { createRateLimiter, clientKey } = require("./rateLimit");
+const { getRoomLanguage, normalizeLanguage } = require("./roomState");
 const db = require("./db");
 
 const PORT = process.env.PORT || 8080;
@@ -70,8 +71,11 @@ const server = http.createServer((req, res) => {
   }
 
   // Reserving IDs here is what gives "this room doesn't exist" a meaning: an ID
-  // the server never handed out is refused at connect time. The body is empty
-  // on purpose — no Content-Type keeps this a CORS simple request, no preflight.
+  // the server never handed out is refused at connect time. The body is still
+  // empty on purpose — no Content-Type keeps this a CORS simple request, no
+  // preflight — which is why §10.1's room language arrives as `?language=`
+  // rather than as JSON. It is narrowed by `normalizeLanguage`, so an anonymous
+  // caller cannot put an arbitrary string on the path to `dead_rooms.language`.
   if (req.method === "POST" && path === "/rooms") {
     // Derived once and used twice: it limits creation here, and it is recorded
     // on the room as the pacing key for that room's eventual snapshot write
@@ -88,19 +92,29 @@ const server = http.createServer((req, res) => {
       });
     }
 
-    const roomId = reserveRoom(caller);
+    const language = normalizeLanguage(url.searchParams.get("language"));
+
+    const roomId = reserveRoom(caller, language);
     if (!roomId) {
       return json(res, 429, { error: "Too many rooms are being created. Try again shortly." });
     }
-    console.log(`Room reserved: ${roomId}`);
-    return json(res, 201, { roomId });
+    console.log(`Room reserved: ${roomId} (${language})`);
+    return json(res, 201, { roomId, language });
   }
 
   // Answers "is this room live right now", not "did it ever exist" — rooms are
   // destroyed once empty, so those are different questions.
+  //
+  // Also hands back the room's language (§10.1). This is the only way someone
+  // who was sent a link learns which language the room was created in: the
+  // choice lives on the server, deliberately not in the shared doc, so a peer
+  // arriving before the creator has synced still gets the right answer.
   if (req.method === "GET" && path.startsWith("/rooms/")) {
     const roomId = decodeURIComponent(path.slice("/rooms/".length));
-    return json(res, 200, { exists: Boolean(roomId) && roomExists(roomId) });
+    const exists = Boolean(roomId) && roomExists(roomId);
+    // Still always HTTP 200 — existence is the `exists` field, and `checkRoom`
+    // reads a non-ok response as *unreachable*, never as *missing*.
+    return json(res, 200, { exists, language: exists ? getRoomLanguage(roomId) : null });
   }
 
   return json(res, 404, { error: "Not found" });

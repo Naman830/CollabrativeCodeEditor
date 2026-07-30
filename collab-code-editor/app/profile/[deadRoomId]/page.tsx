@@ -107,6 +107,10 @@ export default async function SnapshotPage(props: PageProps<"/profile/[deadRoomI
                 thing you *can* still do to a closed room, so it belongs where
                 someone is already reading about what they cannot do. */}
             <DeleteSnapshotButton deadRoomId={room.id} roomId={room.roomId} />
+            {/* Only for a genuinely multi-file room (§10.1) — one file already
+                has its own Download beside it, and zipping it would just add a
+                step between the user and their code. */}
+            {room.files.length > 1 && <SnapshotDownloadAll files={room.files} />}
             <Link
               href="/"
               className="ml-auto rounded-lg border border-edge bg-raised px-3 py-1.5 text-xs font-medium text-fg transition-colors hover:border-edge-strong hover:bg-edge"

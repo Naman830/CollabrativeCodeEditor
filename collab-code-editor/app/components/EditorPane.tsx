@@ -18,6 +18,15 @@
 // keeps a keystroke (which calls `setCode` and re-renders `CodeEditor`) from
 // re-rendering the editor subtree. Nothing derived from `code` may be passed in
 // here — see `CodeEditor`'s note about `handleRun`.
+//
+// FOURTH RULE, added by §10.1: switching files is done with the `path` prop and
+// with nothing else. Verified against @monaco-editor/react@4.7's source — when
+// `path` changes it resolves `editor.getModel(Uri.parse(path))`, creates the
+// model if it is new, saves the outgoing view state and calls
+// `editor.setModel(...)`. The editor instance is untouched and `onMount` does not
+// re-fire, so the whole Yjs stack survives a tab switch. A `key` on this
+// component, or one `<EditorPane>` per file behind a ternary, would each do
+// exactly what the three rules above forbid.
 
 import { memo, useMemo } from "react";
 import Editor, { type BeforeMount, type OnChange, type OnMount } from "@monaco-editor/react";
@@ -41,13 +50,18 @@ const BASE_OPTIONS = {
 
 type EditorPaneProps = {
   language: string;
+  /**
+   * The active file's Monaco model URI (`modelPathFor` in `lib/roomFiles.ts`).
+   * Undefined only before the first sync, when the room has no files yet.
+   */
+  path: string | undefined;
   onMount: OnMount;
   onChange: OnChange;
   /** Phone-sized viewport: wrap lines and grow the text to a tappable size. */
   compact: boolean;
 };
 
-function EditorPane({ language, onMount, onChange, compact }: EditorPaneProps) {
+function EditorPane({ language, path, onMount, onChange, compact }: EditorPaneProps) {
   const { resolved } = useTheme();
 
   // Memoised because `@monaco-editor/react` calls `editor.updateOptions()` on
@@ -68,6 +82,10 @@ function EditorPane({ language, onMount, onChange, compact }: EditorPaneProps) {
     <Editor
       height="100%"
       language={language}
+      // The one control that changes which file is on screen. `useCollabRoom`
+      // owns the model for this URI and has a `MonacoBinding` attached to it
+      // already, so the switch is instant and the text is never re-fetched.
+      path={path}
       // No defaultValue: MonacoBinding resets the model to the Y.Text as soon as
       // it attaches, so content comes from the sync-gated seed.
       theme={resolved === "dark" ? MONACO_DARK : MONACO_LIGHT}

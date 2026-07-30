@@ -15,3 +15,10 @@ export type MonacoEditor = Parameters<OnMount>[0];
  * `lib/monacoLoader.ts`).
  */
 export type MonacoApi = Parameters<OnMount>[1];
+
+/**
+ * One text model. §10.1 gives a room one per file, created through `MonacoApi`
+ * rather than imported, so this is derived from the namespace for the same
+ * `window`-at-import-time reason as the two types above.
+ */
+export type MonacoModel = NonNullable<ReturnType<MonacoEditor["getModel"]>>;

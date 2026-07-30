@@ -17,10 +17,10 @@ import ThemeToggle from "./ThemeToggle";
 import { useCopyToClipboard } from "../hooks/useCopyToClipboard";
 import type { SyncStatus } from "../hooks/useCollabRoom";
 import type { Peer } from "../lib/awareness";
-import { downloadFileName } from "../lib/languages";
+import { languageLabel } from "../lib/languages";
 import type { PersistenceStatus } from "../lib/persistence";
 import { shortcutLabel } from "../lib/platform";
-import { cn, focusRing, runButton } from "../lib/ui";
+import { chip, cn, focusRing, runButton } from "../lib/ui";
 import { CheckIcon, CopyIcon, DownloadIcon, LogoMark, PlayIcon } from "./icons";
 
 const SYNC_LABEL: Record<SyncStatus, string> = {
@@ -70,14 +70,18 @@ function RoomChip({ roomId, syncStatus }: { roomId: string; syncStatus: SyncStat
 
 type RoomChromeProps = {
   roomId: string;
-  /** Only for Save's filename hint — the selector itself lives on the file tab. */
+  /** The room's language (§10.1), chosen once at creation. Shown as a chip. */
   language: string;
+  /** What Save produces: one filename, or `project.zip` for a multi-file room. */
+  saveName: string;
   syncStatus: SyncStatus;
   peers: Peer[];
   /** Derived from shared state, so Run disables for every peer identically. */
   isRunning: boolean;
+  /** The file Run executes, which need not be the tab you have open (§10.1). */
+  entryFileName: string | null;
   onRun: () => void;
-  /** False for an empty document — Save's only disabled state. */
+  /** False for an empty single-file room — Save's only disabled state. */
   canSave: boolean;
   onSave: () => void;
   /** §10.8's estimate. An estimate — see `lib/persistence.ts`. */
@@ -89,9 +93,11 @@ type RoomChromeProps = {
 export default function RoomChrome({
   roomId,
   language,
+  saveName,
   syncStatus,
   peers,
   isRunning,
+  entryFileName,
   onRun,
   canSave,
   onSave,
@@ -129,6 +135,17 @@ export default function RoomChrome({
 
       <RoomChip roomId={roomId} syncStatus={syncStatus} />
 
+      {/* The language moved here from the file tab in §10.1: it is now a
+          property of the room, fixed at creation, so it is a label rather than a
+          control. Read-only on purpose — changing it mid-room would silently
+          make every existing file's extension a lie. */}
+      <span
+        className={cn(chip, "hidden shrink-0 sm:inline-flex")}
+        title="Chosen when this room was created and fixed for its lifetime"
+      >
+        {languageLabel(language)}
+      </span>
+
       <div className="ml-auto flex min-w-0 items-center gap-2">
         <PersistenceChip
           status={persistenceStatus}
@@ -148,8 +165,8 @@ export default function RoomChrome({
           // No room-wide lock here — Save touches no shared state, so an empty
           // editor is the only thing worth guarding against.
           disabled={!canSave}
-          title={`Download ${downloadFileName(language)} (${saveShortcut})`}
-          aria-label={`Save as ${downloadFileName(language)}`}
+          title={`Download ${saveName} (${saveShortcut})`}
+          aria-label={`Save as ${saveName}`}
           className={cn(
             "inline-flex items-center gap-2 rounded-lg border border-edge bg-raised px-2.5 py-1.5",
             "text-xs font-medium text-fg transition-colors hover:border-edge-strong hover:bg-edge",
@@ -165,10 +182,14 @@ export default function RoomChrome({
           type="button"
           onClick={onRun}
           disabled={isRunning}
+          // Names the entry file, because since §10.1 Run may execute a file
+          // other than the one you are looking at.
           title={
             isRunning
               ? "Someone in this room is already running the code"
-              : `Run the code (${runShortcut})`
+              : entryFileName
+                ? `Run ${entryFileName} (${runShortcut})`
+                : `Run the code (${runShortcut})`
           }
           className={cn(runButton, "px-3 text-xs sm:px-4")}
         >

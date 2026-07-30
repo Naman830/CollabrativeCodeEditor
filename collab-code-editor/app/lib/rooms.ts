@@ -2,6 +2,8 @@
 // browser — an ID it never handed out is refused at connect time, which is what
 // makes "this room doesn't exist" real rather than a client-side pretence.
 
+import { DEFAULT_LANGUAGE, isLanguage, type LanguageValue } from "./languages";
+
 export const WS_URL = process.env.NEXT_PUBLIC_WS_URL ?? "ws://localhost:8080";
 
 // ws:// -> http://, same host and port: the sync server serves its room routes
@@ -14,18 +16,38 @@ const API_URL = WS_URL.replace(/^ws/, "http");
  */
 export type RoomCheck = "open" | "missing" | "unreachable";
 
-export async function checkRoom(roomId: string): Promise<RoomCheck> {
+/**
+ * The answer to "may I enter this room", plus what the room *is*.
+ *
+ * Since §10.1 the language is chosen once at room creation and held by the sync
+ * server, so this check is also how someone who was sent a link learns which
+ * language the room they are joining was made in. It is only meaningful when
+ * `status` is `"open"`.
+ */
+export type RoomStatus = {
+  status: RoomCheck;
+  language: LanguageValue;
+};
+
+export async function checkRoom(roomId: string): Promise<RoomStatus> {
   try {
     const res = await fetch(`${API_URL}/rooms/${encodeURIComponent(roomId)}`, {
       cache: "no-store",
     });
-    if (!res.ok) return "unreachable";
+    if (!res.ok) return { status: "unreachable", language: DEFAULT_LANGUAGE };
     const data: unknown = await res.json();
-    const exists =
-      typeof data === "object" && data !== null && (data as { exists?: unknown }).exists;
-    return exists === true ? "open" : "missing";
+    const body = (typeof data === "object" && data !== null ? data : {}) as {
+      exists?: unknown;
+      language?: unknown;
+    };
+    return {
+      status: body.exists === true ? "open" : "missing",
+      // Narrowed rather than trusted: this is a cross-origin response, and the
+      // value picks a Monaco tokenizer and a Piston runtime.
+      language: isLanguage(body.language) ? body.language : DEFAULT_LANGUAGE,
+    };
   } catch {
-    return "unreachable";
+    return { status: "unreachable", language: DEFAULT_LANGUAGE };
   }
 }
 
@@ -49,11 +71,15 @@ export class RoomCreateError extends Error {
  * Reserves a room and returns its ID. Throws if the server can't be reached —
  * the caller must show that rather than enter a room that doesn't exist.
  *
- * No request body on purpose: without a Content-Type this stays a CORS simple
- * request, so room creation costs no preflight round trip.
+ * Still no request body: without a Content-Type this stays a CORS **simple**
+ * request, so room creation costs no preflight round trip. That is exactly why
+ * §10.1's language travels as a query parameter and not as JSON — a body would
+ * buy a whole extra round trip before every room creation, for one word.
  */
-export async function createRoom(): Promise<string> {
-  const res = await fetch(`${API_URL}/rooms`, { method: "POST" });
+export async function createRoom(language: LanguageValue): Promise<string> {
+  const res = await fetch(`${API_URL}/rooms?language=${encodeURIComponent(language)}`, {
+    method: "POST",
+  });
   if (!res.ok) {
     // Prefer the server's own wording — it knows why it refused.
     const explained = await res
