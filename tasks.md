@@ -538,9 +538,123 @@ Shipped alongside 7.4, not originally listed here:
       UUID 404, and `lint`/`tsc`/`build` clean.
 
 ### 7.5 Guardrails
-- [ ] A dead room's original `room_id` can never be reused to rejoin a live session
-- [ ] If someone visits `/room/<old-dead-id>`, redirect home (same as v1's "room doesn't exist" behavior)
-- [ ] Rate-limit DB writes the same way v1 rate-limits room creation
+- [x] A dead room's original `room_id` can never be reused to rejoin a live session
+      — **already true since v1; ticked on verification, not on new code.** Three
+      independent things enforce it and none was added here: IDs are minted as
+      `crypto.randomUUID()` (`server/rooms.js`), so one is never handed out twice;
+      `roomExists()` is a pure in-memory lookup over `docs` + `reservations`, so a
+      destroyed ID is unknown forever and a restart makes *every* old ID unknown;
+      and `room_id` is `UNIQUE` with `ON CONFLICT DO NOTHING`, so even a repeat
+      write cannot revive one. Verified rather than assumed — see the note below.
+- [x] If someone visits `/room/<old-dead-id>`, redirect home (same as v1's "room doesn't exist" behavior)
+      — **also already true; verified in a real browser.** `checkRoom` →
+      `{"exists": false}` → `RoomGate`'s `missing` state → a "This room has
+      closed" screen, a 3-second countdown, and `router.replace("/")`. `replace`,
+      not `push`, so Back cannot land in the dead room again.
+- [x] Rate-limit DB writes the same way v1 rate-limits room creation
+      — **the only bullet that needed building.** `server/snapshotQueue.js`: the
+      same sliding window from `rateLimit.js` that `POST /rooms` uses, keyed on
+      the room creator's IP, plus a concurrency cap at `db.POOL_MAX`. It **defers
+      rather than refuses** — see the correction below.
+
+**Corrected while building 7.5 — the first two bullets could not be built as written:**
+
+- [x] **There was nothing to implement for bullets 1 and 2.** Both describe
+      behaviour v1 already had, and CLAUDE.md explicitly says not to tick 7.5 on
+      that basis alone. So they were driven end to end instead: a room was taken
+      through its real lifecycle to death, then `GET /rooms/:id` was confirmed to
+      answer `{"exists": false}`, a raw WebSocket to that ID was closed with
+      **4404**, `GET` was re-checked afterwards to prove the probe had not
+      resurrected it, an ID the server never issued was refused identically, and a
+      browser visiting the dead URL was watched being sent home. Building anything
+      new here would have been a second, weaker copy of a gate that already works.
+- [x] **"Rate-limit DB writes" cannot mean "refuse them".** `POST /rooms` answers
+      429 and the caller retries; a snapshot has no caller left to retry — the room
+      is already destroyed and its document freed, so a refused write destroys the
+      only copy of that work. Worse, the legitimate case that trips a per-IP limit
+      is a **shared NAT**: one office or classroom egress IP closing thirty rooms
+      at 5pm, not an attacker. So the limiter paces and defers, and the only thing
+      that ever discards is the queue's own memory bound.
+
+Shipped alongside 7.5, not originally listed here:
+
+- [x] **A concurrency cap, which fixed a real bug 7.5 never mentioned.**
+      `destroyRoom()` fired `saveDeadRoom()` and forgot it, so N rooms dying at
+      once meant N concurrent `pool.connect()` calls against a pool of 3.
+      Everything past the third waits in pg-pool's pending queue, where
+      `connectionTimeoutMillis` eventually rejects it — and the room is gone, so
+      there is nothing to retry from. **Measured before the fix: 10 rooms dying
+      together, 3 saved, 7 lost**, exactly the pool size, with
+      `timeout exceeded when trying to connect` in the log. **Same experiment
+      after: 10 of 10 saved.** Every Railway redeploy took this path, because the
+      shutdown flush destroys every room at once.
+- [x] **`died_at` is now bound by the writer instead of defaulting to `now()`.**
+      Once a write can be paced, `now()` records when Postgres was reached rather
+      than when the last person left — and `/profile` both **sorts** the listing on
+      `died_at` and renders `died_at - created_at` as each room's lifetime, so a
+      deferred room would sort below a later one and claim a longer life. Verified:
+      10 rooms whose writes were paced across ~15s came back with an **8ms**
+      `died_at` spread and identical lifetimes.
+- [x] **`saveDeadRoom`'s "never throws" is now actually true.** `pool.connect()`
+      sat on the line *above* the `try`, so all three of its rejection paths
+      escaped — survivable only because the old call site attached a `.catch`.
+      Under a queue whose worker chain has no other catcher, that would have become
+      an unhandled rejection, which is fatal by default and would take every live
+      room with it.
+- [x] **The shutdown flush releases pacing before it destroys anything.** A room
+      that died earlier can be sitting behind a pacing timer when SIGTERM arrives.
+      By then `server.close()` has released the listening handle, signal handles
+      never anchored the event loop, and the timer is `unref()`'d — so Node would
+      exit with those snapshots still in memory. Verified: 8 rooms parked behind a
+      60-second timer, SIGTERM, **all 8 written and the process exited in 6.8s**.
+- [x] **Every terminal path in the queue resolves, including a dropped one.** An
+      entry whose promise never settles sits in `pendingWrites` forever, which
+      would make `flushAndDestroyAll`'s `Promise.race` always resolve via its
+      deadline branch — turning every shutdown, healthy or not, into a full
+      20-second wait.
+- [x] **A per-key occupancy cap on the queue.** With only a global bound, one
+      caller's deferred entries could fill it and every *other* room's snapshot
+      would then be dropped at the door — the limiter would have converted abuse
+      into a queue and the queue into somebody else's data loss. Same argument as
+      `MAX_RESERVATIONS` vs. the per-IP limiter: a global ceiling and a per-caller
+      bound do different jobs.
+- [x] **The queue is bounded in bytes, not just entries.** A snapshot is up to
+      256 KB, so "64 entries" is 0.1 MB of ordinary rooms or 16 MB of capped ones.
+      Tens of MB competes with the Y.Docs of *live* rooms on a Railway container,
+      and an OOM there loses the queue **and** every live room — strictly worse
+      than the unbounded writes it replaced.
+- [x] **The pacing default is 60/min, not the 10 `POST /rooms` uses.** Room
+      creation is already capped at 10/min/IP and a snapshot additionally requires
+      a signed-in member who stayed 60s *and* edited, so 10 here would essentially
+      never bind on abuse while binding constantly on the shared-NAT case.
+      `SNAPSHOT_WRITE_LIMIT` / `SNAPSHOT_WRITE_WINDOW_MS` make it tunable, and
+      lowering them is how the deferral path is exercised in seconds.
+- [x] **The creator's IP never leaves memory.** It is recorded once, at
+      `POST /rooms` — the only moment a room and an address are ever in the same
+      place, since `destroyRoom` has no request and no socket — carried on the
+      in-memory room state, and used solely as the pacing key. It is not a column,
+      the INSERT lists its columns explicitly, and the queue's logs print room IDs
+      and depths only. Verified: no address appears in the server log, and
+      `dead_rooms` still has exactly its eight columns.
+- [x] **The exit backstop is armed before `db.close()`, not after.** `pool.end()`
+      waits for every checked-out client and the pool sets no `statement_timeout`,
+      so a query wedged against an unresponsive Neon hung that await forever — and
+      a backstop created afterwards was never reached, leaving only the platform's
+      SIGKILL.
+- [x] **End-to-end verification**: 12 headless assertions (a guest-only room still
+      stores nothing; a dead room's ID answers `exists:false`, closes a raw socket
+      with 4404 and is not resurrected by the probe; an unissued ID is refused
+      identically; `GET /rooms/:id` still never 404s; `POST /rooms` still 429s with
+      `Retry-After` and its own wording; no client address in the log; the schema
+      still has nowhere to put one), 11 browser assertions through real Chrome (the
+      closed-room screen, the countdown, the redirect home, Back not returning, and
+      a two-tab room still syncing, showing presence and broadcasting a Run with
+      its attribution), and seven write-path scenarios: the before/after burst,
+      40 rooms at default settings, deferral under a deliberately tiny window,
+      writes parked behind a 60s timer through a SIGTERM, `died_at` fidelity, and
+      the real 60-second membership threshold. Plus `lint`, `tsc` and `build`
+      clean, `/room/<id>` 200 with zero Monaco in the server-rendered HTML,
+      `/profile` 200 and `/nosuchpage` a real 404.
 
 ### 7.6 Housekeeping (not originally listed; recorded because it shipped)
 

@@ -103,7 +103,8 @@ Key files:
 - `collab-code-editor/app/lib/rateLimit.ts` / `server/rateLimit.js` — the same in-memory sliding-window limiter, once per workspace
 - `collab-code-editor/app/api/execute/route.ts` — server-side proxy to Piston; also where the sandbox-side execution limits live
 - `server/yjsConnection.js` — the only place that speaks the Yjs wire protocol; also the gate that refuses connections to rooms that don't exist, and where a `?token=` becomes a member session
-- `server/rooms.js` — the one authority on whether a room exists, and the only thing that ever deletes one. `destroyRoom()` is the single destroy site and therefore the one place a snapshot is taken
+- `server/rooms.js` — the one authority on whether a room exists, and the only thing that ever deletes one. `destroyRoom()` is the single destroy site and therefore the one place a snapshot is *taken* — since 7.5 it hands that snapshot to `snapshotQueue.js` rather than writing it
+- `server/snapshotQueue.js` — the one place that decides *when* a snapshot is written: the concurrency cap, the per-creator-IP pacing, and the shutdown drain. Nothing else may call `db.saveDeadRoom()`
 - `server/roomState.js` — what a room *was*, as opposed to whether it exists: `created_at`, the verified-member set with its connected-time and did-edit accounting, the accumulated participant list, and `buildSnapshot()`
 - `server/clerkAuth.js` — the one place a Clerk token becomes a user ID. Never refuses a socket
 - `collab-code-editor/prisma/schema.prisma` — the authority on the `dead_rooms` table's shape, and the only place it is described declaratively
@@ -563,6 +564,14 @@ reserved ──connect──► live ──last socket closes──► grace (10
 
 `roomExists()` is true for all three stages, which is what makes a page refresh survive.
 
+Since 7.5 there is a fifth state that the diagram cannot show, because it belongs to no room:
+**destroyed-but-unwritten.** A snapshot handed to `server/snapshotQueue.js` outlives the room
+object it came from — `docs` and `reservations` no longer know the ID, `roomExists()` answers
+false, and the `Y.Doc` is gone, but the row has not landed yet. Nothing about rejoining changes
+(the ID stays refused, which is 7.5's first bullet), but two things follow: the queue holds the
+only copy of that work, so its bounds are data-loss decisions rather than tuning; and a shutdown
+must drain it explicitly, since no live room is left to keep the process alive on its behalf.
+
 **y-websocket will not delete rooms for us, so this module must.** `closeConn` in
 `y-websocket/bin/utils.js` puts `docs.delete(doc.name)` *inside* an
 `if (doc.conns.size === 0 && persistence !== null)` branch, and this server deliberately
@@ -717,6 +726,15 @@ When a room is destroyed, its final text is written **once** to `dead_rooms`, pl
 the single site; `server/roomState.js` decides what and for whom. Guest-only rooms — still the
 common case — write nothing at all, exactly as in v1.
 
+**Since 7.5, "taken" and "written" are two different moments.** `destroyRoom()` still captures
+the room's final state at the instant it dies, and is still the only place that does — but it
+then hands the snapshot to `server/snapshotQueue.js`, which decides when the INSERT actually
+runs. Everything below about *what* is captured and *for whom* is unchanged; what moved is the
+timing. Two consequences worth carrying into any change here: the snapshot carries its own
+`diedAt` rather than letting the INSERT default to `now()`, and `db.saveDeadRoom()` must not be
+called from anywhere but the queue, or the concurrency cap stops meaning anything. See "The
+snapshot write queue" under "Rate limiting and payload size".
+
 **Who a dead room belongs to.** Every verified signed-in participant who **stayed 60s**
 (`MEMBER_MIN_CONNECTED_MS`) **and actually edited the document**. There is no owner and no
 ownership transfer. The two halves do different jobs and neither is redundant: the timer stops
@@ -785,7 +803,10 @@ has not noticed. Flushing only rooms already inside their grace window would sav
 nobody was using and lose every room someone was working in, on every deploy. Shutdown closes
 sockets with **1012 (Service Restart), not 4404** — the client treats 4404 as permanent and
 stops retrying, which is exactly wrong for a redeploy — and `/health` answers 503 while
-draining so Railway stops routing.
+draining so Railway stops routing. Since 7.5 the flush also calls `snapshotQueue.releasePacing()`
+**before** the destroy loop and `snapshotQueue.destroy()` after the deadline race; both are
+explained under "The snapshot write queue", and without the first a queue with no live rooms
+behind it is lost outright.
 
 **`destroyRoom` must not be `async`, and nothing may be awaited before `docs.delete()`.** An
 await there leaves a window in which `roomExists()` still answers true, so a client can
@@ -947,6 +968,64 @@ security boundary. The sync-server side *is* exact — one Railway process, one 
 **This is a different thing from `MAX_RESERVATIONS`.** That is a global ceiling on unclaimed
 rooms with no notion of who created them; this bounds a single caller. Both are needed: the
 limiter stops one script exhausting the ceiling, the ceiling stops many callers doing it.
+
+### The snapshot write queue (task 7.5)
+
+There is a **third** limiter, and it is not an endpoint: `server/snapshotQueue.js` sits between
+`destroyRoom()` and `db.saveDeadRoom()`. It is what `tasks.md` §7.5's "rate-limit DB writes the
+same way v1 rate-limits room creation" became.
+
+**It defers; it never refuses.** This is the difference that matters, and it is not a
+stylistic one. `POST /rooms` can answer 429 because there is a caller standing there to retry.
+A snapshot has no caller: the room is already destroyed and its document freed, so a refused
+write destroys the only copy of that work. And the legitimate case that trips a per-IP limit is
+a **shared NAT** — one office or classroom egress IP closing thirty rooms at 5pm — not an
+attacker. So an over-limit snapshot waits its turn. The only thing that discards is the queue's
+own memory bound, and it logs loudly when it does.
+
+**The concurrency cap is the part that actually fixed a bug, and it is the reason to keep this
+module even if the pacing were removed.** Before it, `destroyRoom()` fired `saveDeadRoom()` and
+forgot it, so N rooms dying at once meant N concurrent `pool.connect()` calls against
+`db.POOL_MAX` of 3. Everything past the third waits in pg-pool's pending queue, where
+`connectionTimeoutMillis` eventually rejects it — and the room is gone, so nothing can retry.
+**Measured: 10 rooms dying together, 3 saved, 7 lost**, exactly the pool size. Every redeploy
+took this path, because the shutdown flush destroys every room at once. The cap is
+`db.POOL_MAX` **exactly**: one less idles a connection for nothing, one more puts a worker back
+in the pending queue this exists to keep it out of. If anything else in that process ever uses
+the pool, this cap must drop below `POOL_MAX`.
+
+**`died_at` is bound by the writer, not left to the INSERT's `now()`.** Once a write can be
+paced, `now()` records when Postgres was reached rather than when the last person left — and
+`/profile` both *sorts* its listing on `died_at` and renders `died_at - created_at` as each
+room's lifetime, so a deferred room would sort below a later one and claim a longer life.
+Verified: 10 rooms paced across ~15s came back with an 8ms `died_at` spread.
+
+**The shutdown flush calls `releasePacing()` before it destroys anything, and that ordering is
+load-bearing.** A room that died earlier can be parked behind a pacing timer when SIGTERM
+arrives. By then `server.close()` has released the listening handle, Node's signal handles never
+anchored the event loop, and the pacing timer is `unref()`'d — so if the flush only set a flag,
+Node would exit with those snapshots still in memory. `releasePacing()` pumps *synchronously*,
+and the `pool.connect()` sockets it opens are what keep the process alive long enough to finish.
+After the deadline race resolves, `destroy()` closes the queue before `db.close()` runs, or the
+remainder would be attempted against an ended pool and never settle.
+
+**Every terminal path resolves, including a dropped one.** Those promises live in
+`pendingWrites`, and one that never settles makes `flushAndDestroyAll`'s `Promise.race` always
+resolve via its deadline branch — turning every shutdown, healthy or not, into a full
+`SNAPSHOT_FLUSH_MS` wait.
+
+**The default is 60/min, not the 10 `POST /rooms` uses**, so the sentence at the top of this
+section is about *endpoints* only. Ten would be near-useless as a bound and actively harmful as
+a delay: room creation is already capped at 10/min/IP, and a snapshot additionally needs a
+signed-in member who stayed `MEMBER_MIN_CONNECTED_MS` **and** edited, so the achievable rate per
+IP is already ≤10/min at a cost of 60s of connected time per room.
+
+**The creator's IP never leaves memory.** `POST /rooms` is the only moment a room and an address
+are ever in the same place — `destroyRoom` has no request and no socket — so `clientKey(req)` is
+recorded there, carried on the in-memory room state, and used solely as the pacing key. It is
+not a column, `saveDeadRoom`'s INSERT lists its columns explicitly, and the queue's logs print
+room IDs and queue depths only. Same rule as the `req.url` logging ban: an address that now
+lives in memory for minutes deserves the same care as a token.
 
 **A 429 must not be reported as "couldn't reach the sync server".** Rate limiting makes "the
 server answered and refused" a state a normal user can hit, and the two call for opposite
@@ -1176,7 +1255,8 @@ that value as a *filename* and will try to open a file called `system`.
 | `DIRECT_URL` | `collab-code-editor/.env.local` only | Neon's **unpooled** string, used by `prisma migrate` alone. Not interchangeable with `DATABASE_URL` — see "Persistence (Postgres)". The sync server has no counterpart because it never migrates. |
 | `CLERK_SECRET_KEY` | `collab-code-editor/.env.local` **and** `server/.env` | In the app, Clerk's usual server key. In `server/`, used *only* by `verifyToken` on the WebSocket. **Optional in `server/`** — unset, no token is verified, no room has members and nothing is written, so the guest flow never depends on auth infrastructure. Must be the **same Clerk instance** as the frontend's publishable key: a mismatched key fails every token with no visible symptom at all (rooms work; snapshots simply never appear), which is why `clerkAuth.js` warns once per process. |
 | `MEMBER_MIN_CONNECTED_MS` | `server/.env` | How long a signed-in participant must be connected before they can earn a `dead_room_members` row. Defaults to `60000`. Only half the threshold — see "Who a dead room belongs to". |
-| `SNAPSHOT_FLUSH_MS` | `server/.env` | Ceiling on how long a shutdown waits for in-flight snapshot writes. Defaults to `20000`. A ceiling, not a delay: a healthy shutdown takes about half a second. |
+| `SNAPSHOT_FLUSH_MS` | `server/.env` | Ceiling on how long a shutdown waits for snapshot writes. Defaults to `20000`. A ceiling, not a delay — but since 7.5 it bounds a *drain*, not one batch: N queued rooms take `ceil(N / POOL_MAX) × per-write`, measured ~6.6s for 40 rooms against a warm Neon. An empty queue still shuts down in about half a second. |
+| `SNAPSHOT_WRITE_LIMIT`, `SNAPSHOT_WRITE_WINDOW_MS` | `server/.env` | The snapshot write pacing, keyed on the room creator's IP. Default `60` per `60000`ms — deliberately *not* `POST /rooms`' 10; see "The snapshot write queue". Over-limit writes wait rather than being dropped. Lower both to exercise the deferral path in seconds. |
 | `DB_CONNECT_TIMEOUT_MS` | `server/.env` | Per-attempt Postgres connect timeout. Defaults to `10000`. Must stay **under** `SNAPSHOT_FLUSH_MS` and **over** a Neon cold start — see "Dead-room snapshots". |
 
 ## Production execution path
@@ -1212,12 +1292,13 @@ image is **amd64-only** (single-arch manifest) — ARM free tiers cannot host it
 
 ## Not built yet
 
-**Sections 7.1 (Clerk auth), 7.2 (Postgres), 7.3 (the dead-room snapshot) and 7.4 (`/profile`)
-are done** — see "Accounts (Clerk)", "Persistence (Postgres)", "Dead-room snapshots" and "The
-profile page" above, which replace older notes here claiming none of them existed. **What
-remains unticked:** 7.5 (guardrails) and all of section 10 — no multi-file, no chat, no room
-passwords. Redis pub/sub for horizontal scaling is *not* a v2 item at all — section 8 puts it
-explicitly out of scope, so it stays deferred past v2.
+**Section 7 is complete: 7.1 (Clerk auth), 7.2 (Postgres), 7.3 (the dead-room snapshot),
+7.4 (`/profile`) and 7.5 (guardrails) are all done** — see "Accounts (Clerk)", "Persistence
+(Postgres)", "Dead-room snapshots", "The profile page" and "The snapshot write queue" above,
+which replace older notes here claiming none of them existed. **What remains unticked:** all of
+section 10 — no multi-file, no chat, no room passwords. Redis pub/sub for horizontal scaling is
+*not* a v2 item at all — section 8 puts it explicitly out of scope, so it stays deferred past
+v2.
 
 The whole v2 loop now closes: `server/rooms.js`'s `destroyRoom()` writes the snapshot and
 `/profile` reads it back, so a signed-in user's work really does outlive the tab. An older note
@@ -1231,14 +1312,20 @@ Three concrete things it invalidated across this file, all corrected in place: `
 no longer 500s, the app is no longer dark-only, and `EditorToolbar.tsx`/`UserBar.tsx` are gone
 (now `RoomChrome.tsx` + `PresenceStack.tsx`).
 
-**7.5 is partly satisfied already, but do not tick it on that basis.** Its first two bullets —
-a dead room's `room_id` can never be reused, and `/room/<old-dead-id>` sends you home — have
-been true since v1 (see "Room lifetime") and were re-verified during 7.3, including with a
-valid Clerk token attached. Its third, rate-limiting DB writes, is not built: the write is
-bounded indirectly by room creation's 10/min/IP limit and by the fact that one room produces at
-most one row, but there is no limiter on the write itself. Note 7.4 adds a *read* path that
-7.5 never anticipated and which is likewise unlimited — though it is bounded by Clerk
-authentication and by one indexed query per request.
+**7.5 is done, and two of its three bullets were ticked on verification rather than on new
+code.** An older note here said "do not tick it on that basis" — that instruction was followed:
+a dead room's `room_id` can never be reused and `/room/<old-dead-id>` sends you home have both
+been true since v1 (see "Room lifetime"), so instead of building a second, weaker copy of a gate
+that already works, a room was driven through its real lifecycle to death and the behaviour was
+observed — `{"exists": false}`, a raw socket closed with 4404, the ID still dead after the
+probe, and a browser watched being sent home. The third bullet, rate-limiting DB writes, is
+built: `server/snapshotQueue.js`, described under "The snapshot write queue".
+
+**7.4's read path is still unlimited, and that remains a deliberate gap.** Every `/profile` view
+is one uncached Neon query. It is bounded by Clerk authentication and by a single indexed lookup
+per request, which is why 7.5 did not cover it — but nothing stops a signed-in user from
+refreshing in a loop, so if the read path ever grows a second query or an unindexed one, revisit
+this.
 
 The two facts 7.4 was warned about both held, and are now documented under "The profile page":
 the listing is a join from `dead_room_members`, not a column filter; and `language` being null
