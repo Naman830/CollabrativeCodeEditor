@@ -19,6 +19,7 @@
 const { docs } = require("y-websocket/bin/utils");
 const crypto = require("crypto");
 const db = require("./db");
+const snapshotQueue = require("./snapshotQueue");
 const { createRoomState, deleteRoomState, buildSnapshot } = require("./roomState");
 
 // How long an emptied room lingers. Non-zero on purpose: the last person
@@ -50,9 +51,16 @@ const FLUSH_DEADLINE_MS = Number(process.env.SNAPSHOT_FLUSH_MS) || 20_000;
 let shuttingDown = false;
 
 /**
- * In-flight `saveDeadRoom` promises. A snapshot is fired and forgotten so it can
- * never delay room destruction, but a shutdown has to be able to wait for them —
- * this is the only handle on that. Entries remove themselves, so it never grows.
+ * Unfinished snapshot writes. A snapshot is handed to `snapshotQueue` and
+ * forgotten so it can never delay room destruction, but a shutdown has to be
+ * able to wait for them — this is the only handle on that. Entries remove
+ * themselves.
+ *
+ * Since 7.5 these are *queue* promises, not `saveDeadRoom` promises: one resolves
+ * when its write finally lands, which may be after a pacing delay, so this set is
+ * bounded by the queue's own limits rather than by POOL_MAX. Every terminal path
+ * in the queue resolves, including a dropped one — an entry that never settled
+ * would leave `flushAndDestroyAll` below permanently racing its deadline.
  */
 const pendingWrites = new Set();
 
@@ -71,14 +79,20 @@ function unref(timer) {
 /**
  * Hands out a fresh room ID and holds it open for RESERVATION_MS.
  * Returns null when the reservation ceiling is hit, so the caller can answer 429.
+ *
+ * `creatorKey` is the creating caller's IP, from the same `clientKey(req)` the
+ * create limiter uses. It is the only moment a room is ever associated with an
+ * address — `destroyRoom` has no request and no socket — and task 7.5's write
+ * pacing needs one, so it is recorded here and carried on the room state. It
+ * never leaves memory.
  */
-function reserveRoom() {
+function reserveRoom(creatorKey = null) {
   if (reservations.size >= MAX_RESERVATIONS) return null;
 
   const roomId = crypto.randomUUID();
   // The only place that knows when a room was created — `created_at` on the
   // snapshot comes from here, and nothing else in the process records it.
-  createRoomState(roomId);
+  createRoomState(roomId, creatorKey);
   reservations.set(
     roomId,
     unref(
@@ -145,7 +159,13 @@ function scheduleEviction(roomId) {
 }
 
 /**
- * The single destroy site. Takes the dead-room snapshot, then destroys the doc.
+ * The single destroy site. Takes the dead-room snapshot, hands it to
+ * `snapshotQueue`, then destroys the doc.
+ *
+ * Since 7.5 "taken" and "written" are two different moments: this function still
+ * captures the room's final state at the instant it dies, but the INSERT may run
+ * later, under the queue's concurrency cap and pacing. That is why the snapshot
+ * carries its own `diedAt` rather than letting the INSERT default to `now()`.
  *
  * Deliberately NOT async, and nothing is awaited before `docs.delete()`. An
  * await there would leave a window in which `roomExists()` still answers true,
@@ -187,16 +207,25 @@ function destroyRoom(roomId, reason) {
 
   if (!snapshot) return;
 
-  const write = db
-    .saveDeadRoom(snapshot)
-    .then((result) => {
-      if (result === "written") {
-        console.log(`Dead room saved: ${roomId} (${snapshot.userIds.length} member(s))`);
-      }
-    })
-    .catch((err) => console.error(`saveDeadRoom rejected for ${roomId}:`, err.message))
-    .finally(() => pendingWrites.delete(write));
-  pendingWrites.add(write);
+  // Handing over, not writing: the queue owns concurrency and pacing from here.
+  // Wrapped for the same reason the snapshot build above is — this runs inside an
+  // unref'd setTimeout, where a throw is an uncaught exception that would kill
+  // the process and every other live room. `enqueue` is contracted never to
+  // throw; this is the belt to that braces.
+  try {
+    const write = snapshotQueue
+      .enqueue(snapshot)
+      .then((result) => {
+        if (result === "written") {
+          console.log(`Dead room saved: ${roomId} (${snapshot.userIds.length} member(s))`);
+        }
+      })
+      .catch((err) => console.error(`Snapshot write failed for ${roomId}:`, err.message))
+      .finally(() => pendingWrites.delete(write));
+    pendingWrites.add(write);
+  } catch (err) {
+    console.error(`Could not queue snapshot for ${roomId}:`, err.message);
+  }
 }
 
 /**
@@ -215,13 +244,31 @@ function destroyRoom(roomId, reason) {
 function flushAndDestroyAll() {
   shuttingDown = true;
 
+  // Before the destroy loop, not after. Two reasons, both load-bearing:
+  //
+  //  - A room destroyed by the loop below must not re-arm a pacing timer behind
+  //    the flush's back. A redeploy is not abuse, and there is a hard deadline.
+  //  - Anything already parked behind a pacing timer has to be started *now*.
+  //    By this point `server.close()` has released the listening handle and the
+  //    deadline timer below is unref'd, so if the queue held entries and no room
+  //    was left alive, nothing would be anchoring the event loop — Node would
+  //    exit before a single row was written. The sockets this opens are the
+  //    anchor.
+  snapshotQueue.releasePacing();
+
   // Copy the keys: destroyRoom mutates `docs` as it goes.
   for (const roomId of [...docs.keys()]) destroyRoom(roomId, "shutdown");
 
   return Promise.race([
     Promise.allSettled([...pendingWrites]),
     new Promise((resolve) => unref(setTimeout(resolve, FLUSH_DEADLINE_MS))),
-  ]);
+  ]).then(() => {
+    // The deadline branch can win with writes still queued. Close the queue
+    // before index.js calls db.close(): entries started against an ended pool
+    // reject with "Cannot use a pool after calling end on the pool", and — worse
+    // — entries left sitting there would never resolve at all.
+    snapshotQueue.destroy("the shutdown flush deadline");
+  });
 }
 
 /** True once a shutdown has begun; new connections are refused after this. */

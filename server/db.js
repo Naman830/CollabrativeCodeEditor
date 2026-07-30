@@ -11,9 +11,25 @@
 // the two workspaces share no code, so a column renamed in schema.prisma must
 // be renamed in the INSERT below. There is no build step that would catch it.
 //
-// Called from the single destroy site in rooms.js (task 7.3).
+// The snapshot is *taken* at the single destroy site in rooms.js (task 7.3) and
+// *written* here, by snapshotQueue.js (task 7.5). Those used to be the same
+// moment and no longer are — see "Rate limiting and payload size" in CLAUDE.md.
+// Nothing else may call saveDeadRoom: the queue is what bounds how many of these
+// run at once, and a caller that goes around it reintroduces the pool exhaustion
+// that queue exists to prevent.
 
 const { Pool } = require("pg");
+
+// The pool ceiling, exported because snapshotQueue.js caps its concurrency at
+// exactly this number: every worker then checks out a client immediately and
+// none ever waits in pg-pool's pending queue, where `connectionTimeoutMillis`
+// would eventually reject it. One constant, used in the Pool literal below and
+// read by the queue, so the two cannot drift.
+//
+// If anything in this process ever uses the pool for something *other* than a
+// snapshot, this stops being the right cap for the queue and it must drop below
+// POOL_MAX — otherwise the two consumers race for the same three clients.
+const POOL_MAX = 3;
 
 // Optional on purpose. Every other local-dev path in this repo runs without its
 // remote dependency (Piston down just fails a Run), and requiring a database to
@@ -29,7 +45,7 @@ if (CONNECTION_STRING) {
     connectionString: CONNECTION_STRING,
     // One writer, one statement per dead room. A large pool would just hold
     // Neon connections open for a process that is idle between evictions.
-    max: 3,
+    max: POOL_MAX,
     // A snapshot is not worth blocking shutdown over. If the database is
     // unreachable the write fails fast and the room is destroyed anyway.
     //
@@ -69,20 +85,32 @@ function isEnabled() {
 
 /**
  * Writes one dead-room snapshot plus one `dead_room_members` row per qualifying
- * user, in a single transaction. Called exactly once per room, by the single
- * destroy site in rooms.js (task 7.3).
+ * user, in a single transaction. Called exactly once per room, by
+ * `snapshotQueue.js` — never directly from the destroy site, which since 7.5
+ * only *takes* the snapshot and hands it over.
  *
  * There is deliberately no owner: tasks.md §6.1 gives a copy to *every* verified
  * signed-in participant who met the contribution threshold. `userIds` is that
  * set, and every ID in it came from a Clerk token this server verified — never
  * from awareness (see clerkAuth.js).
  *
- * Never throws: a failed snapshot must not stop a room being destroyed, and
- * there is nobody left in the room to report an error to.
+ * Never throws and never rejects: a failed snapshot must not stop a room being
+ * destroyed, and there is nobody left in the room to report an error to. That
+ * contract is load-bearing for `snapshotQueue.js`, whose worker chain would
+ * otherwise turn a `pool.connect()` rejection into an unhandled rejection —
+ * fatal under Node's default `--unhandled-rejections=throw`, taking every live
+ * room with it. `pool.connect()` is therefore *inside* the try: it rejects on
+ * three separate paths (pool already ended, `timeout exceeded when trying to
+ * connect`, and the `Connection terminated due to connection timeout` this repo
+ * has actually observed against a suspended Neon branch).
  *
  * ON CONFLICT DO NOTHING enforces the write-once rule against retries and
  * against a server restart that re-evicts a room ID it already saved. The
  * UNIQUE on room_id in schema.prisma is what makes that work.
+ *
+ * `creatorKey` may be present on the snapshot — it is the room creator's IP,
+ * used only as the queue's pacing key. The INSERT lists its columns explicitly,
+ * so it cannot reach the database: **no IP is ever written to Postgres.**
  *
  * @param {{
  *   roomId: string,
@@ -92,19 +120,23 @@ function isEnabled() {
  *   isPrivate?: boolean,
  *   participants?: Array<{name: string, color: string}> | null,
  *   createdAt: Date,
+ *   diedAt: Date,
+ *   creatorKey?: string,
  * }} snapshot
  * @returns {Promise<"written" | "skipped" | "failed" | "disabled">}
  */
 async function saveDeadRoom(snapshot) {
   if (!pool) return "disabled";
 
-  // A checked-out client, not pool.query. `pool.query("BEGIN")` is not a
-  // transaction: with max:3 the BEGIN, the INSERTs and the COMMIT can each land
-  // on a *different* pooled connection, so the inserts run outside the
-  // transaction and the COMMIT commits nothing at all. It fails silently — the
-  // rows appear, so it looks like it worked.
-  const client = await pool.connect();
+  /** @type {import("pg").PoolClient | null} */
+  let client = null;
   try {
+    // A checked-out client, not pool.query. `pool.query("BEGIN")` is not a
+    // transaction: with max:3 the BEGIN, the INSERTs and the COMMIT can each
+    // land on a *different* pooled connection, so the inserts run outside the
+    // transaction and the COMMIT commits nothing at all. It fails silently —
+    // the rows appear, so it looks like it worked.
+    client = await pool.connect();
     await client.query("BEGIN");
 
     const inserted = await client.query(
@@ -112,10 +144,17 @@ async function saveDeadRoom(snapshot) {
       // *Prisma-side* default, so the generated migration declares
       // `"id" UUID NOT NULL` with no DEFAULT clause. This process has no Prisma
       // client to mint one. RETURNING hands it back for the members insert.
+      // `died_at` is bound, NOT `now()`. Since 7.5 a write can be paced, so the
+      // INSERT may run seconds or minutes after the room actually died —
+      // `now()` would record when Postgres was reached rather than when the
+      // last person left. Both of /profile's uses would then be wrong:
+      // `deadRooms.ts` orders the listing by `died_at`, so a deferred room would
+      // sort below a later one that wrote immediately, and `lifetime()` renders
+      // `died_at - created_at` under each snapshot, which the delay inflates.
       `INSERT INTO dead_rooms
          (id, room_id, files, language, is_private, participants, created_at, died_at)
        VALUES
-         (gen_random_uuid(), $1, $2::jsonb, $3, $4, $5::jsonb, $6, now())
+         (gen_random_uuid(), $1, $2::jsonb, $3, $4, $5::jsonb, $6, $7)
        ON CONFLICT (room_id) DO NOTHING
        RETURNING id`,
       [
@@ -125,6 +164,7 @@ async function saveDeadRoom(snapshot) {
         snapshot.isPrivate ?? false,
         snapshot.participants?.length ? JSON.stringify(snapshot.participants) : null,
         snapshot.createdAt,
+        snapshot.diedAt,
       ],
     );
 
@@ -156,14 +196,16 @@ async function saveDeadRoom(snapshot) {
     await client.query("COMMIT");
     return "written";
   } catch (err) {
-    await client.query("ROLLBACK").catch(() => {});
+    // `client` is null when the failure *was* `pool.connect()`; there is no
+    // transaction to roll back in that case.
+    if (client) await client.query("ROLLBACK").catch(() => {});
     console.error(`Failed to save dead room ${snapshot.roomId}:`, err.message);
     return "failed";
   } finally {
     // Mandatory. A leaked client out of a pool of 3 means the next two snapshots
     // block for connectionTimeoutMillis and then fail, and the third onwards
     // never runs at all.
-    client.release();
+    if (client) client.release();
   }
 }
 
@@ -175,4 +217,4 @@ async function close() {
   });
 }
 
-module.exports = { isEnabled, saveDeadRoom, close };
+module.exports = { POOL_MAX, isEnabled, saveDeadRoom, close };

@@ -94,6 +94,7 @@ function stripUnstorable(raw) {
  *
  * @type {Map<string, {
  *   createdAt: number,
+ *   creatorKey: string | null,
  *   members: Map<string, Member>,
  *   participants: Map<string, {name: string, color: string}>,
  *   connUsers: Map<object, string>,
@@ -103,13 +104,26 @@ function stripUnstorable(raw) {
  */
 const states = new Map();
 
-/** Called from `reserveRoom` — this is the only thing that knows `created_at`. */
-function createRoomState(roomId) {
+/**
+ * Called from `reserveRoom` — this is the only thing that knows `created_at`.
+ *
+ * Get-or-create, and that matters now that it takes a second argument:
+ * `claimRoom` also calls it, defensively and with no `creatorKey`, so returning
+ * the existing state untouched is what stops the first connection erasing the
+ * key `POST /rooms` recorded. Do not "simplify" this into an unconditional
+ * overwrite.
+ *
+ * `creatorKey` is the creating caller's IP (task 7.5's pacing key). It lives
+ * only here, dies with the room, and is never written to Postgres — see
+ * `db.js`'s `saveDeadRoom`.
+ */
+function createRoomState(roomId, creatorKey = null) {
   const existing = states.get(roomId);
   if (existing) return existing;
 
   const state = {
     createdAt: Date.now(),
+    creatorKey,
     members: new Map(),
     participants: new Map(),
     // Socket -> verified user ID. Needed because Yjs hands us the *socket* as a
@@ -384,6 +398,8 @@ function snapshotText(yText) {
  *   isPrivate: boolean,
  *   participants: Array<{name: string, color: string}> | null,
  *   createdAt: Date,
+ *   diedAt: Date,
+ *   creatorKey: string,
  * }}
  */
 function buildSnapshot(roomId, doc, now) {
@@ -412,6 +428,19 @@ function buildSnapshot(roomId, doc, now) {
     participants: state.participants.size > 0 ? [...state.participants.values()] : null,
     // `created_at` is NOT NULL in the migration, so no path may pass null here.
     createdAt: new Date(state.createdAt ?? now),
+    // The moment the room actually died, captured here rather than left to the
+    // INSERT's `now()`: since 7.5 the write can be paced, and /profile both
+    // sorts on and renders this value. See db.js's INSERT.
+    diedAt: new Date(now),
+    // The pacing key for `snapshotQueue.js`. Falls back to the room ID rather
+    // than a shared sentinel: `clientKey()` already returns the literal
+    // "unknown" for an unidentifiable caller, so sharing that string would put
+    // every unattributable room in one bucket and serialise them behind each
+    // other for no reason. A room is written exactly once, so a roomId key can
+    // never exceed one hit in its window — an unattributable snapshot is
+    // therefore never paced, which is the right answer: you cannot rate-limit a
+    // caller you cannot identify, and pretending to only penalises the victim.
+    creatorKey: state.creatorKey ?? roomId,
   };
 }
 

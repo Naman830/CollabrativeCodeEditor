@@ -73,7 +73,14 @@ const server = http.createServer((req, res) => {
   // the server never handed out is refused at connect time. The body is empty
   // on purpose — no Content-Type keeps this a CORS simple request, no preflight.
   if (req.method === "POST" && path === "/rooms") {
-    const limit = createRoomLimiter(clientKey(req));
+    // Derived once and used twice: it limits creation here, and it is recorded
+    // on the room as the pacing key for that room's eventual snapshot write
+    // (task 7.5). This request is the only point at which a room and an address
+    // are ever in the same place — by the time the room dies there is no request
+    // and no socket left to ask.
+    const caller = clientKey(req);
+
+    const limit = createRoomLimiter(caller);
     if (!limit.allowed) {
       res.setHeader("Retry-After", String(limit.retryAfterSeconds));
       return json(res, 429, {
@@ -81,7 +88,7 @@ const server = http.createServer((req, res) => {
       });
     }
 
-    const roomId = reserveRoom();
+    const roomId = reserveRoom(caller);
     if (!roomId) {
       return json(res, 429, { error: "Too many rooms are being created. Try again shortly." });
     }
@@ -131,16 +138,23 @@ async function shutdown(signal) {
 
   // After the rooms, so their close handlers cannot perturb a flush in progress.
   for (const client of wss.clients) client.close(CLOSE_SERVICE_RESTART, "server-restart");
-  await db.close();
 
-  console.log("Shutdown complete");
+  // Armed BEFORE `db.close()`, not after. `pool.end()` waits for every
+  // checked-out client to be released, and the pool sets no `statement_timeout`
+  // or `query_timeout` — so a query wedged against an unresponsive Neon hangs
+  // this await indefinitely. A backstop created afterwards would never be
+  // reached, leaving nothing but the platform's SIGKILL to end the process.
+  //
   // Destroying every doc cleared each Awareness's 3s `_checkInterval` — which is
   // NOT unref'd, and is the reason this process never exits on its own — plus
-  // every per-connection ping timer, so the event loop drains and Node exits
-  // naturally with stdout flushed. `process.exit` truncates pending pipe writes
-  // on Railway, so it is only the backstop.
+  // every per-connection ping timer, so on a healthy shutdown the event loop
+  // drains and Node exits naturally with stdout flushed. `process.exit`
+  // truncates pending pipe writes on Railway, so it stays the backstop.
   const backstop = setTimeout(() => process.exit(0), 2_000);
   if (typeof backstop.unref === "function") backstop.unref();
+
+  await db.close();
+  console.log("Shutdown complete");
 }
 
 process.on("SIGTERM", () => shutdown("SIGTERM"));
