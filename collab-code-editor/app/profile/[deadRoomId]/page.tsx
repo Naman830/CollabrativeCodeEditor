@@ -13,9 +13,11 @@ import { notFound } from "next/navigation";
 import { auth } from "@clerk/nextjs/server";
 import DeleteSnapshotButton from "../../components/DeleteSnapshotButton";
 import ProfileShell, { ProfileSignInGate } from "../../components/ProfileShell";
+import SnapshotDownloadAll from "../../components/SnapshotDownloadAll";
 import SnapshotFile from "../../components/SnapshotFile";
 import { LockIcon } from "../../components/icons";
 import { absoluteTime, getDeadRoomForUser, lifetime, relativeTime } from "../../lib/deadRooms";
+import { languageLabel } from "../../lib/languages";
 
 export const metadata: Metadata = {
   title: "Saved room",
@@ -95,7 +97,14 @@ export default async function SnapshotPage(props: PageProps<"/profile/[deadRoomI
           </div>
           <div className="flex items-center gap-1.5">
             <dt className="text-fg-subtle">Language</dt>
-            <dd>{room.language ?? "not recorded"}</dd>
+            {/* Real since §10.1 moved the selector to room creation. The
+                fallback stays for every row written before then, where the
+                server genuinely had no room-wide language to record. */}
+            <dd>{room.language ? languageLabel(room.language) : "not recorded"}</dd>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <dt className="text-fg-subtle">Files</dt>
+            <dd>{room.files.length}</dd>
           </div>
         </dl>
 
@@ -125,8 +134,10 @@ export default async function SnapshotPage(props: PageProps<"/profile/[deadRoomI
         </div>
       </div>
 
-      {/* A loop over one file today. `files` has been an array since 7.2 so that
-          §10.1's multi-file rooms need no migration — and no rewrite here. */}
+      {/* One section per file. `files` has been an array since 7.2 so that
+          §10.1's multi-file rooms needed no migration — and, as intended, no
+          rewrite here either: this loop is unchanged, it simply runs more than
+          once now. */}
       <div className="flex flex-col gap-4">
         {room.files.map((file, index) => (
           <SnapshotFile key={`${index}-${file.filename}`} file={file} />

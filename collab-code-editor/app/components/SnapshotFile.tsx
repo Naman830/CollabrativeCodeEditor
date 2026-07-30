@@ -6,13 +6,18 @@
 //     closed. An editor is the one widget on this site that means "you can type
 //     here"; rendering one and switching `readOnly` on says the opposite of what
 //     the page is for.
-//  2. There is nothing to highlight. `dead_rooms.language` is null on every row
-//     until §10.1 moves the language selector to room creation, so Monaco would
-//     load ~5 MB to render plaintext.
-//  3. `lib/monacoLoader.ts` imports `monaco-editor` at module scope, which
-//     touches `window`. That import chain is why `/room/[roomId]` returns HTTP
-//     500 from the server on every request (see CLAUDE.md). Keeping it out of
-//     this route's graph is what lets /profile actually server-render.
+//  2. `lib/monacoLoader.ts` imports `monaco-editor` at module scope, which
+//     touches `window`. Keeping that import chain out of this route's graph is
+//     what lets /profile server-render at all, and the standing regression test
+//     is `curl -s localhost:3000/profile/<id> | grep -c monaco` == 0.
+//
+// An earlier version of this comment carried a third reason — "there is nothing
+// to highlight, since `dead_rooms.language` is null on every row until §10.1".
+// **That is no longer true**: §10.1 moved the language selector to room creation
+// and the column now carries a real value. The two reasons above are unaffected,
+// and are the ones that were doing the work; syntax highlighting on a read-only
+// snapshot is not worth 5 MB of editor on a page that otherwise ships no
+// JavaScript at all.
 
 import { isTruncated, type SnapshotFile as SnapshotFileData } from "../lib/deadRooms";
 import SnapshotActions from "./SnapshotActions";
