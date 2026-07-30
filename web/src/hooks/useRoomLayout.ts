@@ -1,39 +1,21 @@
 "use client";
 
-// Where the editor/output split lives: which way the room is divided, how big
-// each side is, whether the output is folded away, and whether the viewport is
-// too narrow to offer the choice at all. One localStorage key holds all of it.
-//
-// The rule this file exists to enforce: **nothing here may re-render
-// `CodeEditor` during a drag.** `Group` exposes two callbacks — `onLayoutChange`
-// fires on every pointermove, `onLayoutChanged` fires once on release — and only
-// the second is ever wired up. Sizes are kept in a ref rather than state for the
-// same reason. `CodeEditor` renders the element that holds Monaco, and a
-// re-render there hands `<Editor>` a fresh element, which is the one thing that
-// can break `Panel`'s child-bailout and reach the editor mid-drag.
-//
-// Reading localStorage in a lazy initializer is safe here only because
-// `RoomGate` loads `CodeEditor` with `ssr: false` — there is no server render
-// for a restored ratio to disagree with. The `typeof window` guard is kept
-// anyway, so the hook is correct on its own terms.
+// INVARIANT: nothing here may re-render `CodeEditor` mid-drag — only
+// `onLayoutChanged` (on release) is wired up, and sizes live in a ref, not state.
 
 import { useCallback, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { Layout, PanelImperativeHandle } from "react-resizable-panels";
 
-/** `horizontal` = side by side, `vertical` = stacked. Matches `Group`'s prop. */
 export type Orientation = "horizontal" | "vertical";
 
-/** Panel ids. Also the keys of every `Layout` this hook handles. */
 export const EDITOR_PANEL_ID = "editor";
 export const OUTPUT_PANEL_ID = "output";
 
 const STORAGE_KEY = "collabcode:room-layout:v1";
 
-/** Below this a side-by-side split leaves both halves too narrow to read code,
- *  so the stack is forced and the orientation control is not offered. */
+/** Below this the stack is forced and the orientation control is not offered. */
 const NARROW_QUERY = "(max-width: 767px)";
 
-/** The editor's default share of the group. */
 const DEFAULT_EDITOR_PCT = 62;
 
 type Persisted = {
@@ -49,12 +31,8 @@ const FALLBACK: Persisted = {
   outputCollapsed: false,
 };
 
-/**
- * Never throws. The try/catch is not decorative: `localStorage` access throws
- * outright in some Safari private-mode configurations, and the value is
- * user-editable, so a hand-mangled entry must degrade to defaults rather than
- * take the room down with it.
- */
+// INVARIANT: never throws — localStorage itself can, and the stored value is
+// user-editable, so anything unparseable must degrade to FALLBACK.
 function readPersisted(): Persisted {
   if (typeof window === "undefined") return FALLBACK;
   try {
@@ -72,9 +50,8 @@ function readPersisted(): Persisted {
   }
 }
 
-/* --------------------------------------------------------- narrow-screen store */
-// Module scope so `subscribe` is referentially stable across renders, which is
-// what `useSyncExternalStore` needs to avoid resubscribing every time.
+// INVARIANT: module scope keeps `subscribeNarrow` referentially stable, or
+// `useSyncExternalStore` resubscribes on every render.
 
 function subscribeNarrow(onChange: () => void): () => void {
   const mql = window.matchMedia(NARROW_QUERY);
@@ -86,19 +63,13 @@ function getNarrow(): boolean {
   return window.matchMedia(NARROW_QUERY).matches;
 }
 
-// Never actually reached (`ssr: false`), but kept correct. "Not narrow" is the
-// safer guess: the phone layout is a strict subset of it — a forced stack — so
-// being wrong costs one flex-direction, not a different tree.
 function getNarrowServer(): boolean {
   return false;
 }
 
 export type RoomLayout = {
-  /** What `Group` should use, after the narrow-screen override. */
   orientation: Orientation;
-  /** Phone-sized viewport. Also drives Monaco's word-wrap and font size. */
   isNarrow: boolean;
-  /** False on phones, where the stack is forced and the toggle would be a lie. */
   canToggleOrientation: boolean;
   toggleOrientation: () => void;
   outputCollapsed: boolean;
@@ -116,20 +87,14 @@ export function useRoomLayout(): RoomLayout {
 
   const isNarrow = useSyncExternalStore(subscribeNarrow, getNarrow, getNarrowServer);
 
-  // A narrow viewport is always stacked, but the stored *preference* is left
-  // alone, so rotating a tablet back to landscape restores the real choice.
+  // Narrow is always stacked, but the stored *preference* is left untouched.
   const orientation: Orientation = isNarrow ? "vertical" : preferred;
 
   const outputPanelRef = useRef<PanelImperativeHandle | null>(null);
 
-  // Sizes live in a ref, not state — see the header comment. `handleLayoutChanged`
-  // runs on every drag *release*; if it set state, every release would re-render
-  // CodeEditor and with it the whole chrome bar.
   const editorPctRef = useRef(initial.editorPct);
 
-  // The last-written record, so a patch never has to re-read storage to find the
-  // fields it is not changing. One atomic write means orientation, size and
-  // collapsed state can never disagree with each other on disk.
+  // Last-written record, so one atomic write covers the fields a patch omits.
   const persistedRef = useRef(initial);
 
   const persist = useCallback((patch: Partial<Persisted>) => {
@@ -141,7 +106,7 @@ export function useRoomLayout(): RoomLayout {
     try {
       window.localStorage.setItem(STORAGE_KEY, JSON.stringify(persistedRef.current));
     } catch {
-      // Quota, or Safari private mode. A forgotten layout is not worth throwing.
+      // Quota or private mode; a forgotten layout is not worth throwing.
     }
   }, []);
 
@@ -156,10 +121,7 @@ export function useRoomLayout(): RoomLayout {
   const toggleOutput = useCallback(() => {
     const panel = outputPanelRef.current;
     if (!panel) return;
-    // Drive the library and let `handleLayoutChanged` report the result back.
-    // The panel is the authority on its own collapsed-ness, including when the
-    // user collapses it by dragging the separator past `minSize` instead of
-    // pressing this button.
+    // The panel is the authority on its own collapsed-ness (dragging collapses too).
     if (panel.isCollapsed()) panel.expand();
     else panel.collapse();
   }, []);
@@ -167,8 +129,6 @@ export function useRoomLayout(): RoomLayout {
   const handleLayoutChanged = useCallback(
     (layout: Layout) => {
       const collapsed = outputPanelRef.current?.isCollapsed() ?? false;
-      // React bails out on an unchanged value, so an ordinary drag release costs
-      // zero renders. This fires after pointerup, never mid-drag.
       setOutputCollapsed(collapsed);
       if (!collapsed) {
         const pct = layout[EDITOR_PANEL_ID];
@@ -179,7 +139,6 @@ export function useRoomLayout(): RoomLayout {
     [persist],
   );
 
-  // Read once, on mount, so the first paint is already the restored ratio.
   const defaultLayout = useMemo<Layout>(
     () => ({
       [EDITOR_PANEL_ID]: initial.editorPct,

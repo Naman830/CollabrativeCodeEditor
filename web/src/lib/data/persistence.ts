@@ -1,46 +1,14 @@
-// Whether the room you are in looks like it will end up on your profile
-// (tasks.md §10.8's "in-room persistence indicator").
-//
-// ---------------------------------------------------------------------------
-// This is an ESTIMATE, and the wording must keep promising less than the server
-// guarantees. The client cannot know the real answer:
-//
-//   - The threshold (§6.1) is evaluated in `server/src/rooms/state.js` against a Clerk
-//     token the *server* verified. A token that silently failed verification —
-//     an outage, an unset `CLERK_SECRET_KEY`, a clock skew — leaves a perfectly
-//     healthy-looking socket and no membership at all.
-//   - The server counts connected time refcounted across every socket of that
-//     account, including a second tab; a single tab's wall clock cannot
-//     reproduce that.
-//   - Whether the *room* is saved depends on any participant qualifying, and
-//     awareness deliberately carries no account IDs (see CLAUDE.md, "Accounts
-//     (Clerk)"), so the client cannot see other people's status at all.
-//
-// Hence the chip speaks only about **you**, never about the room, and the
-// client's did-edit half is stricter than the server's — see the origin filter
-// in `hooks/useCollabRoom.ts`. Both keep the error on the safe side: it may fail
-// to promise a save that happens, never the reverse.
-// ---------------------------------------------------------------------------
-//
-// The constant below is the **fifth** hand-maintained duplication across the two
-// workspaces, after `rateLimit.js`/`rateLimit.ts`, `CLOSE_ROOM_NOT_FOUND`,
-// `rooms/state.js`'s copies of `sanitizeName`/`HEX_COLOR`, and
-// `TRUNCATION_MARKER`. It is worse than those in one way: the server's value is
-// env-overridable (`MEMBER_MIN_CONNECTED_MS` in `server/.env`), so the two can
-// legitimately disagree at runtime with nothing to detect it. One more reason
-// the chip is worded as an estimate rather than a promise.
+// INVARIANT: an ESTIMATE of §6.1's server-side verdict, about you and never about the room —
+// the wording must always promise less than the server guarantees. See CLAUDE.md.
 
-/** Mirrors `MEMBER_MIN_CONNECTED_MS`'s default in `server/src/rooms/state.js`. */
+// Keep in sync with MEMBER_MIN_CONNECTED_MS in server/src/rooms/state.js, whose value is
+// env-overridable there, so the two can disagree at runtime with nothing to detect it.
 export const MEMBER_MIN_CONNECTED_MS = 60_000;
 
 export type PersistenceStatus =
-  /** Not signed in. Nothing is stored, exactly as in v1. */
   | "guest"
-  /** Signed in, but this client has not edited anything yet. */
   | "idle"
-  /** Signed in and editing, but still short of the connected-time threshold. */
   | "pending"
-  /** Signed in, edited, and past the threshold. */
   | "saving";
 
 type Copy = { label: string; detail: string };
@@ -72,10 +40,7 @@ export function persistenceCopy(status: PersistenceStatus): Copy {
   return COPY[status];
 }
 
-/**
- * The label, with the remaining countdown appended while one is running.
- * `remainingMs` is only meaningful for `"pending"`.
- */
+// `remainingMs` is only meaningful for `"pending"`.
 export function persistenceLabel(status: PersistenceStatus, remainingMs: number): string {
   const { label } = COPY[status];
   if (status !== "pending") return label;

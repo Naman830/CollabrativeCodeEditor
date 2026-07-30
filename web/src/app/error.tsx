@@ -1,13 +1,6 @@
 "use client";
 
-// The root error boundary: an unhandled throw anywhere outside `/profile`, which
-// has its own (`profile/error.tsx`) because "the database is unreachable" is a
-// specific, expected failure that deserves its own wording.
-//
-// `unstable_retry`, not `reset`. Next 16.2 added it and demoted `reset` to
-// "clear the error state and re-render the children *without re-fetching*",
-// which is the wrong half whenever the failure was a server render. Both props
-// are passed; only this one re-runs it.
+// INVARIANT: `unstable_retry`, not `reset` — only it re-runs a failed server render.
 
 import Link from "next/link";
 import { ProfilePanel } from "@/components/layout/ProfileShell";
@@ -39,8 +32,6 @@ export default function RootError({
               Back to home
             </Link>
           </div>
-          {/* The digest is the only handle on a server-side error the browser
-              gets; the message itself is redacted in production. */}
           {error.digest && (
             <p className="font-mono text-[11px] text-fg-subtle">Reference: {error.digest}</p>
           )}

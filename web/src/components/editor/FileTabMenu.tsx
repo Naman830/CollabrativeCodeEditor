@@ -1,14 +1,5 @@
 "use client";
 
-// One file tab's menu (tasks.md §10.1): set as entry file, rename, download this
-// file only, delete.
-//
-// §10.1 asks for it on right-click. Right-click *alone* would put four actions
-// behind a gesture no keyboard and no touchscreen has, so the same menu is also
-// opened by a kebab button on the tab — the context menu is the shortcut, the
-// button is the affordance.
-//
-// Presentational: it knows which items to grey out and nothing about Yjs.
 
 import { useEffect, useId, useRef } from "react";
 import { DownloadIcon, StarIcon, TrashIcon, PencilIcon } from "@/components/ui/icons";
@@ -22,13 +13,12 @@ type FileTabMenuProps = {
   x: number;
   y: number;
   isEntry: boolean;
-  /** False for the room's only file — see `deleteFile` in `useCollabRoom`. */
   canDelete: boolean;
   onSelect: (action: FileTabMenuAction) => void;
   onClose: () => void;
 };
 
-/** Roughly the rendered size, used only to keep the menu inside the viewport. */
+/** Approximate rendered size, used only to keep the menu inside the viewport. */
 const MENU_WIDTH = 208;
 const MENU_HEIGHT = 168;
 
@@ -44,8 +34,6 @@ export default function FileTabMenu({
   const menuRef = useRef<HTMLDivElement>(null);
   const labelId = useId();
 
-  // Focus the menu itself so Escape reaches it and Tab leaves it, rather than
-  // leaving focus on the tab behind an open popup.
   useEffect(() => {
     menuRef.current?.focus();
   }, []);
@@ -54,15 +42,14 @@ export default function FileTabMenu({
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") onClose();
     };
-    // `pointerdown`, not `click`: a click listener added during the click that
-    // opened the menu would fire on that very same event and close it again.
+    // `pointerdown`, not `click`: a click listener added here would fire on the
+    // very event that opened the menu.
     const onPointerDown = (event: PointerEvent) => {
       if (!menuRef.current?.contains(event.target as Node)) onClose();
     };
     document.addEventListener("keydown", onKeyDown);
     document.addEventListener("pointerdown", onPointerDown);
-    // A scroll or resize moves the tab out from under a menu anchored to
-    // viewport coordinates, so close rather than follow.
+    // Anchored to viewport coordinates, so close rather than follow.
     window.addEventListener("resize", onClose);
     return () => {
       document.removeEventListener("keydown", onKeyDown);

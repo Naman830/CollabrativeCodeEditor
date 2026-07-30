@@ -1,16 +1,7 @@
 "use client";
 
-// Presence, as an overlapping avatar stack in the chrome bar.
-//
-// This replaces the full-width `UserBar` row, which spent a whole line of
-// vertical space on one chip per person. The information is the same — who is
-// here, in their cursor colour, with the local user marked — but it now costs
-// about 90px of a row it shares with everything else.
-//
-// Everything rendered here comes from `readPeers` (see `lib/collab/awareness.ts`),
-// which sanitizes untrusted awareness state. Never read `awareness.getStates()`
-// from a component: a colour straight off the wire reaching an inline `style`
-// is the injection that indirection exists to stop.
+// INVARIANT: render only `readPeers()` output (`lib/collab/awareness.ts`) — never raw
+// `awareness.getStates()`, whose colours reach an inline `style`.
 
 import type { Peer } from "@/lib/collab/awareness";
 
@@ -43,15 +34,11 @@ export default function PresenceStack({ peers, connected }: PresenceStackProps) 
           <li
             key={peer.clientID}
             title={peer.isLocal ? `${peer.name} (you)` : peer.name}
-            // The ring is drawn in the panel colour so the avatars read as
-            // stacked cards rather than merging into one blob.
             className="relative rounded-full ring-2 ring-panel transition-transform hover:z-10 hover:-translate-y-0.5"
           >
             <span
               aria-hidden
-              // #141414 rather than a token: this is dark text on the peer's own
-              // pastel avatar, and CURSOR_COLORS are mid-tones that carry dark
-              // text in either theme. It must not follow the theme.
+              // #141414 not a token: dark text on the peer's own pastel, so it must not follow the theme.
               className="grid h-7 w-7 place-items-center rounded-full text-[10px] font-bold text-[#141414]"
               style={{ backgroundColor: peer.color }}
             >

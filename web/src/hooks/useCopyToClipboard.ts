@@ -2,14 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
-// How long the "copied" tick stays on the button before reverting.
 const COPIED_RESET_MS = 1500;
 
-/**
- * Copies a string and reports a transient `copied` flag for the button label.
- * The reset timer is a ref so cleanup can cancel it and never setState on an
- * unmounted component.
- */
 export function useCopyToClipboard(): {
   copied: boolean;
   copy: (value: string) => Promise<void>;
@@ -25,9 +19,7 @@ export function useCopyToClipboard(): {
 
   const copy = useCallback(async (value: string) => {
     try {
-      // navigator.clipboard only exists in a secure context, so a room opened
-      // over plain http on a LAN address (the usual way to test with a phone)
-      // falls back to the old selection trick rather than throwing.
+      // navigator.clipboard needs a secure context; plain http on a LAN falls back.
       if (navigator.clipboard?.writeText) {
         await navigator.clipboard.writeText(value);
       } else {
@@ -45,8 +37,7 @@ export function useCopyToClipboard(): {
       setCopied(true);
       timerRef.current = setTimeout(() => setCopied(false), COPIED_RESET_MS);
     } catch {
-      // Clipboard permission can still be denied outright; the value is visible
-      // on screen either way, so there is nothing to report.
+      // Permission denied; the value is on screen anyway, so nothing to report.
     }
   }, []);
 

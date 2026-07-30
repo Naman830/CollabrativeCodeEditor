@@ -1,29 +1,18 @@
-// The client's view of room lifetime. The sync server mints rooms, not the
-// browser — an ID it never handed out is refused at connect time, which is what
-// makes "this room doesn't exist" real rather than a client-side pretence.
+// The client's view of room lifetime. The sync server mints room IDs, not the browser.
 
 import { DEFAULT_LANGUAGE, isLanguage, type LanguageValue } from "@/lib/editor/languages";
 
 export const WS_URL = process.env.NEXT_PUBLIC_WS_URL ?? "ws://localhost:8080";
 
-// ws:// -> http://, same host and port: the sync server serves its room routes
-// and the WebSocket upgrade off one listener, so there is no second env var.
+// ws:// -> http://: one listener serves the room routes and the upgrade, so there is
+// deliberately no second env var to drift.
 const API_URL = WS_URL.replace(/^ws/, "http");
 
-/**
- * "missing" and "unreachable" must stay separate: sending someone home because
- * the server is down would claim their room is gone when it isn't.
- */
+// INVARIANT: "missing" and "unreachable" stay separate — a down server must not be
+// reported as a room that is gone.
 export type RoomCheck = "open" | "missing" | "unreachable";
 
-/**
- * The answer to "may I enter this room", plus what the room *is*.
- *
- * Since §10.1 the language is chosen once at room creation and held by the sync
- * server, so this check is also how someone who was sent a link learns which
- * language the room they are joining was made in. It is only meaningful when
- * `status` is `"open"`.
- */
+// `language` is the room's, chosen once at creation; only meaningful when status is "open".
 export type RoomStatus = {
   status: RoomCheck;
   language: LanguageValue;
@@ -42,8 +31,7 @@ export async function checkRoom(roomId: string): Promise<RoomStatus> {
     };
     return {
       status: body.exists === true ? "open" : "missing",
-      // Narrowed rather than trusted: this is a cross-origin response, and the
-      // value picks a Monaco tokenizer and a Piston runtime.
+      // Narrowed, not trusted: a cross-origin value that picks a tokenizer and a runtime.
       language: isLanguage(body.language) ? body.language : DEFAULT_LANGUAGE,
     };
   } catch {
@@ -51,12 +39,8 @@ export async function checkRoom(roomId: string): Promise<RoomStatus> {
   }
 }
 
-/**
- * A refusal the server explained, as opposed to a network failure. Room
- * creation is rate limited, so "the server said no" is a state normal users
- * reach, and it needs the opposite reaction to a failed connection: wait,
- * rather than retry now.
- */
+// A refusal the server explained (it is rate limited), which callers must not report as
+// unreachable: the reactions are opposite — wait, rather than retry now.
 export class RoomCreateError extends Error {
   readonly status: number;
 

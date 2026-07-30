@@ -1,14 +1,5 @@
-// Two Monaco themes matching the app's own tokens.
-//
-// The built-in `vs` / `vs-dark` pair would work, but their backgrounds (#ffffff
-// and #1e1e1e) match neither `--code-bg` value, so the editor would sit as a
-// visibly different shade inside its panel. These inherit all of Monaco's
-// syntax-token colours — which are well tuned and not worth reinventing — and
-// override only the chrome.
-//
-// Typed off `BeforeMount` rather than by importing `monaco-editor`: that module
-// touches `window` at import time, and `lib/editor/monacoTypes.ts` exists for the same
-// reason.
+// Monaco themes matching the app's own tokens. Typed off `BeforeMount`, never by importing
+// `monaco-editor` — that module touches `window` at import time.
 
 import type { BeforeMount } from "@monaco-editor/react";
 
@@ -17,7 +8,7 @@ type Monaco = Parameters<BeforeMount>[0];
 export const MONACO_DARK = "collab-dark";
 export const MONACO_LIGHT = "collab-light";
 
-/** Keep these in step with `--code-bg` and friends in `styles/globals.css`. */
+// Keep in sync with `--code-bg` and friends in `web/src/styles/globals.css`.
 const DARK_COLORS: Record<string, string> = {
   "editor.background": "#0a0b0d",
   "editor.foreground": "#e8eaed",
@@ -62,11 +53,6 @@ const LIGHT_COLORS: Record<string, string> = {
   "scrollbarSlider.activeBackground": "#a7aeb9",
 };
 
-/**
- * Registers both themes. Called from `<Editor beforeMount>`, which runs once
- * before the first editor is created; `defineTheme` is idempotent, so a second
- * call simply overwrites with the same values.
- */
 export function defineMonacoThemes(monaco: Monaco): void {
   monaco.editor.defineTheme(MONACO_DARK, {
     base: "vs-dark",

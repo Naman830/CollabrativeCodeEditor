@@ -1,10 +1,5 @@
 "use client";
 
-// A three-way segmented control rather than a two-way switch, because "system"
-// is a real choice and a two-state toggle has nowhere to put it: once someone
-// clicks a sun/moon they are pinned to that theme forever with no way back to
-// following the OS.
-
 import { MonitorIcon, MoonIcon, SunIcon } from "@/components/ui/icons";
 import { useTheme } from "./ThemeProvider";
 import { cn, focusRing } from "@/lib/ui";
@@ -20,8 +15,7 @@ export default function ThemeToggle({ className }: { className?: string }) {
   const { theme, setTheme } = useTheme();
 
   return (
-    // `radiogroup` rather than a row of buttons: these are three mutually
-    // exclusive states, and it gives screen readers "2 of 3" for free.
+    // `radiogroup`, not a row of buttons: three mutually exclusive states.
     <div
       role="radiogroup"
       aria-label="Colour theme"

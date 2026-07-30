@@ -1,8 +1,4 @@
-// One row in the profile listing.
-//
-// Server-rendered, and it must stay that way: it imports `lib/data/deadRooms.ts`,
-// which reaches `lib/data/db.ts`. Only the formatting helpers are used here, but the
-// module graph is what counts.
+// INVARIANT: must stay server-rendered — it imports `lib/data/deadRooms.ts`, which reaches `db.ts`.
 
 import Link from "next/link";
 import {
@@ -13,15 +9,7 @@ import {
 } from "@/lib/data/deadRooms";
 import { ArchiveIcon, LockIcon } from "@/components/ui/icons";
 
-/**
- * There is no room *name* to show.
- *
- * tasks.md §7.4 asks for "room name/date/language", but `dead_rooms` has no name
- * column and never had one — a room is minted by `POST /rooms` as a bare UUID and
- * nobody ever titles it. The original room ID is therefore the name, shown in
- * full-width mono so it is recognisable against a link someone still has open in
- * another tab.
- */
+// `dead_rooms` has no name column, so the original room id is the title.
 export default function DeadRoomCard({ room }: { room: DeadRoomSummary }) {
   return (
     <li>
@@ -55,10 +43,7 @@ export default function DeadRoomCard({ room }: { room: DeadRoomSummary }) {
           </div>
           <div className="flex items-center gap-1.5">
             <dt className="text-fg-subtle">Language</dt>
-            {/* Null on every row today, and honestly so: the language dropdown is
-                a per-user editing preference kept off the shared Y.Doc, so the
-                server has no single answer to record until tasks.md §10.1 moves
-                the selector to room creation. */}
+            {/* Null for rows written before §10.1, which had no room-wide language. */}
             <dd>{room.language ?? "not recorded"}</dd>
           </div>
         </dl>

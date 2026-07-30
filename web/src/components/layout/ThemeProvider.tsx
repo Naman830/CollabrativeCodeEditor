@@ -1,19 +1,7 @@
 "use client";
 
-// Theme state as an *external store*, not useState + useEffect.
-//
-// Two reasons, both already load-bearing elsewhere in this codebase (see
-// `lib/collab/user.ts`, which reads identity the same way):
-//
-//   1. The server snapshot has to differ from the client one — the server cannot
-//      know what is in localStorage — and `useSyncExternalStore` is the sanctioned
-//      way to say so. React renders the server snapshot during hydration and
-//      swaps afterwards without a mismatch warning.
-//   2. React 19's `react-hooks/set-state-in-effect` rule rejects the obvious
-//      `useEffect(() => setTheme(readStoredTheme()))` version outright.
-//
-// The store is module scope, so every consumer shares one subscription and one
-// `matchMedia` listener no matter how many components call `useTheme()`.
+// INVARIANT: an external store, never useState + useEffect — the server snapshot
+// must legitimately differ from the client's (same pattern as lib/collab/user.ts).
 
 import { createContext, useContext, useSyncExternalStore } from "react";
 import {
@@ -26,17 +14,11 @@ import {
 } from "@/lib/theme";
 
 export type ThemeSnapshot = {
-  /** What the user chose, including "system". */
   theme: Theme;
-  /** What that actually renders as right now. */
   resolved: ResolvedTheme;
 };
 
-// Referentially stable, as `getServerSnapshot` requires. Which value it holds
-// barely matters: the inline script in <head> has already set the real class on
-// <html> before first paint, so CSS is correct regardless. This only decides the
-// first React-rendered value of theme-dependent *props* (Monaco's theme name,
-// Clerk's appearance), both of which resolve asynchronously anyway.
+// INVARIANT: referentially stable, as `getServerSnapshot` requires.
 const SERVER_SNAPSHOT: ThemeSnapshot = { theme: "system", resolved: "dark" };
 
 let snapshot: ThemeSnapshot | null = null;
@@ -57,8 +39,7 @@ function getServerSnapshot(): ThemeSnapshot {
 
 function commit(theme: Theme): void {
   const next: ThemeSnapshot = { theme, resolved: resolveTheme(theme) };
-  // Bail if nothing changed, so an OS change while on an explicit theme doesn't
-  // wake every subscriber for no reason.
+  // Bail if unchanged, so an OS change on an explicit theme wakes no subscriber.
   if (snapshot && snapshot.theme === next.theme && snapshot.resolved === next.resolved) {
     return;
   }
@@ -67,7 +48,6 @@ function commit(theme: Theme): void {
   listeners.forEach((listener) => listener());
 }
 
-/** Keeps a "system" user tracking the OS after the page has loaded. */
 function handleSystemChange(): void {
   if (getSnapshot().theme !== "system") return;
   commit("system");

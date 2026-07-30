@@ -1,21 +1,9 @@
 "use client";
 
-// The strip at the top of a pane: a tab on the left, a control cluster on the
-// right. One component for both the file tab above the editor and the Output tab
-// above the results, so multi-file (tasks.md §10.1) and in-room chat (§10.2)
-// become a data change here rather than a third piece of chrome.
-
 import type { ComponentProps, ReactNode } from "react";
 import { cn, focusRing } from "@/lib/ui";
 
-/**
- * The strip's height, as a CSS length.
- *
- * The output `Panel`'s `collapsedSize` is set to exactly this, so a collapsed
- * output panel *is* this strip and nothing else — a bar you can still see and
- * click to bring the output back. Change one and you must change the other, or
- * collapsing hides its own restore button.
- */
+/** INVARIANT: the output `Panel`'s `collapsedSize` must equal this, or collapsing hides its own restore button. */
 export const PANEL_STRIP_HEIGHT = "2.25rem";
 
 export function PanelStrip({ children }: { children: ReactNode }) {
@@ -26,10 +14,6 @@ export function PanelStrip({ children }: { children: ReactNode }) {
   );
 }
 
-/**
- * The tab itself. Styled to sit on the code surface below it rather than the
- * panel chrome, which is what makes it read as a tab and not a button.
- */
 export function PanelTab({
   icon,
   children,
@@ -53,8 +37,7 @@ export function PanelTab({
   );
 }
 
-/** A 24px square control for a panel strip. `label` is both the accessible name
- *  and the tooltip; these buttons never carry visible text. */
+/** `label` is both the accessible name and the tooltip; these buttons carry no visible text. */
 export function IconButton({
   label,
   children,
@@ -80,7 +63,6 @@ export function IconButton({
   );
 }
 
-/** The right-hand cluster of a strip. */
 export function PanelActions({ children }: { children: ReactNode }) {
   return <div className="ml-auto flex min-w-0 items-center gap-1.5 self-center">{children}</div>;
 }

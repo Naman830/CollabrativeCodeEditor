@@ -1,15 +1,7 @@
 "use client";
 
-// The database being unreachable is not the same thing as having no saved rooms,
-// and the two must never render alike — the same `missing` vs `unreachable`
-// distinction `RoomGate` draws for a room. Neon autosuspends an idle branch, so a
-// cold start is a routine way to land here; "you have nothing saved" would be a
-// lie the user has no way to check.
-//
-// `unstable_retry`, not `reset`. Next 16.2 added it and demoted `reset` to
-// "clear the error state and re-render the children *without re-fetching*" —
-// which is the wrong half for a failed query. Both props are passed; only this
-// one re-runs the server render.
+// "Database unreachable" must never render like "you have no saved rooms".
+// INVARIANT: retry via `unstable_retry`, not `reset` — `reset` re-renders without re-fetching.
 
 import { ProfilePanel } from "@/components/layout/ProfileShell";
 import { primaryButton } from "@/lib/ui";
@@ -50,8 +42,6 @@ export default function ProfileError({
         <button type="button" onClick={() => unstable_retry()} className={primaryButton}>
           Try again
         </button>
-        {/* The digest is the only handle on a server-side error the browser gets;
-            the message itself is redacted in production. */}
         {error.digest && (
           <p className="font-mono text-[11px] text-fg-subtle">Reference: {error.digest}</p>
         )}

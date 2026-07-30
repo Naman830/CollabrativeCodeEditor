@@ -1,22 +1,11 @@
-// The chrome shared by every /profile screen: the page frame, the nav, the
-// signed-out gate, and the centred panel that the empty, not-found and error
-// states all reuse.
-//
-// No `"use client"` and no import of `lib/data/deadRooms.ts`: `error.tsx` is a Client
-// Component and imports `ProfilePanel` from here, so nothing in this file may
-// reach the database. Clerk's `SignInButton` and `SiteNav` are Client Components
-// themselves, which a Server Component may render as long as it passes no
-// function props — and these take only element children and strings.
-//
-// The button styles used to be declared here *and* byte-for-byte again in
-// `RoomGate.tsx`. They now live once, in `lib/ui.ts`.
+// INVARIANT: nothing here may reach the database (no lib/data/deadRooms.ts) —
+// error.tsx is a Client Component and imports ProfilePanel from this file.
 
 import { SignInButton } from "@clerk/nextjs";
 import SiteNav from "./SiteNav";
 import { UserIcon } from "@/components/ui/icons";
 import { card, primaryButton } from "@/lib/ui";
 
-/** The badge above a panel's heading. Matches `RoomGate`'s `GateIcon`. */
 export function PanelIcon({ children }: { children: React.ReactNode }) {
   return (
     <span className="grid h-11 w-11 place-items-center rounded-xl border border-edge bg-raised text-fg-muted">
@@ -25,11 +14,6 @@ export function PanelIcon({ children }: { children: React.ReactNode }) {
   );
 }
 
-/**
- * A centred card. The empty profile, the missing snapshot, the signed-out gate
- * and the database error all wear the same shape, because they are all "here is
- * why there is nothing to show you, and here is the way out".
- */
 export function ProfilePanel({
   icon,
   title,
@@ -50,12 +34,10 @@ export function ProfilePanel({
 
 type ProfileShellProps = {
   children: React.ReactNode;
-  /** Where the back link points. The list for a snapshot, home for the list. */
   backHref: string;
   backLabel: string;
 };
 
-/** The page frame: nav, background wash, content. */
 export default function ProfileShell({ children, backHref, backLabel }: ProfileShellProps) {
   return (
     <>
@@ -67,16 +49,8 @@ export default function ProfileShell({ children, backHref, backLabel }: ProfileS
   );
 }
 
-/**
- * What a signed-out visitor gets instead of the profile.
- *
- * Deliberately not `redirect("/")` and not `auth.protect()`. There is no
- * `/sign-in` route in this app — signing in is a modal, offered from the landing
- * page — so `auth.protect()` would eject the visitor to Clerk's hosted Account
- * Portal, and a bare redirect turns a shared `/profile` link into a silent
- * bounce with no explanation. The gate keeps the deep link working: sign in in
- * place, and the page you asked for is the page you land on.
- */
+// An in-page gate, never redirect()/auth.protect(): there is no /sign-in route,
+// so either would eject a shared /profile deep link.
 export function ProfileSignInGate() {
   return (
     <ProfileShell backHref="/" backLabel="Home">

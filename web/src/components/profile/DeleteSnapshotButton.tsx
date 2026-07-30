@@ -1,14 +1,7 @@
 "use client";
 
-// "Remove from my profile" on a snapshot's detail page (tasks.md §10.7).
-//
-// The second client component under `/profile`, after `SnapshotActions` — which
-// is the budget §10.7 sets ("must not become the page's second reason to ship
-// client JavaScript beyond the confirm dialog"). The delete itself is a Server
-// Function; everything here is the confirmation around it.
-//
-// It lives on the detail page, not on `DeadRoomCard`: a card's entire surface is
-// one `<Link>`, and a button nested inside an anchor is invalid.
+// Belongs on the detail page, never on `DeadRoomCard` — a card is one `<Link>`, and a
+// button inside an anchor is invalid.
 
 import { startTransition, useActionState, useState } from "react";
 import ConfirmDialog from "@/components/ui/ConfirmDialog";
@@ -21,7 +14,6 @@ export default function DeleteSnapshotButton({
   roomId,
 }: {
   deadRoomId: string;
-  /** The original room id, shown so the confirmation names what is going. */
   roomId: string;
 }) {
   const [open, setOpen] = useState(false);
@@ -30,9 +22,7 @@ export default function DeleteSnapshotButton({
     null,
   );
 
-  // On success the action redirects and never returns, so anything here is a
-  // failure worth showing inside the dialog rather than throwing the user into
-  // `error.tsx`, whose copy is about a failed *read*.
+  // The action redirects on success and never returns, so any result here is a failure.
   const error = result?.ok === false ? result.message : null;
 
   const confirm = () => {

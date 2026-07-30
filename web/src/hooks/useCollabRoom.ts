@@ -1,12 +1,5 @@
 "use client";
 
-// The whole client-side Yjs stack for one room: doc, provider, awareness, the
-// per-file Monaco bindings, the shared execution map, and the presence
-// bookkeeping that feeds the user bar and the join/leave toasts.
-//
-// It is one hook because it is one lifecycle — see the effects' comments below.
-// `CodeEditor` renders what this returns and owns nothing of the connection.
-
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as Y from "yjs";
 import type { Awareness } from "y-protocols/awareness";
@@ -48,21 +41,15 @@ import { WS_URL } from "@/lib/collab/rooms";
 import { playJoinSound, playLeaveSound } from "@/lib/sound";
 import { displayName, type CollabUser } from "@/lib/collab/user";
 
-// The close code the sync server sends for a room that no longer exists
-// (`CLOSE_ROOM_NOT_FOUND` in server/src/sync/connection.js). Any other close is an
-// ordinary disconnect and must keep retrying.
+// INVARIANT: keep in sync with CLOSE_ROOM_NOT_FOUND in server/src/sync/connection.js.
+// Any other close code is an ordinary disconnect and must keep retrying.
 const CLOSE_ROOM_NOT_FOUND = 4404;
 
 export type SyncStatus = "connecting" | "connected" | "disconnected";
 
-/** The `MonacoBinding` class itself, captured from the dynamic import. */
 type MonacoBindingClass = typeof import("y-monaco").MonacoBinding;
 
-/**
- * Everything the per-file binding effect needs, published by the master effect
- * once its async setup has finished. A ref rather than state for the same reason
- * `docRef` is: none of it may drive a render.
- */
+// INVARIANT: published through a ref, never state — none of it may drive a render.
 type CollabStack = {
   yDoc: Y.Doc;
   awareness: Awareness;
@@ -71,15 +58,11 @@ type CollabStack = {
 
 type UseCollabRoomOptions = {
   roomId: string;
-  /** The room's language, chosen once at creation (§10.1). Never per-user. */
   language: string;
-  /** Null until Monaco has mounted; nothing can bind before then. */
   editor: MonacoEditor | null;
-  /** The namespace from `onMount` — needed to create one model per file. */
   monaco: MonacoApi | null;
   /** Null until the name prompt is answered; no socket opens before then. */
   user: CollabUser | null;
-  /** Fired when the server refuses this room. Only `RoomGate` can act on it. */
   onRoomClosed?: () => void;
 };
 
@@ -89,34 +72,20 @@ export type CollabRoom = {
   toasts: ActivityToast[];
   dismissToast: (id: string) => void;
   execState: ExecutionState;
-  /**
-   * Whether *this* client has made an edit of its own (tasks.md §10.8).
-   *
-   * Half of the persistence estimate: the server only keeps a snapshot for a
-   * signed-in participant who stayed 60s **and** actually edited. It lives here
-   * because only this hook can see the doc and the bindings.
-   */
+  /** Whether *this* client has edited; half of §10.8's persistence estimate. */
   didEdit: boolean;
-  /**
-   * The live `Y.Doc`, or null while disconnected. A ref, never state: hoisting
-   * the doc into state is exactly what the effect below must not do, and a ref
-   * drives no render so it carries no such risk.
-   */
+  /** INVARIANT: the live doc is a ref, never state — it must drive no render. */
   docRef: React.RefObject<Y.Doc | null>;
 
-  // ── Multi-file (tasks.md §10.1) ──────────────────────────────────────────
-  /** Every file in the room, in tab order, already sanitized. */
+  /** In tab order, already sanitized by `readRoomFiles`. */
   files: RoomFile[];
-  /** The file Run executes. Null only before the first sync. */
   entryFile: RoomFile | null;
-  /** The file the editor is showing. Null only before the first sync. */
   activeFile: RoomFile | null;
   setActiveFileId: (fileId: string) => void;
   createFile: (name?: string) => void;
   renameFile: (fileId: string, name: string) => void;
   deleteFile: (fileId: string) => void;
   setEntryFileId: (fileId: string) => void;
-  /** One file's current text, read straight from the doc. "" if it is gone. */
   readFile: (fileId: string) => string;
 };
 
@@ -130,11 +99,8 @@ export function useCollabRoom({
 }: UseCollabRoomOptions): CollabRoom {
   const [syncStatus, setSyncStatus] = useState<SyncStatus>("connecting");
 
-  // Awareness is a mutable instance inside the effect below, so React only sees
-  // presence changes because they are mirrored into this state.
   const [peers, setPeers] = useState<Peer[]>([]);
 
-  // Join/leave banners, diffed from consecutive peer snapshots below.
   const [toasts, setToasts] = useState<ActivityToast[]>([]);
   const dismissToast = useCallback((id: string) => {
     setToasts((prev) => prev.filter((toast) => toast.id !== id));
@@ -142,95 +108,57 @@ export function useCollabRoom({
 
   const [execState, setExecState] = useState<ExecutionState>(IDLE_EXECUTION);
 
-  // Latches true on this client's first real edit; see the observer below.
   const [didEdit, setDidEdit] = useState(false);
 
-  // The room's file list and entry pointer, mirrored out of the shared doc.
   const [files, setFiles] = useState<RoomFile[]>([]);
   const [entryFileId, setEntryFileIdState] = useState<string | null>(null);
 
-  // Which tab *this* client is looking at. Purely local: two peers can read
-  // different files of the same room, exactly as they could once run different
-  // languages before §10.1 moved that to the room.
-  //
-  // A preference, not the answer — the file actually shown is derived below,
-  // with a fallback, because the file you were reading can be deleted by someone
-  // else at any moment.
+  // A local preference only; the file actually shown is derived below with a
+  // fallback, because someone else can delete the file you are reading.
   const [activeFileId, setActiveFileId] = useState<string | null>(null);
 
-  // The runner needs the live Y.Doc, but the doc must never live in component
-  // state (see the effect below) — a ref triggers no render, so it is safe.
   const docRef = useRef<Y.Doc | null>(null);
 
-  // Published by the master effect for the per-file binding effect. `stackEpoch`
-  // is what makes that effect re-run once the async setup has landed.
+  // `stackEpoch` is what re-runs the binding effect once async setup has landed.
   const stackRef = useRef<CollabStack | null>(null);
   const [stackEpoch, setStackEpoch] = useState(0);
 
-  // Fixed for the room's life (it comes from the room gate), but read through a
-  // ref anyway so the binding effect never lists it as a dependency — that
-  // effect owns Monaco models, and re-running it means disposing every one.
+  // INVARIANT: read via a ref so the binding effect never lists it as a
+  // dependency — re-running that effect disposes every Monaco model.
   const languageRef = useRef(language);
   useEffect(() => {
     languageRef.current = language;
   });
 
-  // Read through a ref instead of being an effect dependency: an inline arrow
-  // from the caller would otherwise rebuild the whole Yjs stack every render.
+  // Ref, not a dep: an inline callback would rebuild the Yjs stack every render.
   const onRoomClosedRef = useRef(onRoomClosed);
   useEffect(() => {
     onRoomClosedRef.current = onRoomClosed;
   });
 
-  // Also a ref, for a stronger reason than convenience: a Clerk session token
-  // lives about 60 seconds, so anything derived from it changes constantly. In
-  // the effect's dependency array that would tear down and rebuild the entire
-  // Yjs stack — doc, provider, awareness, bindings, toasts — every single minute.
+  // Ref, not a dep: the token changes every ~60s, which would rebuild the stack.
   const getToken = useClerkToken();
   const getTokenRef = useRef(getToken);
   useEffect(() => {
     getTokenRef.current = getToken;
   });
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // One Monaco model and one MonacoBinding per file.
-  //
-  // DECLARED BEFORE THE MASTER EFFECT ON PURPOSE. React runs effect cleanups in
-  // declaration order, so this one tears its bindings down while the `Y.Doc` is
-  // still alive, rather than against a doc the master effect has already
-  // destroyed.
-  //
-  // The bindings are **long-lived**: one per file, created when the file appears
-  // and destroyed when it goes away — never rebuilt on a tab switch. Two reasons,
-  // both verified against y-monaco@0.1.6's source:
-  //
-  //  - It is unnecessary. `_rerenderDecorations`, `_beforeTransaction` and the
-  //    cursor-selection listener all guard on `editor.getModel() === monacoModel`,
-  //    and decorations additionally check `anchorAbs.type === ytext`. Every
-  //    binding but the visible one is already a no-op.
-  //  - It would leak. `MonacoBinding.destroy()` disposes the content and
-  //    dispose handlers but **not** the `onDidChangeCursorSelection` listener it
-  //    registered on the editor, so churning bindings per switch strands one
-  //    listener per switch for the room's life.
-  //
-  // Reconciliation is driven by the Yjs observer, not by React state, so a file
-  // appearing never re-runs this effect (which would dispose every model). The
-  // effect's own dependencies are only the things that invalidate *all* of them.
-  // ─────────────────────────────────────────────────────────────────────────
+  // INVARIANT: declared before the master effect — cleanups run in declaration
+  // order, so bindings tear down while the `Y.Doc` is still alive.
+  // INVARIANT: one long-lived binding per file, never rebuilt on a tab switch —
+  // `MonacoBinding.destroy()` leaks its `onDidChangeCursorSelection` listener.
   useEffect(() => {
     const stack = stackRef.current;
     if (!stack || !editor || !monaco) return;
     const { yDoc, awareness, MonacoBinding: Binding } = stack;
 
     const filesMap = yDoc.getMap<RoomFileMeta>(FILES_MAP_NAME);
-    // One Set shared by every binding: `editors` is what a binding checks its
-    // model against, and there is exactly one editor for the room's life.
     const editors = new Set([editor]);
     const live = new Map<string, { model: MonacoModel; binding: MonacoBinding }>();
 
     const dispose = (entry: { model: MonacoModel; binding: MonacoBinding }) => {
-      // destroy() first: it disposes the binding's own `onWillDispose` hook, so
-      // the model disposal below cannot re-enter destroy().
+      // INVARIANT: destroy() before dispose() — it removes the binding's
+      // `onWillDispose` hook, so model disposal cannot re-enter destroy().
       entry.binding.destroy();
       entry.model.dispose();
     };
@@ -238,29 +166,24 @@ export function useCollabRoom({
     const sync = () => {
       const current = readRoomFiles(filesMap.entries(), languageRef.current);
 
-      // Create before disposing. If the file being removed is the one in the
-      // editor, its replacement has to exist already — leaving the editor
-      // holding a disposed model paints an empty, unusable pane until React
-      // catches up and swaps `path`.
+      // Create before disposing: the editor must never be left holding a
+      // disposed model, which paints an unusable pane.
       for (const file of current) {
         const modelLanguage = monacoLanguageForFile(file.name, languageRef.current);
         const existing = live.get(file.id);
         if (existing) {
-          // A rename can change the extension, and therefore the highlighting.
           if (existing.model.getLanguageId() !== modelLanguage) {
             monaco.editor.setModelLanguage(existing.model, modelLanguage);
           }
           continue;
         }
         const uri = monaco.Uri.parse(modelPathFor(roomId, file.id));
-        // `getModel` first: `@monaco-editor/react` may already have created this
-        // one from the `path` prop, and two models on one URI is an error.
+        // `getModel` first — the `path` prop may already have created this one,
+        // and two models on one URI is an error.
         const model =
           monaco.editor.getModel(uri) ?? monaco.editor.createModel("", modelLanguage, uri);
         live.set(file.id, {
           model,
-          // Fills the model from the Y.Text on construction, so a tab opened for
-          // the first time shows the room's real contents immediately.
           binding: new Binding(yDoc.getText(fileTextName(file.id)), model, editors, awareness),
         });
       }
@@ -287,13 +210,8 @@ export function useCollabRoom({
     };
   }, [stackEpoch, editor, monaco, roomId]);
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // Owns the whole Yjs lifecycle: doc, provider, awareness and the shared maps
-  // are all created and torn down here, so switching rooms (or React's
-  // StrictMode remount) rebuilds the stack instead of destroying a doc nothing
-  // recreates. `user` is a dependency because no socket may open before we know
-  // who to announce; it only ever goes null -> set once per mount.
-  // ─────────────────────────────────────────────────────────────────────────
+  // Owns the whole Yjs lifecycle, so a room switch or StrictMode remount rebuilds
+  // it. INVARIANT: `user` is a dep — no socket opens before there is a name.
   useEffect(() => {
     if (!editor || !user) return;
 
@@ -303,13 +221,9 @@ export function useCollabRoom({
     let provider: WebsocketProvider | null = null;
     let awarenessChangeHandler: (() => void) | null = null;
     let editHandler: ((update: Uint8Array, origin: unknown) => void) | null = null;
-    // Baseline for join/leave detection. Null until the first snapshot, so
-    // people already in the room don't each fire a "joined" toast at us.
+    // Null until the first snapshot, so peers already here fire no "joined" toast.
     let knownPeers: Map<number, Peer> | null = null;
 
-    // Execution state rides on the same Y.Doc as the code, so it syncs to every
-    // peer (late joiners included) with no server changes. Registered here
-    // rather than in the async block: a Y.Map needs neither socket nor Monaco.
     const executionMap = yDoc.getMap<ExecutionState>(EXECUTION_MAP_NAME);
     const applyExecutionState = () => {
       setExecState(executionMap.get(EXECUTION_KEY) ?? IDLE_EXECUTION);
@@ -317,10 +231,6 @@ export function useCollabRoom({
     executionMap.observe(applyExecutionState);
     applyExecutionState();
 
-    // The file list and the entry pointer, on the same doc for the same reason
-    // (§10.1). Two maps rather than one: the entry pointer is replaced whole
-    // under a single key, exactly as the execution record is, while the file
-    // map is keyed per file so two peers adding two files never contend.
     const filesMap = yDoc.getMap<RoomFileMeta>(FILES_MAP_NAME);
     const metaMap = yDoc.getMap<string>(ROOM_META_MAP_NAME);
     const applyFiles = () => {
@@ -334,9 +244,7 @@ export function useCollabRoom({
     applyFiles();
     applyEntry();
 
-    // Any peer can heal a run abandoned by whoever started it — there is no
-    // owner once the record is shared, so whichever tick fires first wins and
-    // the rest are identical no-ops.
+    // Any peer may heal a run abandoned by its starter; the other ticks are no-ops.
     const staleRunWatchdog = setInterval(() => {
       const current = executionMap.get(EXECUTION_KEY);
       if (
@@ -347,9 +255,7 @@ export function useCollabRoom({
           status: "error",
           runId: current.runId,
           language: current.language,
-          // Carried through, not dropped: the input and the file are what
-          // explain the output, and this record replaces the running one
-          // wholesale.
+          // Carried through, not dropped: this record replaces the running one whole.
           filename: current.filename,
           stdin: current.stdin,
           startedBy: current.startedBy,
@@ -361,51 +267,34 @@ export function useCollabRoom({
     }, 2000);
 
     (async () => {
-      // Both packages touch browser globals at import time, so they can only be
-      // loaded client-side.
+      // Both touch browser globals at import time — client-side only.
       const [{ WebsocketProvider }, { MonacoBinding }] = await Promise.all([
         import("y-websocket"),
         import("y-monaco"),
       ]);
       if (cancelled) return;
 
-      // The sync server records who was in a room from a Clerk token it verifies
-      // itself (task 7.3) — never from awareness, which any peer can forge. This
-      // is the only channel that carries an account ID to the server.
-      //
-      // `useClerkToken` never rejects and never hangs: a guest, an unloaded Clerk
-      // and a network failure all resolve to null within two seconds. That
-      // property is load-bearing, not defensive — holding the socket open on
-      // Clerk would repeat the bug documented in `lib/collab/clerkIdentity.ts`, where
-      // gating on Clerk left a deep-linked room with no way in at all. A missing
-      // token costs a profile entry; a missing socket costs the whole room.
+      // INVARIANT: this verified token is the only channel carrying an account ID
+      // to the server — never awareness. It never rejects or hangs, and must not
+      // gate the socket, or a deep-linked room becomes unjoinable.
       const token = await getTokenRef.current();
       if (cancelled) return;
 
-      // `disableBc` turns off y-websocket's cross-tab BroadcastChannel. Two tabs
-      // are meant to be two collaborators, and BC resurrects a closed tab in its
-      // siblings' awareness — the user bar would then never drop anyone.
+      // INVARIANT: `disableBc` stays on — BroadcastChannel resurrects a closed
+      // tab in its siblings' awareness, so nobody ever drops out of the user bar.
       provider = new WebsocketProvider(WS_URL, roomId, yDoc, {
         disableBc: true,
         params: token ? { token } : {},
       });
 
-      // y-websocket serialises `params` into `this.url` exactly once, in its
-      // constructor — but `setupWS` re-reads `provider.url` on every dial. Since
-      // a Clerk token expires in about a minute, every reconnect after the first
-      // would otherwise carry a dead token, the server would record nothing, and
-      // that user's connected time would silently stop accruing mid-session.
-      //
-      // Taking the base from `provider.url` rather than rebuilding it from
-      // WS_URL guarantees this agrees with y-websocket's own URL construction
-      // (trailing-slash stripping included).
+      // y-websocket freezes `params` into `provider.url` once but re-reads that url
+      // on every dial, so a ~60s token must be rewritten or reconnects carry a dead
+      // one; the base comes from `provider.url`, never rebuilt from WS_URL.
       const baseUrl = provider.url.split("?")[0];
       const tokenProvider = provider;
       provider.on("status", ({ status }: { status: SyncStatus }) => {
         setSyncStatus(status);
         if (status !== "disconnected") return;
-        // Refresh ahead of the next backoff dial. Failure is fine: the URL just
-        // keeps whatever it had, and the socket still reconnects.
         void getTokenRef.current().then((fresh) => {
           if (cancelled) return;
           tokenProvider.url = fresh
@@ -414,9 +303,8 @@ export function useCollabRoom({
         });
       });
 
-      // A room can die during a session, and the reconnect is then refused with
-      // this code. `disconnect()` is what stops y-websocket retrying forever;
-      // every other close code is an ordinary drop that should keep retrying.
+      // Only 4404 is permanent: `disconnect()` stops y-websocket retrying forever,
+      // and every other close code must keep retrying.
       const closedProvider = provider;
       closedProvider.on("connection-close", (event: CloseEvent) => {
         if (event?.code !== CLOSE_ROOM_NOT_FOUND) return;
@@ -424,16 +312,8 @@ export function useCollabRoom({
         if (!cancelled) onRoomClosedRef.current?.();
       });
 
-      // Publish this user as local presence. `name` is the short caret label;
-      // the raw parts ride along for the user bar's initials.
-      //
-      // Fields are listed one by one and must never become `{...user}`:
-      // `CollabUser` now carries `clerkUserId`, and awareness is peer-controlled
-      // (see `lib/collab/awareness.ts`), so a broadcast account ID is a claim any
-      // client can forge. Task 7.3 keys saved room snapshots on an account —
-      // sourcing that from awareness would let a passing guest write a room's
-      // code into a stranger's profile. The spread is a one-character change
-      // with no visible symptom, which is exactly why this comment is here.
+      // INVARIANT: never `{...user}` — awareness is peer-controlled, so spreading
+      // would broadcast `clerkUserId` and let a guest forge one.
       const { awareness } = provider;
       awareness.setLocalStateField("user", {
         name: displayName(user),
@@ -442,16 +322,11 @@ export function useCollabRoom({
         lastName: user.lastName,
       });
 
-      // One handler for both consumers of awareness — the cursor styles and the
-      // user bar must never drift apart, or one person looks like two.
       awarenessChangeHandler = () => {
         const nextPeers = readPeers(awareness, yDoc.clientID);
         renderAwarenessStyles(nextPeers);
         setPeers(nextPeers);
 
-        // Diff against the previous snapshot for join/leave. Cursor moves also
-        // fire this, but they never add or remove a clientID, so they diff to
-        // nothing.
         const nextByClientID = new Map(nextPeers.map((peer) => [peer.clientID, peer]));
         if (knownPeers) {
           const newToasts: ActivityToast[] = [];
@@ -474,40 +349,18 @@ export function useCollabRoom({
       awareness.on("change", awarenessChangeHandler);
       awarenessChangeHandler();
 
-      // "Did *I* type anything" — half of the persistence estimate (§10.8).
-      //
-      // The origin filter is load-bearing, not tidiness. `doc.on("update")`
-      // fires for remote updates too, and the seed below is a local transaction
-      // as well (with a null origin) — without the filter every joiner would be
-      // marked as having edited within milliseconds of arriving, which is
-      // precisely the lurker case §6.1's threshold exists to exclude.
-      // `MonacoBinding` transacts with itself as the origin, which is the
-      // client-side mirror of the server's trick of taking the WebSocket as the
-      // transaction origin (see `server/src/rooms/state.js`).
-      //
-      // `instanceof`, not identity against one binding: since §10.1 there is one
-      // binding per file, and typing in any of them is typing.
-      //
-      // Note this is *stricter* than the server, which counts any update sent
-      // over your socket — the seed included. Erring that way is deliberate:
-      // the chip must never claim "saving" earlier than the server would.
+      // INVARIANT: `origin instanceof MonacoBinding` — remote updates and the
+      // null-origin seed must not count as this client editing (§10.8).
       editHandler = (_update, origin) => {
         if (origin instanceof MonacoBinding) setDidEdit(true);
       };
       yDoc.on("update", editHandler);
 
-      // Hand the binding effect above everything it needs, and wake it up.
       stackRef.current = { yDoc, awareness, MonacoBinding };
       setStackEpoch((epoch) => epoch + 1);
 
-      // Seed the starter file only once the server has said what the room
-      // already contains — seeding earlier would merge the boilerplate into
-      // everyone else's document.
-      //
-      // The id is the fixed `ENTRY_FILE_ID`, never a random one: two peers can
-      // sync into an empty room at the same moment and both run this, and a
-      // fixed key means they converge on one file rather than CRDT-merging into
-      // two identical tabs. See `lib/collab/roomFiles.ts`, rule 1.
+      // Seed only after `sync`, or the boilerplate merges into everyone's document.
+      // The id is the fixed ENTRY_FILE_ID so two simultaneous seeders converge.
       provider.once("sync", (isSynced: boolean) => {
         if (cancelled || !isSynced || filesMap.size > 0) return;
         const seedLanguage = languageRef.current;
@@ -525,8 +378,7 @@ export function useCollabRoom({
 
     return () => {
       cancelled = true;
-      // Cleared first so an in-flight run notices the teardown as early as
-      // possible and discards its result.
+      // Cleared first so an in-flight run notices the teardown and discards itself.
       docRef.current = null;
       stackRef.current = null;
       clearInterval(staleRunWatchdog);
@@ -536,42 +388,30 @@ export function useCollabRoom({
       if (editHandler) yDoc.off("update", editHandler);
       if (provider && awarenessChangeHandler) {
         provider.awareness.off("change", awarenessChangeHandler);
-        // Clear presence now so peers drop this cursor immediately instead of
-        // waiting for the server to notice the socket close.
         provider.awareness.setLocalState(null);
       }
       provider?.destroy();
       yDoc.destroy();
       removeAwarenessStyles();
-      // Peers, toasts, files and the last result all belong to the connection
-      // that just died, not to whatever this reconnects to next.
       setPeers([]);
       setToasts([]);
       setExecState(IDLE_EXECUTION);
       setFiles([]);
       setEntryFileIdState(null);
-      // Belongs to the connection that just died: a new room has to be earned
-      // again, and so does a new session in the same one.
       setDidEdit(false);
     };
   }, [editor, roomId, user]);
 
-  // ── Derived selection ────────────────────────────────────────────────────
-  // Both are derived rather than reconciled in an effect, because both can be
-  // invalidated by *someone else* deleting a file at any moment. An effect that
-  // corrected the state afterwards would render one frame pointing at a file
-  // that is gone — and React 19's `set-state-in-effect` rule rejects it anyway.
+  // Derived, not reconciled in an effect: someone else can delete the file you
+  // are looking at at any moment.
   const entryFile = useMemo(() => resolveEntryFile(files, entryFileId), [files, entryFileId]);
   const activeFile = useMemo(
     () => files.find((file) => file.id === activeFileId) ?? entryFile,
     [files, activeFileId, entryFile],
   );
 
-  // ── File actions ─────────────────────────────────────────────────────────
-  // Every one of these is a deliberate user action, so each latches `didEdit`.
-  // The `origin` filter above cannot see them: they are local transactions with
-  // a null origin, exactly like the seed — which must *not* count. The
-  // difference is intent, and only the call site knows it.
+  // INVARIANT: every file action latches `didEdit` — they are null-origin
+  // transactions the origin filter cannot tell apart from the seed, which must not count.
   const withDoc = useCallback((fn: (yDoc: Y.Doc) => void) => {
     const yDoc = docRef.current;
     if (!yDoc) return;
@@ -588,9 +428,7 @@ export function useCollabRoom({
         const chosen = name?.trim()
           ? sanitizeFileName(name, languageRef.current)
           : newFileName(languageRef.current, existing.map((file) => file.name));
-        // `crypto.randomUUID` is available in every browser this app supports and
-        // the slice keeps the id inside `isUsableId`'s printable set, since it
-        // becomes part of a Monaco model URI.
+        // Sliced to stay inside `isUsableId`'s printable set: it enters a model URI.
         const id = crypto.randomUUID().slice(0, 8);
         filesMap.set(id, { name: chosen, createdAt: Date.now() });
         setActiveFileId(id);
@@ -605,7 +443,7 @@ export function useCollabRoom({
         const filesMap = yDoc.getMap<RoomFileMeta>(FILES_MAP_NAME);
         const meta = filesMap.get(fileId);
         if (!meta) return;
-        // Whole-record replacement, never a nested mutation — rule 3.
+        // INVARIANT: whole-record replacement, never a nested mutation.
         filesMap.set(fileId, { ...meta, name: sanitizeFileName(name, languageRef.current) });
       });
     },
@@ -616,16 +454,13 @@ export function useCollabRoom({
     (fileId: string) => {
       withDoc((yDoc) => {
         const filesMap = yDoc.getMap<RoomFileMeta>(FILES_MAP_NAME);
-        // The last file may not be deleted: an editor with no model is a blank
-        // pane with no way back, and the seed only runs for a room that has
-        // never had one.
+        // The last file may not be deleted: the seed only runs for a room that
+        // has never had one, so there would be no way back.
         if (filesMap.size <= 1 || !filesMap.has(fileId)) return;
         yDoc.transact(() => {
           filesMap.delete(fileId);
-          // The Y.Text is deliberately *not* cleared. Yjs keeps a tombstone for
-          // deleted content either way, so clearing it saves nothing, and a
-          // concurrent "delete the file" / "type in the file" pair would
-          // otherwise resurrect an entry with its contents wiped.
+          // The Y.Text is deliberately not cleared: a concurrent delete/type pair
+          // would otherwise resurrect the entry with its contents wiped.
           const metaMap = yDoc.getMap<string>(ROOM_META_MAP_NAME);
           if (metaMap.get(ENTRY_KEY) === fileId) {
             const next = readRoomFiles(filesMap.entries(), languageRef.current)[0];
@@ -647,12 +482,7 @@ export function useCollabRoom({
     [withDoc],
   );
 
-  /**
-   * One file's text, straight from the doc rather than from Monaco.
-   *
-   * This is what makes Run execute the *entry* file while you are looking at
-   * another one, and what lets Save zip files that have no model yet.
-   */
+  /** Straight from the doc, so Run reads the entry file and Save reads unopened ones. */
   const readFile = useCallback((fileId: string) => {
     const yDoc = docRef.current;
     if (!yDoc) return "";

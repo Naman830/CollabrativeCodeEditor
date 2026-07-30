@@ -1,11 +1,6 @@
 "use client";
 
-// The top bar for every screen that is not the room: the landing page and both
-// /profile screens. The room has its own denser `RoomChrome` instead.
-//
-// A Client Component, because the theme toggle and Clerk's session both are.
-// `ProfileShell` is a Server Component and renders this — which is fine, since
-// it passes only strings.
+// The top bar for every screen that is not the room; the room has RoomChrome.
 
 import Link from "next/link";
 import { SignInButton, SignUpButton, UserButton } from "@clerk/nextjs";
@@ -21,7 +16,6 @@ const navLink = cn(
 );
 
 type SiteNavProps = {
-  /** Renders a back link in place of the wordmark. Used by /profile. */
   backHref?: string;
   backLabel?: string;
 };
@@ -48,18 +42,13 @@ export default function SiteNav({ backHref, backLabel }: SiteNavProps) {
         </Link>
       )}
 
-      {/* Fixed height so the row does not jump when Clerk resolves and the
-          buttons below swap in — the same reason the old landing page pinned
-          its auth row to `h-8`. */}
+      {/* Fixed height so the row does not jump when Clerk resolves. */}
       <nav className="ml-auto flex h-8 items-center gap-2">
         <ThemeToggle />
 
         {clerk.ready &&
           (clerk.signedIn ? (
             <>
-              {/* The only way into /profile. Signed-out visitors get no link,
-                  because they have nothing there and the page would only tell
-                  them to sign in — which the buttons beside this already do. */}
               <Link href="/profile" className={navLink}>
                 My rooms
               </Link>

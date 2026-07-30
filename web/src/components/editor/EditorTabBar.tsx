@@ -1,16 +1,7 @@
 "use client";
 
-// The strip above the editor: one tab per file in the room (tasks.md §10.1).
-//
-// Before §10.1 this held a single tab that doubled as the language selector,
-// because the filename was derived from the language. The language is now chosen
-// once on the room-creation screen and is a property of the *room*, so the tab
-// strip is free to be what it looks like: real files, the entry file starred,
-// and a `+` that adds another.
-//
-// Presentational. Every file here has already been through `readRoomFiles`
-// (`lib/collab/roomFiles.ts`), which is the boundary that makes a peer-supplied filename
-// safe to render — the same rule `readPeers` sets for peer-supplied names.
+// Presentational: every filename here has already been sanitized by
+// `readRoomFiles` (`lib/collab/roomFiles.ts`) — peer-supplied input.
 
 import { useEffect, useRef, useState } from "react";
 import FileTabMenu, { type FileTabMenuAction } from "./FileTabMenu";
@@ -21,7 +12,6 @@ import { cn, focusRing } from "@/lib/ui";
 
 type MenuState = { fileId: string; x: number; y: number };
 
-/** Which tab, if any, is currently showing an inline text input instead. */
 type EditState = { kind: "rename"; fileId: string } | { kind: "create" } | null;
 
 type EditorTabBarProps = {
@@ -34,18 +24,9 @@ type EditorTabBarProps = {
   onDelete: (fileId: string) => void;
   onSetEntry: (fileId: string) => void;
   onDownload: (fileId: string) => void;
-  /** Right-hand controls. Carries the output panel's restore button when the
-   *  output is collapsed side-by-side and has no visible strip of its own. */
   actions?: React.ReactNode;
 };
 
-/**
- * The inline name field, used for both "+ New file" and Rename.
- *
- * A field in the strip rather than a modal: naming a file is not a decision that
- * deserves a scrim, and a modal would take focus away from the editor for a
- * gesture people repeat. Enter commits, Escape and blur cancel.
- */
 function NameInput({
   initial,
   onCommit,
@@ -56,9 +37,7 @@ function NameInput({
   onCancel: () => void;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
-  // Enter commits and then unmounts this input, and a browser may still fire
-  // `blur` on a node being removed — which would commit a second time and create
-  // two files from one keystroke.
+  // Enter commits then unmounts this input; a trailing `blur` would commit twice.
   const committedRef = useRef(false);
   const commitOnce = (value: string) => {
     if (committedRef.current) return;
@@ -70,8 +49,7 @@ function NameInput({
     const input = inputRef.current;
     if (!input) return;
     input.focus();
-    // Select the stem, not the extension: renaming almost always means changing
-    // the name and keeping the extension the room's language implies.
+    // Select the stem, keep the extension.
     const dot = initial.lastIndexOf(".");
     input.setSelectionRange(0, dot > 0 ? dot : initial.length);
   }, [initial]);
@@ -83,8 +61,7 @@ function NameInput({
       aria-label="File name"
       spellCheck={false}
       onKeyDown={(event) => {
-        // Stops Monaco-bound shortcuts and the tab strip's own keys from acting
-        // on a field that is only ever a filename.
+        // INVARIANT: keep — stops Monaco-bound shortcuts firing while naming.
         event.stopPropagation();
         if (event.key === "Enter") commitOnce(event.currentTarget.value);
         else if (event.key === "Escape") {
@@ -129,8 +106,6 @@ export default function EditorTabBar({
 
   return (
     <PanelStrip>
-      {/* The tabs scroll; the `+` and the right-hand actions do not. `min-w-0`
-          is what lets the scroller actually shrink inside the flex strip. */}
       <div
         role="tablist"
         aria-label="Files in this room"
@@ -167,8 +142,6 @@ export default function EditorTabBar({
                   ? "bg-code text-fg shadow-[inset_0_1.5px_0_0_var(--accent)]"
                   : "bg-panel text-fg-muted hover:bg-raised hover:text-fg",
               )}
-              // §10.1's "right-click a tab". The kebab below is the same menu
-              // for anyone without a right mouse button.
               onContextMenu={(event) => {
                 event.preventDefault();
                 setMenu({ fileId: file.id, x: event.clientX, y: event.clientY });
@@ -183,8 +156,6 @@ export default function EditorTabBar({
                 title={isEntry ? `${file.name} — Run executes this file` : file.name}
                 className={cn("flex min-w-0 items-center gap-1.5 py-2 font-mono", focusRing)}
               >
-                {/* Only ever the filled star: an outline on every other tab
-                    would read as a control rather than a state. */}
                 {isEntry && (
                   <StarIcon filled className="h-3 w-3 shrink-0 text-warning" />
                 )}
@@ -202,8 +173,7 @@ export default function EditorTabBar({
                 className={cn(
                   "grid h-5 w-5 shrink-0 place-items-center rounded text-fg-subtle",
                   "opacity-0 transition-opacity hover:bg-edge hover:text-fg",
-                  // Never hidden from the keyboard: `opacity-0` still takes focus,
-                  // and `focus-visible` brings it back into view.
+                  // `opacity-0` stays focusable; never swap it for `hidden`.
                   "group-hover:opacity-100 focus-visible:opacity-100",
                   isActive && "opacity-60",
                   focusRing,
@@ -221,8 +191,7 @@ export default function EditorTabBar({
               initial=""
               onCommit={(value) => {
                 setEditing(null);
-                // An empty commit still creates one, under the auto-suggested
-                // `file2.py` — Enter on an untouched field means "just add one".
+                // An empty commit still creates one, under the suggested name.
                 onCreate(value.trim() || undefined);
               }}
               onCancel={() => setEditing(null)}

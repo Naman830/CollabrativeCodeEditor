@@ -11,8 +11,6 @@ import { RoomCreateError, createRoom } from "@/lib/collab/rooms";
 import { cn, inputField, primaryButton, secondaryButton } from "@/lib/ui";
 import { setActiveUser, type CollabUser } from "@/lib/collab/user";
 
-// "No sign-up" was true in v1 and stopped being true the moment Clerk landed.
-// Signing in is optional, not absent — which is the claim worth making.
 const FEATURES = [
   {
     Icon: CursorIcon,
@@ -31,7 +29,6 @@ const FEATURES = [
   },
 ];
 
-/** A still frame of the room, purely decorative. */
 function EditorPreview() {
   return (
     <div
@@ -79,22 +76,14 @@ function EditorPreview() {
 
 export default function Home() {
   const router = useRouter();
-  // Clerk's `Show` control component is an async *server* component, so it
-  // cannot be used on this page — the whole landing page is "use client".
-  // Branching on the hook keeps one source of auth truth in the client tree.
+  // INVARIANT: Clerk's `Show` is an async Server Component — unusable here; branch on the hook.
   const clerk = useClerkIdentity();
   const clerkUser = signedInUser(clerk);
   const [roomId, setRoomId] = useState("");
-  // §10.1 moved the language selector out of the editor and onto this screen: a
-  // room is created in one language, every file in it gets that extension, and
-  // the sync server records it so it can finally reach `dead_rooms.language`.
-  // It is deliberately not remembered between visits — a room's language is a
-  // decision about the room, not a standing preference.
+  // Fixed for the room's lifetime, so deliberately not remembered between visits.
   const [language, setLanguage] = useState<LanguageValue>(DEFAULT_LANGUAGE);
-  // The identity dialog for a new room is open. The ID isn't known until submit
-  // — the server mints it, so an ID it never handed out can be refused later.
+  // INVARIANT: the room ID is minted by the server on submit, never before.
   const [creating, setCreating] = useState(false);
-  // The dialog stays open the whole time; only the reservation is in flight.
   const [reserving, setReserving] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
 
@@ -109,8 +98,7 @@ export default function Home() {
     goToRoom(roomId);
   };
 
-  // Creating asks who you are first. Joining doesn't: the room itself prompts,
-  // which covers typed IDs and pasted links with one code path.
+  // Creating asks who you are first; joining lets the room itself prompt.
   const handleCreate = () => {
     setCreateError(null);
     setCreating(true);
@@ -125,8 +113,7 @@ export default function Home() {
       goToRoom(newRoomId);
     } catch (err) {
       setCreating(false);
-      // A server that answered and refused said why; only an unanswered
-      // request is a reachability problem.
+      // A server that answered and refused said why; only silence is unreachability.
       setCreateError(
         err instanceof RoomCreateError
           ? err.message
@@ -155,9 +142,6 @@ export default function Home() {
             </div>
 
             <div className={cn("flex flex-col gap-4 rounded-2xl border border-edge bg-panel p-5 shadow-xl shadow-[var(--shadow-color)]")}>
-              {/* Directly above the button it belongs to, because it is part of
-                  creating the room and not a setting: it is fixed for the room's
-                  lifetime, so there is no second chance to pick it. */}
               <div className="flex flex-col gap-2">
                 <label htmlFor="room-language" className="text-xs font-medium text-fg-muted">
                   Language for this room
@@ -205,11 +189,7 @@ export default function Home() {
                 </div>
               </form>
 
-              {/* tasks.md 7.1 item 3: the guest path stays *visible*, not merely
-                  implied by the buttons above happening to work. Static on
-                  purpose — it is equally true signed in or out (the room
-                  identity is per-tab either way), and a line that appeared a
-                  beat after Clerk resolved would shift the card mid-click. */}
+              {/* Static on purpose: equally true signed in or out, and must not shift the card. */}
               <p className="text-center text-xs text-fg-subtle">
                 Both work as a <span className="text-fg-muted">guest</span> — no account needed.
               </p>
@@ -252,11 +232,8 @@ export default function Home() {
         </p>
       </footer>
 
-      {/* Never gated on Clerk — see the matching comment in `JoinRoomPrompt.tsx`.
-          The prefill is read in lazy useState initializers that run once, so
-          the `key` remounts the dialog if a signed-in session resolves after it
-          opened. A guest's key never changes, so the common path never
-          remounts and nothing typed is lost. */}
+      {/* INVARIANT: never gate the dialog on Clerk loading. The `key` remounts it
+          once if a signed-in session resolves late; a guest's key never changes. */}
       {creating && (
         <IdentityDialog
           key={clerkUser ? "clerk" : "guest"}

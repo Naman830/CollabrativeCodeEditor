@@ -1,13 +1,6 @@
 "use client";
 
-// One chrome bar for the room, replacing the two full-width rows the editor used
-// to sit under (`UserBar` then `EditorToolbar`). Nothing was dropped — room id,
-// sync state, language, presence, Run and Save are all still here, plus the
-// theme toggle — but they now cost 48px instead of ~84px, which is the whole
-// point on a laptop.
-//
-// Presentational only. Every value arrives as a prop from `CodeEditor`, so this
-// file knows nothing about Yjs, and the peers it renders have already been
+// Presentational only: every value is a prop, and the peers have already been
 // through `readPeers`.
 
 import Link from "next/link";
@@ -35,11 +28,6 @@ const SYNC_DOT: Record<SyncStatus, string> = {
   disconnected: "bg-danger",
 };
 
-/**
- * Room id, its sync light, and a click to copy. The three belong together: the
- * id is what you send someone, and the light says whether the thing you would be
- * sending them is currently live.
- */
 function RoomChip({ roomId, syncStatus }: { roomId: string; syncStatus: SyncStatus }) {
   const { copied, copy } = useCopyToClipboard();
 
@@ -60,7 +48,7 @@ function RoomChip({ roomId, syncStatus }: { roomId: string; syncStatus: SyncStat
       <span aria-hidden className={copied ? "text-success" : "text-fg-subtle"}>
         {copied ? <CheckIcon /> : <CopyIcon />}
       </span>
-      {/* Announced rather than shown: the tick above is the visible feedback. */}
+      {/* Announced, not shown: the tick above is the visible feedback. */}
       <span aria-live="polite" className="sr-only">
         {copied ? "Room ID copied" : ""}
       </span>
@@ -70,21 +58,19 @@ function RoomChip({ roomId, syncStatus }: { roomId: string; syncStatus: SyncStat
 
 type RoomChromeProps = {
   roomId: string;
-  /** The room's language (§10.1), chosen once at creation. Shown as a chip. */
+  /** Chosen once at room creation and fixed for its lifetime. */
   language: string;
-  /** What Save produces: one filename, or `project.zip` for a multi-file room. */
+  /** One filename, or `project.zip` for a multi-file room. */
   saveName: string;
   syncStatus: SyncStatus;
   peers: Peer[];
   /** Derived from shared state, so Run disables for every peer identically. */
   isRunning: boolean;
-  /** The file Run executes, which need not be the tab you have open (§10.1). */
+  /** The file Run executes, which need not be the tab you have open. */
   entryFileName: string | null;
   onRun: () => void;
-  /** False for an empty single-file room — Save's only disabled state. */
   canSave: boolean;
   onSave: () => void;
-  /** §10.8's estimate. An estimate — see `lib/data/persistence.ts`. */
   persistenceStatus: PersistenceStatus;
   persistenceRemainingMs: number;
   isLastPeer: boolean;
@@ -105,16 +91,11 @@ export default function RoomChrome({
   persistenceRemainingMs,
   isLastPeer,
 }: RoomChromeProps) {
-  // §10.5's "show the binding in the Run and Save buttons' title". Read at
-  // render, which is safe here: this tree only ever reaches the browser (see
-  // `lib/platform.ts`).
   const runShortcut = shortcutLabel("Enter");
   const saveShortcut = shortcutLabel("S");
 
   return (
-    // Wraps to two rows below `sm` rather than hiding controls behind a
-    // breakpoint. An earlier draft hid the language select and the theme toggle
-    // on phones, which is not a responsive layout — it is a smaller feature set.
+    // Wraps to two rows below `sm` rather than hiding controls behind a breakpoint.
     <header
       className={cn(
         "flex shrink-0 flex-wrap items-center gap-x-2 gap-y-1.5 border-b border-edge bg-panel px-2 py-1.5",
@@ -135,10 +116,7 @@ export default function RoomChrome({
 
       <RoomChip roomId={roomId} syncStatus={syncStatus} />
 
-      {/* The language moved here from the file tab in §10.1: it is now a
-          property of the room, fixed at creation, so it is a label rather than a
-          control. Read-only on purpose — changing it mid-room would silently
-          make every existing file's extension a lie. */}
+      {/* Read-only: changing the language mid-room would make every file's extension a lie. */}
       <span
         className={cn(chip, "hidden shrink-0 sm:inline-flex")}
         title="Chosen when this room was created and fixed for its lifetime"
@@ -162,8 +140,7 @@ export default function RoomChrome({
         <button
           type="button"
           onClick={onSave}
-          // No room-wide lock here — Save touches no shared state, so an empty
-          // editor is the only thing worth guarding against.
+          // No room-wide lock: Save touches no shared state.
           disabled={!canSave}
           title={`Download ${saveName} (${saveShortcut})`}
           aria-label={`Save as ${saveName}`}
@@ -182,8 +159,7 @@ export default function RoomChrome({
           type="button"
           onClick={onRun}
           disabled={isRunning}
-          // Names the entry file, because since §10.1 Run may execute a file
-          // other than the one you are looking at.
+          // Names the entry file: Run may execute a file other than the open one.
           title={
             isRunning
               ? "Someone in this room is already running the code"

@@ -1,69 +1,28 @@
 // What a room was, as opposed to whether it exists.
-//
-// `server/src/rooms/lifecycle.js` answers one question — does this room exist — and answered it with
-// nothing but two maps of timers. Task 7.3 needs four things it never recorded:
-// when the room was created, which *verified* Clerk users were in it, how long
-// each stayed, and whether they actually edited anything. That bookkeeping lives
-// here so `server/src/rooms/lifecycle.js` keeps its single, narrow job.
-//
-// ---------------------------------------------------------------------------
-// HARD RULE: every function here is lookup-only. Nothing may create room state
-// as a side effect of an observer.
-//
-// `doc.destroy()` synchronously re-fires the awareness `update` handler one last
-// time. y-protocols registers `doc.on('destroy', () => this.destroy())`, and
-// `Awareness.destroy()` is:
-//
-//     destroy () {
-//       this.emit('destroy', [this])
-//       this.setLocalState(null)   // <- emits 'update' with removed:[clientID]
-//       super.destroy()            // <- only NOW are our listeners dropped
-//       clearInterval(this._checkInterval)
-//     }
-//
-// So a get-or-create inside that handler would resurrect the entry for a room
-// that was just destroyed, and nothing would ever delete it again: one leaked
-// entry per dead room, forever. Handlers call `getRoomState()` and bail on null.
-// ---------------------------------------------------------------------------
+// INVARIANT: every function here is lookup-only — an observer that creates state
+// resurrects a room doc.destroy() just killed, and nothing deletes it again.
 
-// tasks.md §6.1 asks for "more than a trivial moment". Its prose suggests the
-// grace window (10s), but its own scenario table says a signed-in stranger who
-// lurks 30s gets nothing — 10s cannot deliver that, so the table wins. Paired
-// with `didEdit` below, which is what actually kills the lurker case: 60s alone
-// is passed by anyone who leaves a tab open.
+// INVARIANT: keep in sync with web/src/lib/data/persistence.ts, which hardcodes
+// this default and cannot see the env override.
 const MEMBER_MIN_CONNECTED_MS = Number(process.env.MEMBER_MIN_CONNECTED_MS) || 60_000;
 
-// A snapshot is the one new unbounded write v2 adds: MAX_CODE_BYTES caps what is
-// *sent to Piston*, but nothing bounds how large a room's Y.Text grows. 256 KB is
-// 4x that cap, so no runnable program trips this.
 const MAX_SNAPSHOT_BYTES = 256 * 1024;
+// INVARIANT: keep in sync with web/src/lib/data/deadRooms.ts, which matches on it.
 const TRUNCATION_MARKER = "\n\n/* --- snapshot truncated: room exceeded 256 KB --- */\n";
 
-// Both are ceilings on peer-supplied data accumulated over a room's life, and a
-// room can live for hours.
+// Ceilings on peer-supplied data accumulated over a room's whole life.
 const MAX_MEMBERS = 200;
 const MAX_PARTICIPANTS = 50;
-// Sockets awaiting attribution. Bounded by concurrent connections in practice;
-// the cap only matters if `forgetConn` were ever missed.
 const MAX_PENDING_EDITS = 500;
 
-// The third copy of these rules, after server/src/http/rateLimit.js mirroring
-// web/src/lib/sandbox/rateLimit.ts and CLOSE_ROOM_NOT_FOUND living in two files. The two
-// workspaces share no code and this one has no build step, so importing
-// web/src/lib/collab/user.ts and web/src/lib/collab/awareness.ts is not an option — but the values must
-// stay in step by hand.
 const MAX_NAME_LENGTH = 24; // == web/src/lib/collab/user.ts
 const HEX_COLOR = /^#[0-9a-f]{6}$/i; // == web/src/lib/collab/awareness.ts
 const FALLBACK_COLOR = "#9e9e9e"; // == web/src/lib/collab/awareness.ts
 
-// ── Multi-file rooms (tasks.md §10.1) ──────────────────────────────────────
-// The shared-document names, mirroring web/src/lib/collab/roomFiles.ts. This server never
-// writes them — it only reads the room's final state at the moment it dies.
+// Shared-document names; keep in sync with web/src/lib/collab/roomFiles.ts.
 const FILES_MAP_NAME = "files";
 const FILE_TEXT_PREFIX = "file:";
-// Pre-§10.1 rooms kept their whole contents in this one Y.Text. Nothing creates
-// one any more, but the fallback in `snapshotFiles` costs a branch and the
-// alternative is a silently empty snapshot.
+// Pre-§10.1 rooms kept everything here; snapshotFiles still falls back to it.
 const LEGACY_TEXT_NAME = "monaco";
 const MAX_FILES = 20; // == web/src/lib/collab/roomFiles.ts
 const MAX_FILENAME_LENGTH = 64; // == web/src/lib/collab/roomFiles.ts

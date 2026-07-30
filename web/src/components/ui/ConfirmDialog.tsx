@@ -1,31 +1,17 @@
 "use client";
 
-// A yes/no modal for an action that cannot be undone (tasks.md §10.7).
-//
-// The scrim, `role="dialog"` + `aria-modal`, Escape-to-close and the Tab trap
-// are the same treatment `IdentityDialog` uses, generalised rather than copied a
-// second time — two dialogs with two hand-maintained focus traps is how one of
-// them silently stops trapping. The trap is not decoration: `aria-modal="true"`
-// promises assistive tech the rest of the page is inert, and nothing enforces
-// that for a keyboard user.
-//
-// One deliberate difference from `IdentityDialog`: the labelling id comes from
-// `useId()` rather than the literal "identity-dialog-title", so two dialogs can
-// coexist without pointing `aria-labelledby` at the same element.
+// INVARIANT: `aria-modal="true"` promises the page is inert — the Tab trap below
+// is what enforces it. The label id is `useId()`, so two dialogs cannot collide.
 
 import { useEffect, useId, useRef, type ReactNode } from "react";
 import { cn, card, secondaryButton } from "@/lib/ui";
 
 type ConfirmDialogProps = {
   title: string;
-  /** The consequence, in plain words. Shown above the buttons. */
   children: ReactNode;
   confirmLabel: string;
-  /** Class string for the confirm button — `dangerButton` for a destructive one. */
   confirmClassName: string;
-  /** Disables both buttons and shows a spinner; a second submit must not fire. */
   busy?: boolean;
-  /** Rendered above the buttons in `--danger` when the action came back failed. */
   error?: string | null;
   onConfirm: () => void;
   onCancel: () => void;
@@ -45,16 +31,14 @@ export default function ConfirmDialog({
   const dialogRef = useRef<HTMLDivElement>(null);
   const cancelRef = useRef<HTMLButtonElement>(null);
 
-  // Focus lands on Cancel, not Confirm: for an irreversible action the safe
-  // choice is the one a stray Enter should hit.
+  // Focus lands on Cancel, not Confirm: a stray Enter must be the safe choice.
   useEffect(() => {
     cancelRef.current?.focus();
   }, []);
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      // Escape is ignored mid-flight — the request is already gone, and closing
-      // the dialog would leave no way to see how it turned out.
+      // Escape is ignored mid-flight: the request is gone, so hide no result.
       if (e.key === "Escape") {
         if (!busy) onCancel();
         return;
@@ -69,7 +53,6 @@ export default function ConfirmDialog({
       const last = focusable[focusable.length - 1];
       const active = document.activeElement;
 
-      // Wrap at both ends, and pull focus back in if it has already escaped.
       if (e.shiftKey && (active === first || !dialogRef.current.contains(active))) {
         e.preventDefault();
         last.focus();

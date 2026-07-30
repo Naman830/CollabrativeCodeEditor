@@ -5,15 +5,8 @@ import { clientKey, createRateLimiter } from "@/lib/sandbox/rateLimit";
 
 const PISTON_EXECUTE_URL = `${process.env.PISTON_API_URL ?? "http://localhost:2000"}/api/v2/execute`;
 
-// Sandbox limits, sent with every request. These stop a runaway program:
-// `while True: pass` dies at 5s, an allocation loop at 256 MB.
-//
-// Wall time and CPU time are separate ceilings in Piston and both matter — a
-// busy loop burns CPU as fast as wall clock, so raising only `run_timeout`
-// leaves it dying at the 3s default `run_cpu_time`.
-//
-// Piston 400s the whole request if a value exceeds its own configured ceiling,
-// so never raise these above the PISTON_* vars in `docker-compose.yml`.
+// INVARIANT: never raise these above the PISTON_* ceilings in docker-compose.yml
+// (Piston 400s the request); wall and CPU time are separate limits — raise both.
 const RUN_TIMEOUT_MS = 5_000;
 const RUN_CPU_TIME_MS = 5_000;
 const COMPILE_TIMEOUT_MS = 10_000;
@@ -21,29 +14,16 @@ const COMPILE_CPU_TIME_MS = 10_000;
 const RUN_MEMORY_LIMIT_BYTES = 256 * 1024 * 1024;
 const COMPILE_MEMORY_LIMIT_BYTES = 512 * 1024 * 1024;
 
-// Catches a Piston that never answers, which would otherwise lock the whole
-// room's output panel. It sits between the sandbox limits and the client's
-// STALE_RUN_MS watchdog: a worst case run is 10s compile + 5s, so anything at
-// or under 15s here would abort work the sandbox was about to finish.
+// INVARIANT: must stay above the sandbox limits (10s compile + 5s run) and below
+// the client's STALE_RUN_MS watchdog.
 const PISTON_TIMEOUT_MS = 18_000;
 
-// 10 runs/minute/IP: generous for someone iterating on a snippet, bounded for a
-// script pointed at this endpoint. The room-wide "running" lock already
-// serialises runs within a room; this covers callers who skip the UI.
 const runLimiter = createRateLimiter({ limit: 10, windowMs: 60_000 });
 
-// Ceiling for the cheap Content-Length check: the decoded payload plus room for
-// JSON escaping, which can roughly double it.
-//
-// §10.4 added `stdin` to this body and this number did **not** have to move,
-// because code and stdin share one `MAX_CODE_BYTES` budget (`payloadTooLarge`).
-// A separate per-field cap would have doubled the worst case and forced this up
-// with it — which is the main reason the combined reading was chosen.
+// INVARIANT: covers code and stdin together — a per-field cap would force this up.
 const REQUEST_BYTE_CEILING = MAX_CODE_BYTES * 2 + 4 * 1024;
 
-// Pinned against Piston's /runtimes output — update after a Piston image
-// change. Extensions live in `lib/editor/languages.ts` instead, since the client's
-// Save button needs them too.
+// Pinned against Piston's /runtimes output — recheck after a Piston image change.
 const LANGUAGE_MAP: Record<string, { language: string; version: string }> = {
   javascript: { language: "javascript", version: "18.15.0" },
   typescript: { language: "typescript", version: "5.0.3" },
@@ -58,28 +38,21 @@ type PistonStage = {
   output: string;
   code: number | null;
   signal: string | null;
-  // Only set when the sandbox stopped the program (output cap, timeout, kill)
-  // rather than it exiting on its own.
+  // Only set when the sandbox stopped the program, not when it exited on its own.
   status?: string | null;
   message?: string | null;
 };
 
-// Piston SIGABRTs the sandbox when a stdio buffer overflows, leaving a fatal
-// signal line in stderr that has nothing to do with the user's code. `notice`
-// explains the real reason instead.
+// Sandbox-internal stderr lines stripped in favour of `notice`: an output-cap
+// SIGABRT, and an OOM kill logged by Piston's own shell wrapper.
 const SANDBOX_KEEPER_NOISE = /^Sandbox keeper received fatal signal \d+\n?/m;
 
-// An out-of-memory kill leaves a line from Piston's own shell wrapper
-// ("/piston/packages/python/3.10.0/run: line 3: 3 Killed ..."), which exposes
-// sandbox internals and never mentions memory. The notice explains it instead.
 const OOM_KILL_NOISE = /^\/piston\/packages\/.*\bKilled\b.*\n?/m;
 
 // 128 + SIGKILL(9): what the shell reports when the memory limit kills a run.
 const SIGKILL_EXIT_CODE = 137;
 
-// Turns a sandbox-side stop into a plain sentence — Piston's own wording
-// ("stdout length exceeded") reads as an internal error to whoever clicked Run.
-// Anything unrecognised falls back to Piston's message.
+// Turns a sandbox-side stop into a plain sentence; unrecognised falls back to Piston's.
 function noticeFor(run: PistonStage | undefined): string | null {
   if (!run?.status) return null;
   switch (run.status) {
@@ -92,9 +65,7 @@ function noticeFor(run: PistonStage | undefined): string | null {
         RUN_TIMEOUT_MS / 1000
       }s and was stopped by the sandbox.`;
     case "RE":
-      // "RE" is every non-zero exit, so it usually just means the program
-      // failed — stderr and the exit code already say so. Only a sandbox kill
-      // is worth a banner.
+      // "RE" is every non-zero exit; only a sandbox kill is worth a banner.
       return run.code === SIGKILL_EXIT_CODE
         ? `The program was stopped — it most likely exceeded the ${
             RUN_MEMORY_LIMIT_BYTES / (1024 * 1024)
@@ -122,10 +93,8 @@ export async function POST(request: Request) {
     );
   }
 
-  // Checked before the body is read, so a huge payload is refused without being
-  // buffered. Deliberately loose: Content-Length measures the JSON envelope,
-  // which escaping can nearly double. The exact check on `code` below is what
-  // actually enforces the cap — this header is only a claim, and may be absent.
+  // Deliberately loose pre-read check on an absent-or-lying header; the exact
+  // `payloadTooLarge` check below is what enforces the cap.
   const declaredLength = Number(request.headers.get("content-length"));
   if (Number.isFinite(declaredLength) && declaredLength > REQUEST_BYTE_CEILING) {
     return NextResponse.json({ success: false, error: TOO_LARGE_MESSAGE }, { status: 413 });
@@ -154,8 +123,7 @@ export async function POST(request: Request) {
     );
   }
 
-  // Optional, because a client that never opens the input box sends nothing —
-  // but a present-and-wrong value is a bad request, not something to coerce.
+  // Optional, but a present-and-wrong value is a bad request, not something to coerce.
   if (stdin !== undefined && typeof stdin !== "string") {
     return NextResponse.json(
       { success: false, error: "'stdin' must be a string when present." },
@@ -164,9 +132,7 @@ export async function POST(request: Request) {
   }
   const stdinText = stdin ?? "";
 
-  // The authoritative size check: measured on the decoded program *and* its
-  // input, so framing and escaping can't change the answer. One combined
-  // budget — see `payloadTooLarge` in `lib/sandbox/execution.ts`.
+  // The authoritative size check: one combined budget for code and stdin.
   const oversize = payloadTooLarge(code, stdinText);
   if (oversize) {
     return NextResponse.json({ success: false, error: oversize }, { status: 413 });
@@ -192,8 +158,6 @@ export async function POST(request: Request) {
           language: mapping.language,
           version: mapping.version,
           files: [{ name: `main.${fileExtFor(language)}`, content: code }],
-          // Piston feeds this to the process's stdin. Without it every program
-          // that reads input died on EOF or hung to the run timeout (§10.4).
           stdin: stdinText,
           run_timeout: RUN_TIMEOUT_MS,
           run_cpu_time: RUN_CPU_TIME_MS,

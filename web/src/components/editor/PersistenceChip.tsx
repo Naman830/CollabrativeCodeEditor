@@ -1,14 +1,8 @@
 "use client";
 
-// "Is anything I do here being kept?" — tasks.md §10.8's persistence indicator.
-//
-// Presentational: every value arrives as a prop, and the estimate itself is
-// computed in `hooks/useRoomPersistence.ts`. See `lib/data/persistence.ts` for why
-// this can only ever be an estimate and why it speaks about *you* rather than
-// about the room.
-//
-// It is also where the leaving warning's actual sentence lives, because
-// browsers ignore custom `beforeunload` text and show their own generic prompt.
+// INVARIANT: an estimate about *you*, never a promise about the room — see
+// `lib/data/persistence.ts`. Holds the leaving warning's real sentence, since
+// browsers ignore custom `beforeunload` text.
 
 import { LockIcon } from "@/components/ui/icons";
 import {
@@ -43,8 +37,7 @@ export default function PersistenceChip({
 
   return (
     <span
-      // Focusable so the explanation is reachable by keyboard, since the whole
-      // of it lives in the tooltip — the bar has no room for three sentences.
+      // Focusable so the tooltip, which holds the whole explanation, is keyboard-reachable.
       tabIndex={0}
       role="status"
       title={title}
@@ -62,8 +55,7 @@ export default function PersistenceChip({
       ) : (
         <span aria-hidden className={cn("h-2 w-2 shrink-0 rounded-full", DOT[status])} />
       )}
-      {/* Hidden on the narrowest widths, where the dot plus the accessible name
-          still carry the state and the chrome bar is already wrapping. */}
+      {/* Hidden when narrow: the dot plus the accessible name still carry the state. */}
       <span className="hidden truncate md:inline">{label}</span>
     </span>
   );

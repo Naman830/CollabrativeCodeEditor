@@ -760,6 +760,53 @@ the host machine. It did, more than expected, so the exposure was removed rather
       code execution service."` is expected rather than a fault, and any future tunnel must
       carry a shared secret.
 
+### 7.9 Repository reorganization (not originally listed; recorded because it shipped)
+
+Asked directly, not from this checklist: reorganize the whole project into a structure a developer
+or a recruiter can read, without changing behaviour. No feature was added or removed.
+
+- [x] Renamed `collab-code-editor/` to `web/`, so the two workspaces read as `web/` + `server/`.
+      **The Vercel project's Root Directory is dashboard-only config and must be repointed to
+      `web/`** — nothing in the repo errors if it is missed, the deploy just breaks. Railway's
+      root directory is unaffected (`server/` did not move).
+- [x] Moved the frontend to the `src/` layout: `web/src/app/` now holds **routes only**, with
+      `components/`, `hooks/`, `lib/`, `styles/` and `proxy.ts` beside it. Verified `proxy.ts`
+      still resolves by finding `ƒ Proxy (Middleware)` in `next build` output — Next accepts it at
+      the project root or inside `src/`, never inside `src/app/`.
+- [x] Grouped the 26 components into `editor/` · `profile/` · `layout/` · `ui/`, and the 20 `lib`
+      modules into `collab/` · `editor/` · `sandbox/` · `data/`, leaving `ui.ts`, `theme.ts`,
+      `platform.ts` and `sound.ts` at the `lib/` root. No file was renamed, so nothing gained a
+      new name to track.
+- [x] Grouped the server's 8 flat files into `server/src/` as `sync/` · `rooms/` · `storage/` ·
+      `auth/` · `http/`. Four files were renamed to kill the stutter the folders created:
+      `rooms.js`→`rooms/lifecycle.js`, `roomState.js`→`rooms/state.js`,
+      `yjsConnection.js`→`sync/connection.js`, `clerkAuth.js`→`auth/clerk.js`. `package.json`'s
+      `main` and both scripts now point at `src/index.js`; `railway.json` needed no change because
+      `npm start` is cwd-relative.
+- [x] Adopted a hybrid import convention: `@/` (mapped to `web/src/`) for anything crossing a
+      folder, relative for same-folder siblings. 133 specifiers rewritten. The one exception is
+      `lib/data/db.ts`, whose Prisma client sits outside `src/` and so has no alias.
+- [x] Moved `docker-compose.yml` to the repo root — it is a third service, not part of the
+      frontend — and **pinned `name: collab-code-editor` inside it.** Compose derives its project
+      name from the directory, which names the volume and labels the container, so without the pin
+      the rename would have orphaned `collab-code-editor_piston_data` and every installed language
+      package with it, then collided with the running `piston_api`. Verified the moved file still
+      adopts the pre-existing container.
+- [x] Moved `tasks.md` to `docs/tasks.md`; `README.md` and `CLAUDE.md` stay at the root by
+      convention. Rewrote the README's repo-layout tree (which was already stale — it still listed
+      the deleted `UserBar.tsx`) and its dead `V1_Tasks.md` link, replaced the stock
+      create-next-app `web/README.md` with a real one, and corrected `server/README.md`, which
+      still claimed the server had "no persistence and no auth" — untrue since 7.1 and 7.3.
+- [x] Reduced comments repo-wide, keeping only what a future editor cannot safely lose: ordering
+      constraints, trust boundaries, "keep in sync with" markers for the seven hand-maintained
+      cross-workspace duplications, and the coupled numeric ceilings — each as a single
+      `// INVARIANT:` line, with the long rationale left where it already lives, in `CLAUDE.md`.
+- [x] Verified behaviour was unchanged rather than assumed: `next build` and `eslint` clean, every
+      route's status code unchanged, `grep -c monaco` still 0 on the room and profile HTML, all
+      four sync-server HTTP routes byte-identical, Python and Java still executing through
+      `/api/execute` with stdin, and two Yjs clients still converging on one document with
+      awareness, the `files` map, the `execution` map and the 4404 dead-room refusal all intact.
+
 ## 8. Explicitly out of scope for v2
 
 - Redis or any cache/session store beyond Postgres

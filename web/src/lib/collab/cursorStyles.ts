@@ -1,17 +1,11 @@
-// The remote-cursor `<style>` block: one caret colour and one name label per
-// peer, injected into <head> because Monaco owns the DOM the carets live in and
-// there is no React element to hang a style prop on.
-//
-// It consumes `readPeers`'s output (see `lib/collab/awareness.ts`) and must never read
-// `awareness.getStates()` itself — a colour straight off the wire reaching a CSS
-// rule is the injection this indirection exists to stop.
+// INVARIANT: the remote-cursor <style> block takes `readPeers` output only — never
+// `awareness.getStates()`, or a raw peer colour reaches a CSS rule.
 
 import type { Peer } from "./awareness";
 
 const AWARENESS_STYLE_ID = "yjs-remote-cursor-styles";
 
 // Escape order matters: backslashes first, or we re-escape our own escapes.
-// Newlines are illegal in a CSS string and become the \A escape.
 function cssString(value: string): string {
   return value
     .replace(/\\/g, "\\\\")
@@ -19,11 +13,7 @@ function cssString(value: string): string {
     .replace(/\r?\n/g, "\\A ");
 }
 
-/**
- * Rebuilds the remote-cursor <style> tag from the same deduped peers the user
- * bar renders, so a caret label always matches that person's chip. Regenerating
- * the whole block drops rules for clients who have left.
- */
+// Regenerated whole, so rules for departed clients disappear.
 export function renderAwarenessStyles(peers: Peer[]): void {
   let styleEl = document.getElementById(AWARENESS_STYLE_ID) as HTMLStyleElement | null;
   if (!styleEl) {
@@ -65,7 +55,6 @@ export function renderAwarenessStyles(peers: Peer[]): void {
   styleEl.textContent = rules.join("\n");
 }
 
-/** Teardown counterpart: the rules belong to the connection that just died. */
 export function removeAwarenessStyles(): void {
   document.getElementById(AWARENESS_STYLE_ID)?.remove();
 }

@@ -1,6 +1,5 @@
-// Join/leave blips synthesized with the Web Audio API, so the repo ships no
-// audio files. The shared AudioContext is built lazily — never at import time,
-// since SSR has no `window`.
+// Join/leave blips via the Web Audio API; the shared context is built lazily,
+// never at import time, since SSR has no `window`.
 
 let ctx: AudioContext | null = null;
 
@@ -14,15 +13,12 @@ function getContext(): AudioContext | null {
   return ctx;
 }
 
-// Plays `frequencies` as overlapping sine blips. The try/catch means a blocked
-// or closed context is silence, never an error thrown into the awareness
-// handler that called this.
+// INVARIANT: never throws — a blocked or closed context must be silence, not an
+// error raised inside the awareness handler that called this.
 function playTone(frequencies: number[], stepSeconds: number, gain: number): void {
   try {
     const audioCtx = getContext();
     if (!audioCtx) return;
-    // A context built before any user gesture starts suspended. By now the
-    // identity form's submit click has unlocked it, so resuming here is enough.
     void audioCtx.resume();
 
     let startTime = audioCtx.currentTime;
@@ -40,16 +36,14 @@ function playTone(frequencies: number[], stepSeconds: number, gain: number): voi
       startTime += stepSeconds * 0.8;
     });
   } catch {
-    // Best-effort: a blocked AudioContext must never surface as an error.
+    // Best-effort: must never surface as an error.
   }
 }
 
-/** A short rising chime (C5 -> G5) for a peer joining the room. */
 export function playJoinSound(): void {
   playTone([523.25, 783.99], 0.12, 0.05);
 }
 
-/** A short falling tone (C5 -> G4) for a peer leaving the room. */
 export function playLeaveSound(): void {
   playTone([523.25, 392.0], 0.12, 0.05);
 }

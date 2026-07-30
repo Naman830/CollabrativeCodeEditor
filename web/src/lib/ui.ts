@@ -1,29 +1,16 @@
-// The shared class strings for buttons, cards, inputs and pills.
-//
-// This file exists because `primaryButton`/`secondaryButton` were previously
-// declared twice, byte-for-byte, in `components/layout/ProfileShell.tsx` and
-// `components/editor/RoomGate.tsx` — with a comment in the former admitting they were
-// "the same values as RoomGate". Two copies of a colour is how a redesign ends
-// up half-applied.
-//
-// Deliberately plain strings with no imports: `ProfileShell` is a server
-// component and `RoomGate` is a client one, so anything shared between them has
-// to be safe in both. Nothing here reads state, the DOM or the database.
+// INVARIANT: plain strings, no imports — shared by server and client components,
+// so nothing here may read state, the DOM or the database.
 
-/** Joins class names, dropping anything falsy. Lets callers write `cn(base, cond && extra)`. */
 export function cn(...parts: Array<string | false | null | undefined>): string {
   return parts.filter(Boolean).join(" ");
 }
 
-/** Keyboard focus treatment. Every interactive element gets this — the ring is
- *  drawn in `--accent`, which differs per theme, so it stays visible on both. */
 export const focusRing =
   "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/45 focus-visible:ring-offset-2 focus-visible:ring-offset-app";
 
 const buttonBase =
   "inline-flex items-center justify-center gap-2 rounded-lg text-sm font-medium transition-colors disabled:cursor-not-allowed";
 
-/** The one call to action on a screen. */
 export const primaryButton = cn(
   buttonBase,
   focusRing,
@@ -31,7 +18,6 @@ export const primaryButton = cn(
   "disabled:bg-raised disabled:text-fg-subtle",
 );
 
-/** Everything alongside a primary: Retry, Back, Save. */
 export const secondaryButton = cn(
   buttonBase,
   focusRing,
@@ -39,19 +25,13 @@ export const secondaryButton = cn(
   "disabled:border-edge disabled:bg-transparent disabled:text-fg-subtle",
 );
 
-/** Borderless until hovered — toolbar and nav affordances. */
 export const ghostButton = cn(
   buttonBase,
   focusRing,
   "px-3 py-1.5 text-fg-muted hover:bg-raised hover:text-fg",
 );
 
-/**
- * Irreversible actions, and only those — today the one caller is §10.7's
- * "delete this snapshot", which has no undo and no second copy anywhere. It is
- * the product's only red button, so keep it that way: a colour that appears on
- * routine controls stops meaning "this cannot be taken back".
- */
+/** The product's only red: irreversible actions, so keep it off routine controls. */
 export const dangerButton = cn(
   buttonBase,
   focusRing,
@@ -59,7 +39,6 @@ export const dangerButton = cn(
   "disabled:bg-raised disabled:text-fg-subtle disabled:brightness-100",
 );
 
-/** Run: the only green in the product, so it reads as "execute" and nothing else. */
 export const runButton = cn(
   buttonBase,
   focusRing,
@@ -67,11 +46,9 @@ export const runButton = cn(
   "disabled:bg-raised disabled:text-fg-subtle",
 );
 
-/** Small bordered chips: room id, sync status, counts. */
 export const chip =
   "inline-flex items-center gap-1.5 rounded-lg border border-edge bg-raised/60 px-2.5 py-1.5 text-xs text-fg-muted";
 
-/** The surface every dialog, panel and card sits on. */
 export const card =
   "rounded-2xl border border-edge bg-panel shadow-xl shadow-[var(--shadow-color)]";
 
@@ -81,6 +58,5 @@ export const inputField = cn(
   "transition-colors placeholder:text-fg-subtle focus:border-accent",
 );
 
-/** Small uppercase section headings ("Output", "In this room"). */
 export const sectionLabel =
   "text-[11px] font-medium uppercase tracking-wider text-fg-subtle";

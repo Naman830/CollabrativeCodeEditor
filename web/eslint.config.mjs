@@ -7,13 +7,11 @@ const eslintConfig = defineConfig([
   ...nextTs,
   // Override default ignores of eslint-config-next.
   globalIgnores([
-    // Default ignores of eslint-config-next:
     ".next/**",
     "out/**",
     "build/**",
     "next-env.d.ts",
-    // Machine-written by `prisma generate` and never edited by hand — linting
-    // it only couples our rule set to Prisma's codegen output.
+    // Machine-written by `prisma generate`.
     "generated/**",
   ]),
 ]);

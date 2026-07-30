@@ -1,22 +1,11 @@
 @import "tailwindcss";
 
-/* Tailwind v4's `dark:` variant follows `prefers-color-scheme` by default, which
-   is wrong for a *manual* toggle — someone who picks light on a dark OS would
-   still get every `dark:` rule. Redefining the variant against a class on <html>
-   makes the toggle authoritative; `lib/theme.ts` is what sets that class, and
-   "system" is resolved to a concrete class there rather than left to CSS. */
+/* INVARIANT: repoints `dark:` at the class set by src/lib/theme.ts, not
+   prefers-color-scheme, so the manual toggle wins. */
 @custom-variant dark (&:where(.dark, .dark *));
 
-/* ---------------------------------------------------------------------------
-   Theme values.
-
-   These are raw custom properties, NOT `@theme` entries, because they have to be
-   swappable at runtime. `@theme inline` below is what turns them into Tailwind
-   utilities: `inline` makes the generated utility emit `var(--panel)` instead of
-   copying the literal value at build time, so flipping `.dark` re-resolves every
-   utility at once. A plain `@theme` would bake the light hexes into the CSS and
-   the toggle would do nothing.
-   --------------------------------------------------------------------------- */
+/* INVARIANT: raw properties here, `@theme inline` below — a plain `@theme` bakes
+   in the light values at build time and the toggle stops working. */
 :root {
   color-scheme: light;
 
@@ -30,8 +19,7 @@
   --fg-muted: #5a626e;
   --fg-subtle: #858c99;
 
-  /* Deeper than the dark-mode accent on purpose: #4c8dff fails contrast as text
-     on white, and this same token is used for links and focus rings. */
+  /* Deeper than the dark accent: #4c8dff fails contrast as text on white. */
   --accent: #2563eb;
   --accent-strong: #1d4fd8;
   --accent-contrast: #ffffff;
@@ -129,15 +117,10 @@ body {
   background: var(--accent-soft);
 }
 
-/* The one ambient background treatment, shared by the landing page, the profile
-   shell and the room gate. It used to be three near-identical inline
-   `bg-[radial-gradient(...)]` strings with three different alpha values. */
 .wash {
   background-image: radial-gradient(55rem 35rem at 50% -15%, var(--wash), transparent 70%);
 }
 
-/* Slim scrollbars so panels don't grow a chunky OS one. The colours are tokens
-   rather than literals because the dark thumb (#3a3a3a) is invisible on white. */
 * {
   scrollbar-width: thin;
   scrollbar-color: var(--scrollbar-thumb) transparent;
@@ -180,11 +163,7 @@ body {
     animation: none;
   }
 
-  /* The collapse chevron's flip and the separator's colour fade are the only
-     motion in the panel chrome. Panel *sizes* are deliberately never
-     transitioned: a CSS transition on flex-grow lags behind the library's
-     per-frame drag updates and makes the divider feel detached from the
-     pointer. Collapse is instant, which is what VS Code and Replit do too. */
+  /* INVARIANT: never transition panel sizes — a flex-grow transition lags the drag. */
   [data-separator],
   .panel-chevron {
     transition: none;

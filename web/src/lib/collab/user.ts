@@ -1,25 +1,16 @@
-// A collaborator's identity: the name they typed and a colour we assigned. It
-// never leaves the browser, and it is the whole user model for the live room —
-// Clerk (see ./clerkIdentity.ts) sits alongside it rather than replacing it,
-// because signing in is optional and the guest flow is unchanged from v1.
+// The live-room user model: the name a collaborator typed and the colour we
+// assigned. Clerk (./clerkIdentity.ts) sits alongside it, never replacing it.
 
 export type CollabUser = {
   firstName: string;
   lastName: string;
   color: string;
-  /**
-   * Clerk's user ID, present only when this identity was submitted while signed
-   * in. Task 7.1 asks for it *on the client*, and client is where it stays: it
-   * is deliberately absent from the awareness payload in `hooks/useCollabRoom.ts`,
-   * because awareness is peer-controlled and any client could claim any ID
-   * (see `lib/collab/awareness.ts`). Task 7.3 needs the sync server to know who was
-   * signed in, and it will have to verify a Clerk token itself to find out —
-   * this field can never be that source of truth.
-   */
+  // INVARIANT: client-only — never goes into the awareness payload, which is
+  // peer-controlled, so a broadcast account ID would be a forgeable claim.
   clerkUserId?: string;
 };
 
-// Fixed palette so remote cursor colors stay legible on the vs-dark theme.
+// Fixed palette so remote cursor colours stay legible in both themes.
 export const CURSOR_COLORS = [
   "#e57373",
   "#64b5f6",
@@ -40,28 +31,13 @@ export function randomColor(): string {
   return CURSOR_COLORS[Math.floor(Math.random() * CURSOR_COLORS.length)];
 }
 
-/**
- * Anything that cannot survive a trip into Postgres. Kept in step by hand with
- * `UNSTORABLE` in `server/src/rooms/state.js`, which is the copy that matters: a
- * participant name reaches `dead_room_members`' sibling `participants` column,
- * and one unpaired surrogate there makes `JSON.stringify` emit a bare `\ud83d`,
- * which Postgres rejects with `unsupported Unicode escape sequence` — taking
- * the room's whole snapshot with it. Stripped here too so the two copies do not
- * drift, and because a lone surrogate in a cursor label renders as a stray
- * replacement character anyway.
- */
+// INVARIANT: keep in sync with `UNSTORABLE` in server/src/rooms/state.js — a NUL or
+// unpaired surrogate in a name rejects the room's whole snapshot INSERT.
 const UNSTORABLE =
   /\u0000|[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
 
-/**
- * Names end up in a CSS `content:` string above a caret, so keep them to one
- * line of printable text. A UX guard, not the security boundary — remote names
- * never pass through here, so `lib/collab/awareness.ts` is what has to hold.
- *
- * The cut is by code *point*: `.slice(0, 24)` counts UTF-16 code units and can
- * halve a surrogate pair, which is the one way this function could manufacture
- * the character {@link UNSTORABLE} exists to remove.
- */
+// A UX guard, not the trust boundary for remote names (that is `lib/collab/awareness.ts`).
+// Cut by code point: a UTF-16 slice can halve a surrogate pair.
 export function sanitizeName(raw: string): string {
   const cleaned = raw
     .replace(UNSTORABLE, "")
@@ -77,10 +53,6 @@ export function displayName(user: CollabUser): string {
   return initial ? `${user.firstName} ${initial}.` : user.firstName;
 }
 
-/**
- * "Naman Gupta" -> "NG" — for the user bar's avatar chips. Takes only the name
- * parts, since the bar also builds chips for peers whose colour isn't trusted.
- */
 export function initials(user: { firstName: string; lastName: string }): string {
   return (
     user.firstName.charAt(0) + user.lastName.charAt(0)
@@ -97,17 +69,13 @@ function isValidUser(value: unknown): value is CollabUser {
     sanitizeName(firstName).length > 0 &&
     sanitizeName(lastName).length > 0 &&
     CURSOR_COLORS.includes(color) &&
-    // Optional, and must stay optional: every guest record — including every
-    // one already sitting in someone's sessionStorage from v1 — has no such
-    // field, and rejecting those would log the whole world out on first load.
+    // Must stay optional: no guest record has this field, and rejecting those
+    // would log the whole world out on first load.
     (clerkUserId === undefined || typeof clerkUserId === "string")
   );
 }
 
-/**
- * sessionStorage, not localStorage, on purpose: each tab gets its own user, so
- * a second tab on the same room is a genuinely separate collaborator.
- */
+// INVARIANT: sessionStorage, not localStorage — each tab must be its own collaborator.
 function loadSessionUser(): CollabUser | null {
   try {
     const raw = sessionStorage.getItem(SESSION_KEY);
@@ -121,8 +89,6 @@ function loadSessionUser(): CollabUser | null {
       clerkUserId: parsed.clerkUserId,
     };
   } catch {
-    // Malformed JSON, or storage blocked (Safari private mode throws). Either
-    // way: no identity yet.
     return null;
   }
 }
@@ -135,11 +101,8 @@ function saveSessionUser(user: CollabUser): void {
   }
 }
 
-/**
- * Only the name is mirrored to localStorage, purely to prefill the form next
- * visit. The colour is left out so each session re-rolls one and two tabs stay
- * visually distinct.
- */
+// Only the name is mirrored to localStorage; the colour re-rolls each session so
+// two tabs stay visually distinct.
 export function loadNamePrefill(): { firstName: string; lastName: string } | null {
   try {
     const raw = localStorage.getItem(PREFILL_KEY);
@@ -165,12 +128,8 @@ function saveNamePrefill(firstName: string, lastName: string): void {
   }
 }
 
-// --- Identity as an external store -------------------------------------------
-//
-// Read via `useSyncExternalStore` so the three states below are one value React
-// can render directly. The server snapshot is always "unknown": there is no
-// sessionStorage during SSR, and guessing would flash the name prompt at people
-// who already have an identity.
+// Read via `useSyncExternalStore`. The server snapshot must stay "unknown": there is
+// no sessionStorage during SSR, and guessing flashes the prompt at people who have one.
 
 export type IdentityState =
   | { status: "unknown" }
@@ -180,8 +139,7 @@ export type IdentityState =
 const UNKNOWN: IdentityState = { status: "unknown" };
 const ABSENT: IdentityState = { status: "absent" };
 
-// getSnapshot must return a stable reference or React re-renders forever, so
-// the state is memoised here and only replaced on write.
+// INVARIANT: getSnapshot must return a stable reference or React re-renders forever.
 let snapshot: IdentityState | null = null;
 const listeners = new Set<() => void>();
 
@@ -204,11 +162,8 @@ export function getIdentityServerSnapshot(): IdentityState {
   return UNKNOWN;
 }
 
-/**
- * The single writer for identity. Refreshing the in-memory snapshot matters as
- * much as the storage write: landing -> room is a client-side navigation that
- * keeps this module alive, so a stale cache would re-prompt for a name.
- */
+// The single writer. Refreshing the in-memory snapshot matters as much as the storage
+// write: landing -> room keeps this module alive, so a stale cache re-prompts for a name.
 export function setActiveUser(user: CollabUser): void {
   saveSessionUser(user);
   saveNamePrefill(user.firstName, user.lastName);

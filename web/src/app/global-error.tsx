@@ -1,22 +1,7 @@
 "use client";
 
-// The last resort: a throw in the root layout itself, which means the normal
-// layout never rendered. This component *replaces* it, so it has to supply its
-// own <html> and <body> — and it gets none of the providers, which is why there
-// is no theme toggle, no Clerk session and no site nav here.
-//
-// Two consequences worth stating, because both look like omissions:
-//
-//   * `globals.css` is imported directly. Without it this page has no tokens and
-//     no Tailwind at all, and renders as unstyled black-on-white.
-//   * The theme script is inlined again. `app/layout.tsx`'s copy never ran —
-//     that layout is what failed — so without this the crash page ignores a
-//     saved dark preference and flashes white. It is the same constant, so the
-//     two cannot drift.
-//
-// `next/font` is not re-declared: its CSS variable lives on the real layout's
-// <html>, which does not exist here, so `body` falls through to the
-// `system-ui, sans-serif` already in the `globals.css` font stack.
+// Replaces the root layout when it throws, so the CSS import, the theme script
+// and <html>/<body> must all be repeated here — no providers reach this page.
 
 import { THEME_SCRIPT } from "@/lib/theme";
 import "@/styles/globals.css";
@@ -65,11 +50,7 @@ export default function GlobalError({
               >
                 Try again
               </button>
-              {/* A plain anchor, deliberately: `next/link` does a *client-side*
-                  navigation, and this page only renders when the React tree
-                  above it has already failed to render. A hard reload is the
-                  point — it rebuilds the app from scratch rather than asking the
-                  broken tree to route somewhere. */}
+              {/* INVARIANT: a plain anchor, not next/link — a hard reload is the point. */}
               {/* eslint-disable-next-line @next/next/no-html-link-for-pages */}
               <a
                 href="/"

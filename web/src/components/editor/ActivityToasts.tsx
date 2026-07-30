@@ -9,7 +9,6 @@ export type ActivityToast = {
   color: string;
 };
 
-// Long enough to read, short enough that a busy room doesn't stack them up.
 const AUTO_DISMISS_MS = 4000;
 
 type ToastRowProps = {
@@ -18,7 +17,6 @@ type ToastRowProps = {
 };
 
 function ToastRow({ toast, onDismiss }: ToastRowProps) {
-  // One timer per row, keyed on its id, so toasts dismiss independently.
   useEffect(() => {
     const timer = setTimeout(() => onDismiss(toast.id), AUTO_DISMISS_MS);
     return () => clearTimeout(timer);
@@ -46,17 +44,12 @@ type ActivityToastsProps = {
   onDismiss: (id: string) => void;
 };
 
-/**
- * Join/leave banners, stacked bottom-right. `useCollabRoom` builds these from
- * `readPeers`'s output, so the names and colours here are already sanitized.
- */
+/** Names and colours arrive already sanitized, built from `readPeers`'s output. */
 export default function ActivityToasts({ toasts, onDismiss }: ActivityToastsProps) {
   if (toasts.length === 0) return null;
 
   return (
-    // `env(safe-area-inset-bottom)` because a plain `bottom-4` puts these under
-    // the browser's own bottom chrome on iOS, where the toast is half-hidden
-    // behind the tab bar. `max()` keeps the 1rem gap everywhere else.
+    // `env(safe-area-inset-bottom)`: a plain `bottom-4` hides these under iOS chrome.
     <ul
       className="pointer-events-none fixed inset-x-4 bottom-[max(1rem,env(safe-area-inset-bottom))] z-50 flex flex-col items-end gap-2 sm:inset-x-auto sm:right-4"
     >

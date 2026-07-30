@@ -8,26 +8,10 @@ import { checkRoom } from "@/lib/collab/rooms";
 import { card, primaryButton, secondaryButton } from "@/lib/ui";
 import { LockIcon, WifiOffIcon } from "@/components/ui/icons";
 
-// Long enough to read why you were bounced, short enough not to feel stuck.
 const REDIRECT_SECONDS = 3;
 
-// `ssr: false` for two reasons, one old and one new.
-//
-// Old: `CodeEditor` calls `configureMonacoLoader()` at module scope, which
-// imports `monaco-editor`, which touches `window` at import time. Server
-// rendering this route has therefore always thrown — `/room/<id>` answered HTTP
-// 500 on every request and the browser silently recovered. This turns a
-// 500-and-recover into an ordinary client-side chunk load, so the route finally
-// server-renders, and the root layout's no-flash theme script actually ships
-// with it.
-//
-// New: `useRoomLayout` restores the split from localStorage. With no server
-// render there is no first paint for a restored 30/70 to disagree with, so the
-// panels' inline flex-grow can never hydrate-mismatch.
-//
-// `ssr: false` is only legal in a Client Component, which this file is —
-// `room/[roomId]/page.tsx` is a Server Component and would error. Declared at
-// module scope so the reference is stable and never remounts the editor.
+// INVARIANT: `ssr: false` — `CodeEditor` imports `monaco-editor` at module scope,
+// which touches `window`. At module scope so the reference never remounts the editor.
 const CodeEditor = dynamic(() => import("./CodeEditor"), {
   ssr: false,
   loading: () => <GateSpinner label="Loading the editor…" />,
@@ -80,25 +64,15 @@ function GateCard({
   );
 }
 
-/**
- * Decides whether this room may be entered — *before* `CodeEditor` mounts.
- * Mounting the editor opens the WebSocket, and connecting is what creates the
- * room on the server, so a check running alongside it would revive dead rooms.
- */
+/** INVARIANT: must decide before `CodeEditor` mounts — mounting opens the socket, which revives a dead room. */
 export default function RoomGate({ roomId }: RoomGateProps) {
   const router = useRouter();
   const [state, setState] = useState<GateState>("checking");
-  // The room's language (§10.1). It arrives with the existence check because the
-  // sync server is the one that knows it — which is what lets someone who was
-  // sent a link open the room in the language it was created in, rather than
-  // guessing from their own last choice.
+  // The room's language, server-authoritative: it arrives with the existence check.
   const [language, setLanguage] = useState<LanguageValue>(DEFAULT_LANGUAGE);
   const [secondsLeft, setSecondsLeft] = useState(REDIRECT_SECONDS);
-  // Bumped by Retry to re-run the check below.
   const [attempt, setAttempt] = useState(0);
 
-  // No "checking" reset here: `retry` does it, and `roomId` can't change
-  // without a remount (the route keys this component on it).
   useEffect(() => {
     let cancelled = false;
     checkRoom(roomId).then((result) => {
@@ -116,8 +90,7 @@ export default function RoomGate({ roomId }: RoomGateProps) {
     setAttempt((n) => n + 1);
   }, []);
 
-  // A room can also die mid-session (evicted, or the server restarted). The
-  // editor's reconnect is refused and it reports that here.
+  // A room can also die mid-session: the editor's refused reconnect reports here.
   const handleRoomClosed = useCallback(() => {
     setSecondsLeft(REDIRECT_SECONDS);
     setState("missing");
@@ -170,8 +143,7 @@ export default function RoomGate({ roomId }: RoomGateProps) {
         </GateCard>
       )}
 
-      {/* Not the screen above: the room may be alive and simply unverifiable, so
-          this offers a retry instead of sending someone away from it. */}
+      {/* Distinct from `missing`: the room may be alive and merely unverifiable, so offer a retry. */}
       {state === "unreachable" && (
         <GateCard
           icon={<WifiOffIcon className="h-5 w-5" />}

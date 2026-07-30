@@ -1,14 +1,5 @@
-// The root 404: any URL that matches no route at all.
-//
-// Distinct from `profile/[deadRoomId]/not-found.tsx`, which answers a *specific*
-// question ("that snapshot isn't yours, or never existed") and keeps the profile
-// back-link. This one knows nothing about the visitor and offers the two things
-// that always work: go home, or create a room.
-//
-// Note there is deliberately no `loading.tsx` anywhere in this app. A Suspense
-// boundary starts streaming, which sends the HTTP headers, which locks the
-// status at 200 — turning every real 404 into a soft one. See Next's own
-// `loading.md`, "Status Codes".
+// INVARIANT: never add a `loading.tsx` — streaming locks the status at 200 and
+// turns every real 404 into a soft one.
 
 import type { Metadata } from "next";
 import Link from "next/link";

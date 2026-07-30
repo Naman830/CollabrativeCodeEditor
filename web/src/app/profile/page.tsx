@@ -1,13 +1,5 @@
-// tasks.md §7.4: every dead room this account may still read.
-//
-// Protected in the page, not in `proxy.ts`. `clerkMiddleware()` is called with no
-// callback on purpose so the guest flow keeps reaching `/`, `/room/*` and
-// `/api/execute`, and Clerk now deprecates `createRouteMatcher` in favour of
-// exactly this — "move auth checks into each page, layout, API route, or Server
-// Function that accesses protected data".
-//
-// No `export const dynamic = "force-dynamic"` is needed: `auth()` reads
-// `headers()` internally, which opts the route into dynamic rendering by itself.
+// INVARIANT: auth is checked here, not in `proxy.ts` — `clerkMiddleware()` stays callback-free so
+// `/`, `/room/*` and `/api/execute` remain public.
 
 import type { Metadata } from "next";
 import { auth } from "@clerk/nextjs/server";
@@ -40,10 +32,6 @@ export default async function ProfilePage() {
 
       {rooms.length === 0 ? (
         <ProfilePanel icon={<ArchiveIcon className="h-5 w-5" />} title="No saved rooms yet">
-          {/* Both halves of tasks.md §6.1's contribution threshold, spelled out:
-              an empty profile is far more often "the rules were not met" than
-              "nothing was saved", and a page that does not say so reads as
-              broken. */}
           <p className="text-sm text-fg-muted">
             A room is saved to your profile when it closes — but only if you were signed in,
             stayed at least a minute, and actually edited the code. Rooms where everyone was
@@ -58,7 +46,6 @@ export default async function ProfilePage() {
             ))}
           </ul>
 
-          {/* Never cap silently. */}
           {capped && (
             <p className="mt-4 text-center text-xs text-fg-muted">
               Showing your {rooms.length} most recent rooms. Older ones are still saved but

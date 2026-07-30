@@ -1,13 +1,6 @@
 "use client";
 
-// "Download all" for a multi-file snapshot (tasks.md §10.1).
-//
-// Rendered only when a snapshot holds more than one file, because for a single
-// file it would produce a zip containing exactly what `SnapshotActions`' own
-// Download button already hands over uncompressed.
-//
-// Same promise as every other download in this app: the archive is built in the
-// browser from data already on the page, and nothing is written anywhere.
+// Rendered only for a multi-file snapshot — one file already has its own Download.
 
 import { useState } from "react";
 import { PROJECT_ZIP_NAME, downloadZipFile } from "@/lib/editor/download";
@@ -16,9 +9,7 @@ import { DownloadIcon } from "@/components/ui/icons";
 import { cn, focusRing } from "@/lib/ui";
 
 export default function SnapshotDownloadAll({ files }: { files: SnapshotFile[] }) {
-  // JSZip arrives through a dynamic import and the archive is built off the main
-  // thread's critical path, so a large snapshot has a visible gap between the
-  // click and the download. Without this the button looks dead.
+  // JSZip loads via dynamic import, so a large snapshot has a visible gap after the click.
   const [busy, setBusy] = useState(false);
 
   return (

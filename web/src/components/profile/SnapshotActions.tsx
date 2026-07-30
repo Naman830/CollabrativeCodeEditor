@@ -1,10 +1,6 @@
 "use client";
 
-// The only interactive part of a dead room: copy the code, or download it.
-//
-// Both are the same promise v1 made about Save — "saving a file means
-// downloading it to your device". Nothing here writes anything anywhere; a
-// snapshot is read-only forever (tasks.md §6, §8).
+// Copy/Download for one snapshot file: local only, nothing is written anywhere.
 
 import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
 import { downloadTextFile } from "@/lib/editor/download";

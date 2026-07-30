@@ -1,14 +1,7 @@
-// Inline SVGs for the toolbar, the room chrome and the profile pages. Kept here
-// rather than pulled from an icon package: a handful of paths do not justify a
-// dependency, and every one is `aria-hidden` because the button it sits in
-// already carries the label.
-//
-// Every icon takes an optional `className` and defaults to `h-3.5 w-3.5`, so
-// callers that pass nothing keep the size they had before the redesign.
+// Inline SVGs; every icon is `aria-hidden` because its button carries the label.
 
 type IconProps = { className?: string };
 
-/** Shared wrapper for the stroked icons — the majority. */
 function Stroke({
   className = "h-3.5 w-3.5",
   width = 2,
@@ -65,10 +58,6 @@ export function CheckIcon({ className }: IconProps = {}) {
   );
 }
 
-/**
- * The padlock `RoomGate` draws on its "this room has closed" screen, shared with
- * /profile. One shape for one meaning: a room that no longer exists.
- */
 export function LockIcon({ className = "h-3.5 w-3.5" }: IconProps) {
   return (
     <Stroke className={className}>
@@ -87,7 +76,6 @@ export function ArrowLeftIcon({ className }: IconProps = {}) {
   );
 }
 
-/** The saved-snapshot glyph: a page, for a room that is now just a file. */
 export function ArchiveIcon({ className = "h-3.5 w-3.5" }: IconProps) {
   return (
     <Stroke className={className}>
@@ -96,10 +84,6 @@ export function ArchiveIcon({ className = "h-3.5 w-3.5" }: IconProps) {
     </Stroke>
   );
 }
-
-/* -------------------------------------------------------------------------- */
-/* Theme toggle                                                                */
-/* -------------------------------------------------------------------------- */
 
 export function SunIcon({ className }: IconProps = {}) {
   return (
@@ -127,11 +111,6 @@ export function MonitorIcon({ className }: IconProps = {}) {
   );
 }
 
-/* -------------------------------------------------------------------------- */
-/* Room chrome                                                                 */
-/* -------------------------------------------------------------------------- */
-
-/** The product mark: the `</>` chevrons used on the landing page and room bar. */
 export function LogoMark({ className = "h-4 w-4" }: IconProps) {
   return (
     <Stroke className={className} width={2.2}>
@@ -149,7 +128,6 @@ export function ChevronDownIcon({ className }: IconProps = {}) {
   );
 }
 
-/** Swap the editor/output split between side-by-side and stacked. */
 export function SplitIcon({ className }: IconProps = {}) {
   return (
     <Stroke className={className}>
@@ -168,14 +146,7 @@ export function TerminalIcon({ className }: IconProps = {}) {
   );
 }
 
-/* --- Multi-file rooms (tasks.md §10.1) --- */
-
-/**
- * The entry-file marker. `filled` is the state, not a variant: an outline star
- * on every tab would read as "you may star this", which is exactly right for the
- * menu item and exactly wrong for the tab strip — so the tab only ever renders
- * the filled one.
- */
+// `filled` is state, not a variant: the tab strip renders only the filled star.
 export function StarIcon({ className = "h-3.5 w-3.5", filled = false }: IconProps & { filled?: boolean }) {
   const path = "m12 4 2.4 4.9 5.4.8-3.9 3.8.9 5.4-4.8-2.5-4.8 2.5.9-5.4L4.2 9.7l5.4-.8z";
   if (!filled) {
@@ -200,7 +171,6 @@ export function PlusIcon({ className }: IconProps = {}) {
   );
 }
 
-/** The kebab that opens a file tab's menu without needing a right-click. */
 export function MoreIcon({ className }: IconProps = {}) {
   return (
     <svg aria-hidden viewBox="0 0 24 24" fill="currentColor" className={className ?? "h-3.5 w-3.5"}>
@@ -229,10 +199,6 @@ export function FileCodeIcon({ className }: IconProps = {}) {
     </Stroke>
   );
 }
-
-/* -------------------------------------------------------------------------- */
-/* Landing and error pages                                                     */
-/* -------------------------------------------------------------------------- */
 
 export function CursorIcon({ className }: IconProps = {}) {
   return (

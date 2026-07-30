@@ -1,11 +1,5 @@
-// One dead room, read-only. tasks.md §7.4's "clicking a room opens a read-only
-// code view", plus §8's "no re-running, no re-joining, no editing in place".
-//
-// The URL carries `dead_rooms.id`, not `room_id`. Two reasons: the membership
-// row's composite primary key is `(user_id, dead_room_id)`, so this id makes the
-// authorization check and the index lookup the same query; and a `/profile/<id>`
-// that shared its id with a live `/room/<id>` would invite exactly the confusion
-// this page exists to prevent.
+// INVARIANT: the URL carries `dead_rooms.id`, not `room_id` — it is the membership row's key, so
+// the authorization check and the index lookup are one query.
 
 import type { Metadata } from "next";
 import Link from "next/link";
@@ -24,14 +18,7 @@ export const metadata: Metadata = {
   description: "A read-only snapshot of a room that has closed.",
 };
 
-/**
- * Run and Rejoin are rendered *disabled*, not omitted.
- *
- * §7.4's last bullet says "explicitly disable/hide". Hiding them would be
- * indistinguishable from having forgotten to build them; a control that is
- * visibly off, with a reason attached, is the version that actually communicates
- * "this room is dead" to someone who used it while it was alive.
- */
+// Run and Rejoin are rendered disabled, not omitted — omitting reads as unbuilt.
 function DeadControl({ label, reason }: { label: string; reason: string }) {
   return (
     <button
@@ -52,9 +39,7 @@ export default async function SnapshotPage(props: PageProps<"/profile/[deadRoomI
 
   const { deadRoomId } = await props.params;
 
-  // Membership-scoped: null covers "no such snapshot" and "not yours" with the
-  // same answer, so the page cannot be used to probe which ids exist. See the
-  // HARD RULE in `lib/data/deadRooms.ts`.
+  // INVARIANT: membership-scoped — one null for "no such snapshot" and "not yours", no oracle.
   const room = await getDeadRoomForUser(userId, deadRoomId);
   if (!room) notFound();
 
@@ -97,9 +82,7 @@ export default async function SnapshotPage(props: PageProps<"/profile/[deadRoomI
           </div>
           <div className="flex items-center gap-1.5">
             <dt className="text-fg-subtle">Language</dt>
-            {/* Real since §10.1 moved the selector to room creation. The
-                fallback stays for every row written before then, where the
-                server genuinely had no room-wide language to record. */}
+            {/* Null for rows written before §10.1, which had no room-wide language. */}
             <dd>{room.language ? languageLabel(room.language) : "not recorded"}</dd>
           </div>
           <div className="flex items-center gap-1.5">
@@ -112,13 +95,7 @@ export default async function SnapshotPage(props: PageProps<"/profile/[deadRoomI
           <div className="flex flex-wrap items-center gap-2">
             <DeadControl label="Run" reason="A closed room's code can never be run again." />
             <DeadControl label="Rejoin" reason="This room no longer exists on the server." />
-            {/* Deliberately alongside the two dead controls: this is the one
-                thing you *can* still do to a closed room, so it belongs where
-                someone is already reading about what they cannot do. */}
             <DeleteSnapshotButton deadRoomId={room.id} roomId={room.roomId} />
-            {/* Only for a genuinely multi-file room (§10.1) — one file already
-                has its own Download beside it, and zipping it would just add a
-                step between the user and their code. */}
             {room.files.length > 1 && <SnapshotDownloadAll files={room.files} />}
             <Link
               href="/"
@@ -134,10 +111,6 @@ export default async function SnapshotPage(props: PageProps<"/profile/[deadRoomI
         </div>
       </div>
 
-      {/* One section per file. `files` has been an array since 7.2 so that
-          §10.1's multi-file rooms needed no migration — and, as intended, no
-          rewrite here either: this loop is unchanged, it simply runs more than
-          once now. */}
       <div className="flex flex-col gap-4">
         {room.files.map((file, index) => (
           <SnapshotFile key={`${index}-${file.filename}`} file={file} />
