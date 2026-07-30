@@ -5,7 +5,7 @@
 // gets up to N times the limit. It bounds a flood; it is not a security
 // boundary.
 //
-// `server/rateLimit.js` is the same algorithm for the sync server. The two
+// `server/src/http/rateLimit.js` is the same algorithm for the sync server. The two
 // workspaces share no code, so the duplication is intentional.
 
 export type RateLimitResult = {

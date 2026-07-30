@@ -18,7 +18,7 @@
 // (the throwaway `.clerk/` instance used when no keys are set) is handled on the
 // client path too.
 //
-// Keep these values in step with `app/globals.css`.
+// Keep these values in step with `styles/globals.css`.
 
 import { ClerkProvider } from "@clerk/nextjs";
 import { ThemeProvider, useTheme } from "./ThemeProvider";

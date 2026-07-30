@@ -15,7 +15,7 @@
 //
 // Destruction is also where task 7.3's dead-room snapshot is taken — the one
 // moment at which a room's final state still exists and nobody is left in it.
-// See roomState.js for who a snapshot belongs to; this module only decides when.
+// See rooms/state.js for who a snapshot belongs to; this module only decides when.
 const { docs } = require("y-websocket/bin/utils");
 const crypto = require("crypto");
 const db = require("../storage/db");
@@ -89,7 +89,7 @@ function unref(timer) {
  * `language` (§10.1) is recorded here for the same structural reason: a room's
  * language is chosen once, on the creation screen, and this request is the only
  * moment anyone states it. Unlike `creatorKey` it is written — see
- * `roomState.js`'s `buildSnapshot`.
+ * `server/src/rooms/state.js`'s `buildSnapshot`.
  */
 function reserveRoom(creatorKey = null, language = null) {
   if (reservations.size >= MAX_RESERVATIONS) return null;
@@ -202,7 +202,7 @@ function destroyRoom(roomId, reason) {
   }
 
   try {
-    // Fires the awareness 'update' handler one final time (see roomState.js's
+    // Fires the awareness 'update' handler one final time (see rooms/state.js's
     // HARD RULE) — which is why the state entry is dropped *after* this, never
     // before.
     doc.destroy();

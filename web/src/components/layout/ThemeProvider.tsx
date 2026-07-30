@@ -3,7 +3,7 @@
 // Theme state as an *external store*, not useState + useEffect.
 //
 // Two reasons, both already load-bearing elsewhere in this codebase (see
-// `lib/user.ts`, which reads identity the same way):
+// `lib/collab/user.ts`, which reads identity the same way):
 //
 //   1. The server snapshot has to differ from the client one — the server cannot
 //      know what is in localStorage — and `useSyncExternalStore` is the sanctioned

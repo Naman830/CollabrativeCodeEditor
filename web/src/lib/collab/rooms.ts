@@ -2,7 +2,7 @@
 // browser — an ID it never handed out is refused at connect time, which is what
 // makes "this room doesn't exist" real rather than a client-side pretence.
 
-import { DEFAULT_LANGUAGE, isLanguage, type LanguageValue } from "./languages";
+import { DEFAULT_LANGUAGE, isLanguage, type LanguageValue } from "@/lib/editor/languages";
 
 export const WS_URL = process.env.NEXT_PUBLIC_WS_URL ?? "ws://localhost:8080";
 

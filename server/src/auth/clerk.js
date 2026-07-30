@@ -3,7 +3,7 @@
 // Task 7.3 needs to know who was signed in while a room was alive, and tasks.md
 // §6.1 is emphatic about where that may come from: a token the *server* checked,
 // never awareness and never any client-supplied field. Awareness is
-// peer-controlled (see collab-code-editor/app/lib/awareness.ts), so an account ID
+// peer-controlled (see web/src/lib/collab/awareness.ts), so an account ID
 // broadcast there is a claim anyone can forge — and a forged one would write a
 // room's code into a stranger's profile. That is why `clerkUserId` is
 // deliberately absent from the awareness payload in `useCollabRoom.ts`, and why
@@ -33,7 +33,7 @@ const CLERK_SECRET_KEY = process.env.CLERK_SECRET_KEY;
 // lives.
 const VERIFY_TIMEOUT_MS = 5_000;
 
-/** Timers must never be the reason the process stays alive (same rule as rooms.js). */
+/** Timers must never be the reason the process stays alive (same rule as rooms/lifecycle.js). */
 function unref(timer) {
   if (typeof timer.unref === "function") timer.unref();
   return timer;

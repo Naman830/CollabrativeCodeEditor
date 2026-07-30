@@ -161,7 +161,7 @@ Longer, as four rules:
 - Ownership is wrong exactly when it matters most: A creates a room, leaves after two minutes,
   B works in it for an hour. A gets the snapshot; B — the person who wrote the code and will
   go looking for it — gets nothing.
-- There is no such thing as an owner in `server/rooms.js` today; it records nothing about a
+- There is no such thing as an owner in `server/src/rooms/lifecycle.js` today; it records nothing about a
   room but timers. Inventing one, plus a transfer rule for when the owner leaves, is real
   complexity for behaviour no user can see or predict.
 
@@ -246,7 +246,7 @@ Rules:
 
 Shipped alongside 7.1, not originally listed here:
 
-- [x] `app/lib/clerkIdentity.ts` — the single boundary between Clerk and the app.
+- [x] `web/src/lib/collab/clerkIdentity.ts` — the single boundary between Clerk and the app.
       Nothing else imports `useUser`, so Clerk's nullable `firstName`/`lastName` get
       sanitized exactly once, through the same `sanitizeName` guest names use.
 - [x] Signing in **prefills** the name dialog rather than replacing it. A Clerk session is
@@ -267,12 +267,12 @@ Shipped alongside 7.1, not originally listed here:
       — **Neon**, database `neondb` on `ap-southeast-1`. See the reset note below: the
       instance existed but was not empty.
 - [x] Set up Prisma or Drizzle ORM with the `dead_rooms` schema above
-      — **Prisma 7**, in `collab-code-editor/`: `prisma/schema.prisma` (the `DeadRoom` model)
+      — **Prisma 7**, in `web/`: `prisma/schema.prisma` (the `DeadRoom` model)
       plus `prisma.config.ts` for the CLI.
 - [x] Add environment variables for the DB connection
       — `DATABASE_URL` (pooled) and `DIRECT_URL` (unpooled, migrations only), documented in
       both `.env.example` files and CLAUDE.md's env table **and actually present** in
-      `collab-code-editor/.env.local` + `server/.env`. They had been documented but never
+      `web/.env.local` + `server/.env`. They had been documented but never
       set, so `prisma migrate` failed on a missing datasource URL rather than on anything
       to do with the database.
 - [x] Write a migration for the `dead_rooms` table
@@ -283,7 +283,7 @@ Shipped alongside 7.1, not originally listed here:
 
 Shipped alongside 7.2, not originally listed here:
 
-- [x] **The sync server does not use Prisma.** `server/db.js` is a plain `pg` pool and one
+- [x] **The sync server does not use Prisma.** `server/src/storage/db.js` is a plain `pg` pool and one
       hand-written INSERT, because that process writes one row per room in its whole life and
       never reads or updates one. Prisma there would mean a second schema copy, a
       `prisma generate` step and the query engine in the Railway image to serve a single
@@ -291,7 +291,7 @@ Shipped alongside 7.2, not originally listed here:
 - [x] `DATABASE_URL` is **optional in `server/`**: unset, no pool is opened and
       `saveDeadRoom()` is a logged no-op, so the sync server still boots and serves rooms
       exactly as in v1. The guest flow stores nothing, so it must not depend on a database.
-- [x] `pool.on("error", …)` in `server/db.js` — mandatory, not defensive. An idle connection
+- [x] `pool.on("error", …)` in `server/src/storage/db.js` — mandatory, not defensive. An idle connection
       dropped by Neon's pooler emits an `error` on the pool; unhandled it is an uncaught
       exception that would kill the sync server and every live room with it, over a database
       it was not using.
@@ -300,7 +300,7 @@ Shipped alongside 7.2, not originally listed here:
 - [x] `build` is `prisma generate && next build`, not just a `postinstall` hook — Vercel
       restores a cached `node_modules` and can skip `postinstall`, producing a build that
       fails on a missing client while working locally.
-- [x] `app/lib/db.ts` — the one place the app learns about Postgres, server-only, with the
+- [x] `web/src/lib/data/db.ts` — the one place the app learns about Postgres, server-only, with the
       client cached on `globalThis` so Next's dev HMR does not open a new pool per edit.
 - [x] Schema hardening beyond §6's draft: `UNIQUE` on `room_id` and an index on
       `(owner_user_id, died_at DESC)`. See the note in Section 6. (The index and column were
@@ -317,7 +317,7 @@ Shipped alongside 7.2, not originally listed here:
       node-postgres warns on every connect that pg v9 will make `require` stop verifying the
       certificate at all.
 - [x] A Neon **`dev`** branch for local work, with `main` left for the deployed site.
-      `collab-code-editor/.env.local` and `server/.env` point at `dev`, so local testing can
+      `web/.env.local` and `server/.env` point at `dev`, so local testing can
       never write rows the deployed `/profile` would read. Note a branch is a copy-on-write
       fork of its parent *at the moment it is taken*: `dev` was cut from a pre-cleanup
       snapshot and arrived carrying the same `Room` table, so it needed the same drop and a
@@ -326,7 +326,7 @@ Shipped alongside 7.2, not originally listed here:
       the row is read back column by column, a repeat call proves `ON CONFLICT DO NOTHING`
       returns `false` instead of throwing, a snapshot with no language/participants proves the
       nullable columns, and a `DATABASE_URL`-unset process proves the no-op path. Nothing in
-      the build compares `server/db.js`'s hand-written INSERT to `schema.prisma`, so this is
+      the build compares `server/src/storage/db.js`'s hand-written INSERT to `schema.prisma`, so this is
       the only thing that would catch a rename.
 
 ### 7.3 Dead room snapshot logic
@@ -336,12 +336,12 @@ columns are the easy part.
 
 - [x] **Verify a Clerk token on connect** and record the resulting user ID on the in-memory
       room. Chose `verifyToken` from `@clerk/backend` on the socket: the client sends
-      `?token=`, and `server/yjsConnection.js` already discarded the query string so the
+      `?token=`, and `server/src/sync/connection.js` already discarded the query string so the
       doc-name derivation needed no change. **Never take the ID from awareness or any
-      client-supplied field** — CLAUDE.md, "Accounts (Clerk)". `server/clerkAuth.js` is the one
+      client-supplied field** — CLAUDE.md, "Accounts (Clerk)". `server/src/auth/clerk.js` is the one
       place a token becomes a user ID.
 - [x] **Track a member set, not an owner**, on the room object: verified user ID → connect
-      time, accumulated connected time, and whether they edited. `server/roomState.js`.
+      time, accumulated connected time, and whether they edited. `server/src/rooms/state.js`.
       A room has no owner and needs no ownership transfer.
 - [x] **Apply the contribution threshold** from 6.1 — 60s of accumulated connected time **and**
       at least one document update sent over one of that user's sockets. See the correction
@@ -367,7 +367,7 @@ columns are the easy part.
       process and every other live room.
 - [x] **Second migration**: `20260729122125_dead_room_members` drops `dead_rooms.owner_user_id`
       and its `(owner_user_id, died_at DESC)` index and creates `dead_room_members`.
-      `server/db.js`'s hand-written INSERT was updated to match — nothing in the build compares
+      `server/src/storage/db.js`'s hand-written INSERT was updated to match — nothing in the build compares
       it to `schema.prisma` (see 7.2's acceptance-test note), so it was re-verified by running
       it and reading both tables back.
 
@@ -416,7 +416,7 @@ Shipped alongside 7.3, not originally listed here:
 - [x] **`participants` is populated**, accumulated from awareness over the room's life and
       sanitized server-side. It cannot be read at eviction: y-websocket's `closeConn` strips
       awareness state per socket, so a dying room's awareness is already empty.
-- [x] **`server/db.js`'s write is a real transaction.** `pool.query("BEGIN")` is *not* one —
+- [x] **`server/src/storage/db.js`'s write is a real transaction.** `pool.query("BEGIN")` is *not* one —
       with `max: 3` the BEGIN, the INSERTs and the COMMIT can land on three different pooled
       connections, so the inserts run outside the transaction and the COMMIT commits nothing.
       It fails silently, because the rows still appear.
@@ -439,7 +439,7 @@ Shipped alongside 7.3, not originally listed here:
       only repaired the document on its *truncating* branch (`Buffer.toString("utf8")`
       substitutes U+FFFD), so a lone surrogate in a document **under** 256 KB was returned
       untouched. Both now go through one `stripUnstorable`, and the name cut is by code point.
-      `app/lib/user.ts`'s copy of `sanitizeName` got the identical change so the two do not
+      `web/src/lib/collab/user.ts`'s copy of `sanitizeName` got the identical change so the two do not
       drift.
 
 ### 7.4 Profile page
@@ -459,8 +459,8 @@ Shipped alongside 7.3, not originally listed here:
       correction below: there is no room name, and `language` is null on every row.
 - [x] Clicking a room opens a **read-only** code view — a static `<pre>` with a sticky
       line-number gutter, not a read-only Monaco. See the correction below.
-- [x] Add a "Copy code" button — `app/components/SnapshotActions.tsx`, reusing
-      `hooks/useCopyToClipboard.ts` and the copied-tick + `aria-live` pattern from
+- [x] Add a "Copy code" button — `web/src/components/profile/SnapshotActions.tsx`, reusing
+      `web/src/hooks/useCopyToClipboard.ts` and the copied-tick + `aria-live` pattern from
       `EditorToolbar`'s room-ID chip.
 - [x] Explicitly disable/hide any "Run" or "Rejoin" button on dead rooms — make it visually
       clear the room is closed. Both are rendered **disabled**, not hidden: a control that is
@@ -486,14 +486,14 @@ Shipped alongside 7.3, not originally listed here:
       an editor is the one widget on this site that means "you can type here", which is the
       opposite of what the last bullet above asks for; there is nothing to highlight while
       `language` is null, so Monaco would load ~5 MB to render plaintext; and
-      `lib/monacoLoader.ts` imports `monaco-editor` at module scope, which is why
+      `web/src/lib/editor/monacoLoader.ts` imports `monaco-editor` at module scope, which is why
       `/room/[roomId]` returns HTTP 500 from the server on every request — keeping it out of
       this route's import graph is what lets `/profile` actually server-render. Verified:
       `/profile` answers 200 where `/room/<id>` answers 500.
 
 Shipped alongside 7.4, not originally listed here:
 
-- [x] **`app/lib/deadRooms.ts` — the read boundary, with one hard rule: a `DeadRoom` is never
+- [x] **`web/src/lib/data/deadRooms.ts` — the read boundary, with one hard rule: a `DeadRoom` is never
       fetched by its id.** Both queries start from `deadRoomMember` keyed on the *viewer's*
       Clerk user ID and reach the room through the relation, so a snapshot the viewer holds
       no membership row for is not "hidden by a filter we remembered to add" — it is
@@ -501,7 +501,7 @@ Shipped alongside 7.4, not originally listed here:
       that could do this job instead. The detail lookup is `findUnique` on the composite
       primary key `(user_id, dead_room_id)`, which makes the authorization check and the
       index lookup the same query.
-- [x] **`readSnapshotFiles()` narrows the `files` column**, the same way `lib/awareness.ts`'s
+- [x] **`readSnapshotFiles()` narrows the `files` column**, the same way `web/src/lib/collab/awareness.ts`'s
       `readPeers` narrows peer state. Prisma types `files` as `JsonValue` and guarantees
       nothing; filenames are additionally reduced to a safe basename because one is handed to
       an `<a download>`.
@@ -514,7 +514,7 @@ Shipped alongside 7.4, not originally listed here:
       the URL cannot be used to probe which snapshot ids exist.
 - [x] **A "My rooms" link on the landing page**, shown next to `<UserButton>` when signed in.
       Without it `/profile` is reachable only by typing the URL.
-- [x] **A Download button** beside Copy, reusing `lib/download.ts`. It is the same promise v1
+- [x] **A Download button** beside Copy, reusing `web/src/lib/editor/download.ts`. It is the same promise v1
       made about Save — "saving a file means downloading it to your device" — and is neither
       a Run nor a Rejoin, so it fits §8's read-only rule.
 - [x] **A truncation notice.** A snapshot cut at the 256 KB cap ends with a C-style marker
@@ -545,7 +545,7 @@ Shipped alongside 7.4, not originally listed here:
 - [x] A dead room's original `room_id` can never be reused to rejoin a live session
       — **already true since v1; ticked on verification, not on new code.** Three
       independent things enforce it and none was added here: IDs are minted as
-      `crypto.randomUUID()` (`server/rooms.js`), so one is never handed out twice;
+      `crypto.randomUUID()` (`server/src/rooms/lifecycle.js`), so one is never handed out twice;
       `roomExists()` is a pure in-memory lookup over `docs` + `reservations`, so a
       destroyed ID is unknown forever and a restart makes *every* old ID unknown;
       and `room_id` is `UNIQUE` with `ON CONFLICT DO NOTHING`, so even a repeat
@@ -556,7 +556,7 @@ Shipped alongside 7.4, not originally listed here:
       closed" screen, a 3-second countdown, and `router.replace("/")`. `replace`,
       not `push`, so Back cannot land in the dead room again.
 - [x] Rate-limit DB writes the same way v1 rate-limits room creation
-      — **the only bullet that needed building.** `server/snapshotQueue.js`: the
+      — **the only bullet that needed building.** `server/src/storage/snapshotQueue.js`: the
       same sliding window from `rateLimit.js` that `POST /rooms` uses, keyed on
       the room creator's IP, plus a concurrency cap at `db.POOL_MAX`. It **defers
       rather than refuses** — see the correction below.
@@ -681,8 +681,8 @@ Shipped alongside 7.5, not originally listed here:
       500 a production start, and `GET /rooms/:roomId` never returns 404 — it always answers
       200 with `{"exists": …}`.
 - [x] Split the 810-line `CodeEditor.tsx` into composable parts before v2 adds multi-file,
-      chat and passwords to the same screen: the Yjs stack moved to `hooks/useCollabRoom.ts`,
-      Run to `hooks/useCodeRunner.ts`, and the chrome to `EditorToolbar` / `OutputPanel` /
+      chat and passwords to the same screen: the Yjs stack moved to `web/src/hooks/useCollabRoom.ts`,
+      Run to `web/src/hooks/useCodeRunner.ts`, and the chrome to `EditorToolbar` / `OutputPanel` /
       `JoinRoomPrompt`. Behaviour unchanged — verified with a two-tab browser run of sync,
       presence, join/leave toasts, shared Run, error output, copy and Save.
 
@@ -692,7 +692,7 @@ A full visual and interaction pass over every screen, requested directly rather 
 checklist. **No behavioural change to sync, presence, execution, auth or persistence** — the
 whole point was that the room keeps working exactly as 7.1–7.4 left it.
 
-- [x] **A real design system.** `app/globals.css` went from six dark-only colours to semantic
+- [x] **A real design system.** `web/src/styles/globals.css` went from six dark-only colours to semantic
       light *and* dark tokens (`--app`/`--panel`/`--raised`/`--edge`/`--fg`/`--accent`/
       `--success`/`--danger`/`--warning`/`--code-bg`), surfaced to Tailwind with
       `@theme inline` so one class on `<html>` re-resolves every utility. The ~200 literal
@@ -720,7 +720,7 @@ whole point was that the room keeps working exactly as 7.1–7.4 left it.
       through `dynamic(..., { ssr: false })`, so the route server-renders for the first time.
       This was not cosmetic: the no-flash theme script lives in the root layout's `<head>`, and
       a route that 500s never ships one.
-- [x] **Deduplicated the copy-pasted button styles** into `app/lib/ui.ts`. `primaryButton` and
+- [x] **Deduplicated the copy-pasted button styles** into `web/src/lib/ui.ts`. `primaryButton` and
       `secondaryButton` had been declared byte-for-byte in both `ProfileShell.tsx` and
       `RoomGate.tsx`.
 - [x] **Accessibility and polish**: a focus trap in `IdentityDialog` (it is `aria-modal` but
@@ -798,7 +798,7 @@ the host machine. It did, more than expected, so the exposure was removed rather
       language rather than a guess. Read-only in the room (a chip in the chrome bar): changing it
       mid-room would make every existing file's extension a lie.
 - [x] Add "+ New file" button; auto-suggest correct extension based on room language —
-      `newFileName()` in `app/lib/languages.ts`, which also numbers around a collision
+      `newFileName()` in `web/src/lib/editor/languages.ts`, which also numbers around a collision
       (`file1.py`, `file2.py`). The name is typed into an inline field in the tab strip rather
       than a modal; Enter on an untouched field just takes the suggestion.
 - [x] ~~Each file = its own Yjs sub-document~~, **shown as tabs** — one `Y.Text` per file
@@ -806,10 +806,10 @@ the host machine. It did, more than expected, so the exposure was removed rather
       **The sub-document wording was wrong and could not be built as written**: y-websocket's
       `setupWSConnection` syncs exactly one doc per socket and never handles `doc.on('subdocs')`,
       so real subdocs would need a provider and a separately-gated WebSocket per open file, plus
-      child-doc handling in `server/rooms.js` and `server/roomState.js`. A second shared type on
+      child-doc handling in `server/src/rooms/lifecycle.js` and `server/src/rooms/state.js`. A second shared type on
       the same doc is the trick the `execution` map already uses (Section 5's note): y-websocket
       merges the whole document, so files reach every peer including late joiners with **zero**
-      server protocol change. See `app/lib/roomFiles.ts`, which is the only description of the
+      server protocol change. See `web/src/lib/collab/roomFiles.ts`, which is the only description of the
       shape.
 - [x] Right-click a tab → "Set as entry file" (starred, visible to everyone in room) — a filled
       star on the tab, driven by `roomMeta.entry` on the shared doc. Right-click *and* a kebab
@@ -819,7 +819,7 @@ the host machine. It did, more than expected, so the exposure was removed rather
       click time, so it runs the right file even when you are looking at a different tab, and
       even if that file has never been opened in this tab and so has no Monaco model.
 - [x] Save: single file → direct download; multiple files → zip via JSZip — `downloadZipFile` in
-      `app/lib/download.ts`, behind a **dynamic** `import("jszip")` so the zip library never
+      `web/src/lib/editor/download.ts`, behind a **dynamic** `import("jszip")` so the zip library never
       enters the room route's first chunk.
 - [x] Per-file "download this file only" option in each tab's menu
 - [x] `dead_rooms.files` stores the full file array on snapshot (see Section 6) — and
@@ -834,12 +834,12 @@ Shipped alongside 10.1, not originally listed here:
       exists. Deleting the *last* file is refused — an editor with no model is a blank pane with
       no way back — and deleting the entry file re-points `roomMeta.entry` at the first survivor
       in the same transaction.
-- [x] **`app/lib/roomFiles.ts`'s `readRoomFiles()` is a sanitizing boundary**, in the same
-      category as `readPeers()` in `lib/awareness.ts`. Filenames are peer-supplied: a raw Yjs
+- [x] **`web/src/lib/collab/roomFiles.ts`'s `readRoomFiles()` is a sanitizing boundary**, in the same
+      category as `readPeers()` in `web/src/lib/collab/awareness.ts`. Filenames are peer-supplied: a raw Yjs
       client can write anything into the `files` map, and the name then reaches a tab label, an
       `<a download>`, a zip entry key and ultimately `dead_rooms.files`. It strips control
       characters, path separators and unpaired surrogates, caps the length by **code point**,
-      rejects `.`/`..`, and numbers duplicate names. `server/roomState.js` repeats the check on
+      rejects `.`/`..`, and numbers duplicate names. `server/src/rooms/state.js` repeats the check on
       its own side, because that client code never runs for a hostile peer. Verified: a file
       named `../../etc/pa sswd<lone surrogate>.py` reached the database as `....etcpasswd.py`.
 - [x] **The first file's id is the fixed string `"main"`, never a random one.** Two peers can
@@ -850,7 +850,7 @@ Shipped alongside 10.1, not originally listed here:
 - [x] **Tab order is derived, never stored** (`createdAt`, tiebroken by id), so no shared
       ordering type has to survive two peers reordering concurrently — and the server derives the
       identical order when it writes the snapshot.
-- [x] **Per-language starter code** (`starterCode()` in `app/lib/languages.ts`). Before this, a
+- [x] **Per-language starter code** (`starterCode()` in `web/src/lib/editor/languages.ts`). Before this, a
       new room was seeded with the same hardcoded `console.log` regardless of the language
       chosen, so every non-JavaScript room opened on a program that could not run.
 - [x] **`ExecutionState.filename`**, required on all three non-idle variants for the same reason
@@ -913,14 +913,14 @@ shared type.
 - [x] Carry the stdin used on the shared `ExecutionState` record, so every peer sees the input
       that produced the output they are looking at
 - [x] Cap its size and count it against the same UTF-8 byte budget as the code
-      (`MAX_CODE_BYTES` in `app/lib/execution.ts`) — checked client-side *and* in the route,
+      (`MAX_CODE_BYTES` in `web/src/lib/sandbox/execution.ts`) — checked client-side *and* in the route,
       like the code payload already is
 - [x] Strip nothing and trust nothing: stdin is user input on a path that already has a
       documented double-check, so the loose `Content-Length` pre-check must account for it too
 
 Shipped alongside 10.4, not originally listed here:
 
-- [x] **`payloadTooLarge(code, stdin)` in `app/lib/execution.ts` is the one budget rule**, so
+- [x] **`payloadTooLarge(code, stdin)` in `web/src/lib/sandbox/execution.ts` is the one budget rule**, so
       the client pre-check and the route's 413 cannot drift — the same reason `codeByteLength`
       already lived there rather than in the route. It also picks the wording: the old
       code-only sentence when stdin is empty, a combined one when it is not.
@@ -968,7 +968,7 @@ and a global handler would fire Run while someone is typing in the language sele
 
 Shipped alongside 10.5, not originally listed here:
 
-- [x] **`hooks/useEditorShortcuts.ts` reads its handlers through refs and registers once.**
+- [x] **`web/src/hooks/useEditorShortcuts.ts` reads its handlers through refs and registers once.**
       `handleRun`/`handleSave` close over `code`, so they are new functions on every keystroke;
       an effect depending on them would tear down and re-register the keybindings sixty times a
       minute. Same latest-value-ref pattern `useCollabRoom` already uses for `onRoomClosed` and
@@ -978,7 +978,7 @@ Shipped alongside 10.5, not originally listed here:
 - [x] **Neither action re-checks the running lock, deliberately.** `useCodeRunner` already
       returns early when the shared map reads `"running"`, so the shortcut inherits the same
       guard rather than keeping a second copy that could drift from it.
-- [x] **`KeyMod`/`KeyCode` come from `onMount`'s second argument**, added to `lib/monacoTypes.ts`
+- [x] **`KeyMod`/`KeyCode` come from `onMount`'s second argument**, added to `web/src/lib/editor/monacoTypes.ts`
       as `MonacoApi`. A static `import "monaco-editor"` touches `window` at import time, which
       is the whole reason that file exists.
 - [x] **The empty-document guard moved into `handleSave`.** It used to live only on the button's
@@ -990,7 +990,7 @@ Shipped alongside 10.5, not originally listed here:
       listener (it would fire Run while someone types in the language select or, after §10.2,
       the chat box), so the stdin textarea carries its own **element-scoped** `onKeyDown`
       instead — which respects the rule while closing the one gap §10.4 opened.
-- [x] **`app/lib/platform.ts`** picks the ⌘/Ctrl label for the tooltips. Reading `navigator` at
+- [x] **`web/src/lib/platform.ts`** picks the ⌘/Ctrl label for the tooltips. Reading `navigator` at
       render is safe here because `RoomGate` loads `CodeEditor` through
       `dynamic(..., { ssr: false })`, so this tree never server-renders.
 - [x] **End-to-end verification** in a real browser: both bindings advertised in their `title`s;
@@ -1013,10 +1013,10 @@ that would then need the same sanitizing boundary `readPeers` provides. It trave
 
 - [ ] Optional "Room name" field on the create-room flow
 - [ ] Sanitize and length-cap it server-side, through the same rules as a participant name
-      (`sanitizeName` in `server/roomState.js`) — it is user text that `/profile` will render
+      (`sanitizeName` in `server/src/rooms/state.js`) — it is user text that `/profile` will render
 - [ ] Hold it on the in-memory room state, alongside `created_at`
 - [ ] Third migration: add a nullable `name` column to `dead_rooms`
-- [ ] Add it to `server/db.js`'s hand-written INSERT **and** `prisma/schema.prisma` — nothing
+- [ ] Add it to `server/src/storage/db.js`'s hand-written INSERT **and** `prisma/schema.prisma` — nothing
       in the build compares the two (see 7.2's acceptance-test note), so verify by writing a
       row and reading it back
 - [ ] `/profile` shows the name as the card title, falling back to the `room_id` for every row
@@ -1052,7 +1052,7 @@ transaction.
 
 Shipped alongside 10.7, not originally listed here:
 
-- [x] **`deleteDeadRoomForUser` lives in `app/lib/deadRooms.ts`, beside the two reads**, so the
+- [x] **`deleteDeadRoomForUser` lives in `web/src/lib/data/deadRooms.ts`, beside the two reads**, so the
       file's HARD RULE — a `DeadRoom` is never reached except through the viewer's membership
       row — governs the write as well. `app/profile/actions.ts` is a thin auth + revalidate +
       redirect wrapper over it.
@@ -1070,12 +1070,12 @@ Shipped alongside 10.7, not originally listed here:
       other's uncommitted row, so neither takes the "last member" branch and a zero-member
       `dead_rooms` row is orphaned. It is unfetchable and invisible; `Serializable` would trade
       that for a serialization failure shown to a user who already confirmed a delete.
-- [x] **`components/ConfirmDialog.tsx`** — the scrim, `role="dialog"`/`aria-modal`, Escape and
+- [x] **`web/src/components/ui/ConfirmDialog.tsx`** — the scrim, `role="dialog"`/`aria-modal`, Escape and
       the Tab focus trap generalised out of `IdentityDialog` rather than copied a second time,
       with `useId()` for `aria-labelledby` (IdentityDialog hardcodes the id, so two dialogs
       would have collided). Focus lands on **Cancel**: for an irreversible action the safe
       choice is the one a stray Enter hits. Escape is ignored while the request is in flight.
-- [x] **`dangerButton` in `app/lib/ui.ts` and a `TrashIcon`** — the product's first destructive
+- [x] **`dangerButton` in `web/src/lib/ui.ts` and a `TrashIcon`** — the product's first destructive
       style, deliberately its only red button.
 - [x] **The control is on the detail page, never on `DeadRoomCard`**, whose entire surface is
       one `<Link>`; a button nested in an anchor is invalid markup.
@@ -1108,7 +1108,7 @@ an always-on `beforeunload` is a prompt on every navigation, which is worse than
 
 Shipped alongside 10.8, not originally listed here:
 
-- [x] **The indicator is an estimate, and `app/lib/persistence.ts` says so at length.** The
+- [x] **The indicator is an estimate, and `web/src/lib/data/persistence.ts` says so at length.** The
       client cannot know the server's verdict: §6.1's threshold is evaluated against a token the
       *server* verified (an outage or a mismatched `CLERK_SECRET_KEY` leaves a healthy-looking
       socket and no membership at all), the server's connected time is refcounted across every
@@ -1124,7 +1124,7 @@ Shipped alongside 10.8, not originally listed here:
       never claim "saving" earlier than the server would.
 - [x] **`MEMBER_MIN_CONNECTED_MS` is now the fifth hand-maintained cross-workspace
       duplication**, after `rateLimit.js`/`rateLimit.ts`, `CLOSE_ROOM_NOT_FOUND`,
-      `roomState.js`'s `sanitizeName`/`HEX_COLOR`, and `TRUNCATION_MARKER`. It is worse than
+      `rooms/state.js`'s `sanitizeName`/`HEX_COLOR`, and `TRUNCATION_MARKER`. It is worse than
       those in one way: the server's value is env-overridable, so the two can legitimately
       disagree at runtime with nothing to detect it. One more reason for the estimate framing.
 - [x] **`peers.length === 0` is not "alone".** It is the pre-connect and torn-down state, before

@@ -10,7 +10,7 @@
 /** The name §10.1 gives a multi-file room's download. */
 export const PROJECT_ZIP_NAME = "project.zip";
 
-/** One file in a zip. Matches `SnapshotFile` in `lib/deadRooms.ts` on purpose. */
+/** One file in a zip. Matches `SnapshotFile` in `lib/data/deadRooms.ts` on purpose. */
 export type DownloadableFile = {
   filename: string;
   content: string;
@@ -54,7 +54,7 @@ export async function downloadZipFile(
   const { default: JSZip } = await import("jszip");
   const zip = new JSZip();
   // Names arriving here have already been through `sanitizeFileName`
-  // (`lib/roomFiles.ts`) or `safeFilename` (`lib/deadRooms.ts`), both of which
+  // (`lib/collab/roomFiles.ts`) or `safeFilename` (`lib/data/deadRooms.ts`), both of which
   // strip path separators — so no entry can escape the archive root.
   for (const file of files) zip.file(file.filename, file.content);
   clickDownload(filename, await zip.generateAsync({ type: "blob" }));

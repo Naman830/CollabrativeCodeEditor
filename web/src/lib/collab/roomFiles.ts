@@ -1,6 +1,6 @@
 // The shape of a multi-file room, as every peer in the room sees it (§10.1).
 //
-// Free of React and browser APIs, for the same reason `lib/executionState.ts`
+// Free of React and browser APIs, for the same reason `lib/sandbox/executionState.ts`
 // is: the collab hook, the tab bar, the runner and Save all need these names and
 // none of them may invent their own.
 //
@@ -11,14 +11,14 @@
 //    ├─ Y.Map  "files"     fileId -> { name, createdAt }
 //    ├─ Y.Map  "roomMeta"  "entry" -> fileId
 //    ├─ Y.Text "file:<id>" one per file
-//    └─ Y.Map  "execution" unchanged (see lib/executionState.ts)
+//    └─ Y.Map  "execution" unchanged (see lib/sandbox/executionState.ts)
 //
 // tasks.md §10.1 asks for "each file = its own Yjs sub-document". Real Yjs
 // subdocuments are NOT synced by this stack: `setupWSConnection` in
 // y-websocket/bin/utils.js syncs exactly one doc per socket and never handles
 // `doc.on('subdocs')`, so every file would need its own provider, its own gated
 // WebSocket and its own token-refresh path, plus new child-doc handling in
-// `server/rooms.js` and `server/roomState.js`. A `Y.Text` per file on the *same*
+// `server/src/rooms/lifecycle.js` and `server/src/rooms/state.js`. A `Y.Text` per file on the *same*
 // doc is the trick the shared `execution` map already uses: y-websocket's sync
 // protocol does not distinguish between shared types, it merges the whole
 // document, so all of this reaches every peer — late joiners included — with
@@ -42,7 +42,7 @@
 //     per file: two peers touching different fields would otherwise interleave
 //     into a record neither wrote.
 
-import { fileExtFor } from "./languages";
+import { fileExtFor } from "@/lib/editor/languages";
 
 /** The `Y.Map` of file metadata, keyed by file id. */
 export const FILES_MAP_NAME = "files";
@@ -55,7 +55,7 @@ export const ENTRY_KEY = "entry";
 
 /**
  * The id of the file every room starts with. Fixed, not random — see rule 1.
- * Mirrored in `server/roomState.js`, which needs no such constant today (it
+ * Mirrored in `server/src/rooms/state.js`, which needs no such constant today (it
  * walks whatever keys the map holds) but reads the same `file:` prefix.
  */
 export const ENTRY_FILE_ID = "main";
@@ -86,7 +86,7 @@ export function modelPathFor(roomId: string, fileId: string): string {
  */
 export const MAX_FILES = 20;
 
-/** Longest filename, matching `MAX_FILENAME_LENGTH` in `lib/deadRooms.ts`. */
+/** Longest filename, matching `MAX_FILENAME_LENGTH` in `lib/data/deadRooms.ts`. */
 export const MAX_FILENAME_LENGTH = 64;
 
 /** One file, as the UI may render it. Always sanitized — see {@link readRoomFiles}. */
@@ -106,7 +106,7 @@ export type RoomFileMeta = {
 const FALLBACK_STEM = "untitled";
 
 /**
- * Verbatim copy of `UNSTORABLE` in `server/roomState.js`.
+ * Verbatim copy of `UNSTORABLE` in `server/src/rooms/state.js`.
  *
  * A filename typed here ends up in `dead_rooms.files`, and neither a NUL nor an
  * unpaired surrogate can reach a Postgres column — the surrogate is the worse of
@@ -128,13 +128,13 @@ function numbered(name: string, n: number): string {
  * A filename safe to render, to key a Monaco model on, and to hand to
  * `<a download>` or a zip entry.
  *
- * The counterpart to `safeFilename` in `lib/deadRooms.ts`, one layer earlier: that
+ * The counterpart to `safeFilename` in `lib/data/deadRooms.ts`, one layer earlier: that
  * one guards what comes *out* of Postgres, this one guards what a peer puts into
  * the shared doc. Path separators matter most — a download attribute and a JSZip
  * key both interpret them rather than merely displaying them.
  *
  * The cut is by code point, not `slice`, for the same reason `sanitizeName` in
- * `server/roomState.js` is: a 64-code-*unit* slice can halve a surrogate pair, and
+ * `server/src/rooms/state.js` is: a 64-code-*unit* slice can halve a surrogate pair, and
  * a lone surrogate later takes the room's whole snapshot down with it.
  */
 export function sanitizeFileName(raw: unknown, language?: string): string {
@@ -164,7 +164,7 @@ function isUsableId(id: unknown): id is string {
  * Turns the raw `files` map into a list the UI may render, sorted into tab order.
  *
  * **This is a sanitizing boundary, in the same category as `readPeers` in
- * `lib/awareness.ts`.** Everything in that map is peer-supplied: a raw Yjs client
+ * `lib/collab/awareness.ts`.** Everything in that map is peer-supplied: a raw Yjs client
  * can write any name, any id and any `createdAt`, and the name then reaches a tab
  * label, an `<a download>`, a zip entry key, and ultimately `dead_rooms.files`.
  * Nothing may read `yDoc.getMap(FILES_MAP_NAME)` directly.

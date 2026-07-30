@@ -1,6 +1,6 @@
 // The one place that decides *when* a dead-room snapshot is written (task 7.5).
 //
-// rooms.js's `destroyRoom()` decides when a snapshot is *taken*; this module
+// rooms/lifecycle.js's `destroyRoom()` decides when a snapshot is *taken*; this module
 // decides when it reaches Postgres. Splitting those two moments is the whole
 // point, and it buys two different things:
 //

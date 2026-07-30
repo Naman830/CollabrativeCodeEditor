@@ -7,7 +7,7 @@
 // snapshot is read-only forever (tasks.md §6, §8).
 
 import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
-import { downloadTextFile } from "@/lib/download";
+import { downloadTextFile } from "@/lib/editor/download";
 import { CheckIcon, CopyIcon, DownloadIcon } from "@/components/ui/icons";
 
 type SnapshotActionsProps = {

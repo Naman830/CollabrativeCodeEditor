@@ -13,23 +13,23 @@ import type { Awareness } from "y-protocols/awareness";
 import type { MonacoBinding } from "y-monaco";
 import type { WebsocketProvider } from "y-websocket";
 import type { ActivityToast } from "@/components/editor/ActivityToasts";
-import { readPeers, type Peer } from "@/lib/awareness";
-import { useClerkToken } from "@/lib/clerkIdentity";
-import { removeAwarenessStyles, renderAwarenessStyles } from "@/lib/cursorStyles";
+import { readPeers, type Peer } from "@/lib/collab/awareness";
+import { useClerkToken } from "@/lib/collab/clerkIdentity";
+import { removeAwarenessStyles, renderAwarenessStyles } from "@/lib/collab/cursorStyles";
 import {
   EXECUTION_KEY,
   EXECUTION_MAP_NAME,
   IDLE_EXECUTION,
   STALE_RUN_MS,
   type ExecutionState,
-} from "@/lib/executionState";
+} from "@/lib/sandbox/executionState";
 import {
   downloadFileName,
   monacoLanguageForFile,
   newFileName,
   starterCode,
-} from "@/lib/languages";
-import type { MonacoApi, MonacoEditor, MonacoModel } from "@/lib/monacoTypes";
+} from "@/lib/editor/languages";
+import type { MonacoApi, MonacoEditor, MonacoModel } from "@/lib/editor/monacoTypes";
 import {
   ENTRY_FILE_ID,
   ENTRY_KEY,
@@ -43,13 +43,13 @@ import {
   sanitizeFileName,
   type RoomFile,
   type RoomFileMeta,
-} from "@/lib/roomFiles";
-import { WS_URL } from "@/lib/rooms";
+} from "@/lib/collab/roomFiles";
+import { WS_URL } from "@/lib/collab/rooms";
 import { playJoinSound, playLeaveSound } from "@/lib/sound";
-import { displayName, type CollabUser } from "@/lib/user";
+import { displayName, type CollabUser } from "@/lib/collab/user";
 
 // The close code the sync server sends for a room that no longer exists
-// (`CLOSE_ROOM_NOT_FOUND` in server/yjsConnection.js). Any other close is an
+// (`CLOSE_ROOM_NOT_FOUND` in server/src/sync/connection.js). Any other close is an
 // ordinary disconnect and must keep retrying.
 const CLOSE_ROOM_NOT_FOUND = 4404;
 
@@ -376,7 +376,7 @@ export function useCollabRoom({
       // `useClerkToken` never rejects and never hangs: a guest, an unloaded Clerk
       // and a network failure all resolve to null within two seconds. That
       // property is load-bearing, not defensive — holding the socket open on
-      // Clerk would repeat the bug documented in `lib/clerkIdentity.ts`, where
+      // Clerk would repeat the bug documented in `lib/collab/clerkIdentity.ts`, where
       // gating on Clerk left a deep-linked room with no way in at all. A missing
       // token costs a profile entry; a missing socket costs the whole room.
       const token = await getTokenRef.current();
@@ -429,7 +429,7 @@ export function useCollabRoom({
       //
       // Fields are listed one by one and must never become `{...user}`:
       // `CollabUser` now carries `clerkUserId`, and awareness is peer-controlled
-      // (see `lib/awareness.ts`), so a broadcast account ID is a claim any
+      // (see `lib/collab/awareness.ts`), so a broadcast account ID is a claim any
       // client can forge. Task 7.3 keys saved room snapshots on an account —
       // sourcing that from awareness would let a passing guest write a room's
       // code into a stranger's profile. The spread is a one-character change
@@ -483,7 +483,7 @@ export function useCollabRoom({
       // precisely the lurker case §6.1's threshold exists to exclude.
       // `MonacoBinding` transacts with itself as the origin, which is the
       // client-side mirror of the server's trick of taking the WebSocket as the
-      // transaction origin (see `server/roomState.js`).
+      // transaction origin (see `server/src/rooms/state.js`).
       //
       // `instanceof`, not identity against one binding: since §10.1 there is one
       // binding per file, and typing in any of them is typing.
@@ -507,7 +507,7 @@ export function useCollabRoom({
       // The id is the fixed `ENTRY_FILE_ID`, never a random one: two peers can
       // sync into an empty room at the same moment and both run this, and a
       // fixed key means they converge on one file rather than CRDT-merging into
-      // two identical tabs. See `lib/roomFiles.ts`, rule 1.
+      // two identical tabs. See `lib/collab/roomFiles.ts`, rule 1.
       provider.once("sync", (isSynced: boolean) => {
         if (cancelled || !isSynced || filesMap.size > 0) return;
         const seedLanguage = languageRef.current;

@@ -15,7 +15,7 @@
 // its own element-scoped handler in `CodeEditor` for exactly that reason.
 
 import { useEffect, useRef } from "react";
-import type { MonacoApi, MonacoEditor } from "@/lib/monacoTypes";
+import type { MonacoApi, MonacoEditor } from "@/lib/editor/monacoTypes";
 
 type UseEditorShortcutsOptions = {
   /** Null until Monaco has mounted. */

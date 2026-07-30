@@ -1,10 +1,10 @@
 # WebSocket Server
 
-A standalone Node.js server that powers real-time collaboration for the code editor. It speaks the **Yjs sync protocol** (via `y-websocket`'s server-side `setupWSConnection` utility, in `yjsConnection.js`) rather than a custom message format — the room/document name comes straight from the URL path (e.g. `ws://host:port/<roomId>`).
+A standalone Node.js server that powers real-time collaboration for the code editor. It speaks the **Yjs sync protocol** (via `y-websocket`'s server-side `setupWSConnection` utility, in `server/src/sync/connection.js`) rather than a custom message format — the room/document name comes straight from the URL path (e.g. `ws://host:port/<roomId>`).
 
 There is no persistence and no auth. What it *does* own is **room lifetime**: rooms are minted here, and destroyed here.
 
-## Room lifetime (`rooms.js`)
+## Room lifetime (`server/src/rooms/lifecycle.js`)
 
 ```
 reserved ──connect──► live ──last socket closes──► grace (10s) ──► destroyed
@@ -14,7 +14,7 @@ reserved ──connect──► live ──last socket closes──► grace (10
 
 A connection to a room that is in none of those stages is **refused**: the socket is accepted and then closed with code `4404` / `room-not-found`. This has to happen on the server, because `setupWSConnection` creates the doc on first connect — a client-side check alone would be undone by the very socket it was guarding.
 
-`y-websocket` only deletes docs from its `docs` map when a persistence layer is configured, and this server deliberately has none, so `rooms.js` owns that deletion instead.
+`y-websocket` only deletes docs from its `docs` map when a persistence layer is configured, and this server deliberately has none, so `server/src/rooms/lifecycle.js` owns that deletion instead.
 
 ## HTTP routes
 
@@ -46,7 +46,7 @@ npm run dev
 ## Troubleshooting: "Couldn't reach the sync server"
 
 That banner does **not** mean the server is down. `checkRoom()`/`createRoom()` in
-`collab-code-editor/app/lib/rooms.ts` catch *any* `fetch` rejection and report
+`web/src/lib/collab/rooms.ts` catch *any* `fetch` rejection and report
 `unreachable`, so a DNS block, a captive portal and a genuinely dead server all look
 identical from the browser. Prove which it is with a request that skips DNS entirely:
 

@@ -17,7 +17,7 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { auth } from "@clerk/nextjs/server";
-import { deleteDeadRoomForUser } from "@/lib/deadRooms";
+import { deleteDeadRoomForUser } from "@/lib/data/deadRooms";
 
 export type DeleteSnapshotResult = { ok: false; message: string };
 

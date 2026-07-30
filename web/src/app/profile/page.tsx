@@ -14,7 +14,7 @@ import { auth } from "@clerk/nextjs/server";
 import DeadRoomCard from "@/components/profile/DeadRoomCard";
 import ProfileShell, { ProfilePanel, ProfileSignInGate } from "@/components/layout/ProfileShell";
 import { ArchiveIcon } from "@/components/ui/icons";
-import { listDeadRoomsForUser } from "@/lib/deadRooms";
+import { listDeadRoomsForUser } from "@/lib/data/deadRooms";
 
 export const metadata: Metadata = {
   title: "Your rooms",

@@ -1,8 +1,8 @@
 "use client";
 
 // The one place the app learns about Clerk, in the same spirit as
-// `lib/awareness.ts` (the one boundary for untrusted peer state) and
-// `lib/languages.ts` (the one language enumeration). Everything else imports
+// `lib/collab/awareness.ts` (the one boundary for untrusted peer state) and
+// `lib/editor/languages.ts` (the one language enumeration). Everything else imports
 // `useClerkIdentity` and never touches `useUser` directly, so the shape Clerk
 // hands us is normalised exactly once.
 

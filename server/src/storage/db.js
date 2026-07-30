@@ -2,7 +2,7 @@
 //
 // This process writes one row in a room's entire life — the snapshot taken when
 // the room dies — and never reads or updates one. That is why there is no ORM
-// here: `collab-code-editor/prisma/schema.prisma` is the authority on the
+// here: `web/prisma/schema.prisma` is the authority on the
 // table's shape, and this file hand-writes the single INSERT it implies. Adding
 // Prisma would mean a second schema copy, a `prisma generate` step, and the
 // query engine in a Railway image, all to serve one statement.
@@ -11,7 +11,7 @@
 // the two workspaces share no code, so a column renamed in schema.prisma must
 // be renamed in the INSERT below. There is no build step that would catch it.
 //
-// The snapshot is *taken* at the single destroy site in rooms.js (task 7.3) and
+// The snapshot is *taken* at the single destroy site in rooms/lifecycle.js (task 7.3) and
 // *written* here, by snapshotQueue.js (task 7.5). Those used to be the same
 // moment and no longer are — see "Rate limiting and payload size" in CLAUDE.md.
 // Nothing else may call saveDeadRoom: the queue is what bounds how many of these
@@ -50,7 +50,7 @@ if (CONNECTION_STRING) {
     // unreachable the write fails fast and the room is destroyed anyway.
     //
     // This must stay comfortably *below* the shutdown flush deadline in
-    // rooms.js, and comfortably *above* a Neon cold start. Both edges are real:
+    // rooms/lifecycle.js, and comfortably *above* a Neon cold start. Both edges are real:
     // the pool is always cold at SIGTERM (this process is idle between evictions
     // and idleTimeoutMillis is 30s), and Neon autosuspends an idle branch, so the
     // flush's first act can be waking a database as well as a TLS handshake.
@@ -86,17 +86,17 @@ function isEnabled() {
 /**
  * Writes one dead-room snapshot plus one `dead_room_members` row per qualifying
  * user, in a single transaction. Called exactly once per room, by
- * `snapshotQueue.js` — never directly from the destroy site, which since 7.5
+ * `server/src/storage/snapshotQueue.js` — never directly from the destroy site, which since 7.5
  * only *takes* the snapshot and hands it over.
  *
  * There is deliberately no owner: tasks.md §6.1 gives a copy to *every* verified
  * signed-in participant who met the contribution threshold. `userIds` is that
  * set, and every ID in it came from a Clerk token this server verified — never
- * from awareness (see clerkAuth.js).
+ * from awareness (see auth/clerk.js).
  *
  * Never throws and never rejects: a failed snapshot must not stop a room being
  * destroyed, and there is nobody left in the room to report an error to. That
- * contract is load-bearing for `snapshotQueue.js`, whose worker chain would
+ * contract is load-bearing for `server/src/storage/snapshotQueue.js`, whose worker chain would
  * otherwise turn a `pool.connect()` rejection into an unhandled rejection —
  * fatal under Node's default `--unhandled-rejections=throw`, taking every live
  * room with it. `pool.connect()` is therefore *inside* the try: it rejects on

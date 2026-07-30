@@ -31,15 +31,15 @@ import { useCollabRoom } from "@/hooks/useCollabRoom";
 import { useEditorShortcuts } from "@/hooks/useEditorShortcuts";
 import { EDITOR_PANEL_ID, OUTPUT_PANEL_ID, useRoomLayout } from "@/hooks/useRoomLayout";
 import { useRoomPersistence } from "@/hooks/useRoomPersistence";
-import { PROJECT_ZIP_NAME, downloadTextFile, downloadZipFile } from "@/lib/download";
-import { configureMonacoLoader } from "@/lib/monacoLoader";
-import type { MonacoApi, MonacoEditor } from "@/lib/monacoTypes";
-import { modelPathFor } from "@/lib/roomFiles";
+import { PROJECT_ZIP_NAME, downloadTextFile, downloadZipFile } from "@/lib/editor/download";
+import { configureMonacoLoader } from "@/lib/editor/monacoLoader";
+import type { MonacoApi, MonacoEditor } from "@/lib/editor/monacoTypes";
+import { modelPathFor } from "@/lib/collab/roomFiles";
 import {
   getIdentityServerSnapshot,
   getIdentitySnapshot,
   subscribeIdentity,
-} from "@/lib/user";
+} from "@/lib/collab/user";
 
 // Module scope, so it has run before any <Editor> in this module can mount.
 configureMonacoLoader();
@@ -69,7 +69,7 @@ export default function CodeEditor({ roomId, language, onRoomClosed }: CodeEdito
   // run once Monaco has actually mounted.
   const [editor, setEditor] = useState<MonacoEditor | null>(null);
   // The namespace from `onMount`. Needed for `KeyMod`/`KeyCode` (which cannot be
-  // statically imported — see `lib/monacoTypes.ts`) and, since §10.1, to create
+  // statically imported — see `lib/editor/monacoTypes.ts`) and, since §10.1, to create
   // one model per file.
   const [monacoApi, setMonacoApi] = useState<MonacoApi | null>(null);
 

@@ -7,7 +7,7 @@
 export type Theme = "light" | "dark" | "system";
 export type ResolvedTheme = "light" | "dark";
 
-/** Matches the `collabcode:` prefix `lib/user.ts` already uses for its keys. */
+/** Matches the `collabcode:` prefix `lib/collab/user.ts` already uses for its keys. */
 export const THEME_STORAGE_KEY = "collabcode:theme";
 
 export const THEMES: Theme[] = ["light", "system", "dark"];

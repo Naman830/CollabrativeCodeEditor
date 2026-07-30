@@ -7,7 +7,7 @@ import {
   randomColor,
   sanitizeName,
   type CollabUser,
-} from "@/lib/user";
+} from "@/lib/collab/user";
 import { cn, focusRing, primaryButton } from "@/lib/ui";
 
 type IdentityDialogProps = {

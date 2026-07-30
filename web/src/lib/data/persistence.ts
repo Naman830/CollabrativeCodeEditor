@@ -5,7 +5,7 @@
 // This is an ESTIMATE, and the wording must keep promising less than the server
 // guarantees. The client cannot know the real answer:
 //
-//   - The threshold (§6.1) is evaluated in `server/roomState.js` against a Clerk
+//   - The threshold (§6.1) is evaluated in `server/src/rooms/state.js` against a Clerk
 //     token the *server* verified. A token that silently failed verification —
 //     an outage, an unset `CLERK_SECRET_KEY`, a clock skew — leaves a perfectly
 //     healthy-looking socket and no membership at all.
@@ -24,13 +24,13 @@
 //
 // The constant below is the **fifth** hand-maintained duplication across the two
 // workspaces, after `rateLimit.js`/`rateLimit.ts`, `CLOSE_ROOM_NOT_FOUND`,
-// `roomState.js`'s copies of `sanitizeName`/`HEX_COLOR`, and
+// `rooms/state.js`'s copies of `sanitizeName`/`HEX_COLOR`, and
 // `TRUNCATION_MARKER`. It is worse than those in one way: the server's value is
 // env-overridable (`MEMBER_MIN_CONNECTED_MS` in `server/.env`), so the two can
 // legitimately disagree at runtime with nothing to detect it. One more reason
 // the chip is worded as an estimate rather than a promise.
 
-/** Mirrors `MEMBER_MIN_CONNECTED_MS`'s default in `server/roomState.js`. */
+/** Mirrors `MEMBER_MIN_CONNECTED_MS`'s default in `server/src/rooms/state.js`. */
 export const MEMBER_MIN_CONNECTED_MS = 60_000;
 
 export type PersistenceStatus =

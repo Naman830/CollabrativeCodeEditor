@@ -4,10 +4,10 @@
 // on the frontend — one Railway process means one counter sees every request —
 // but it resets on restart and would not survive scaling out.
 //
-// `collab-code-editor/app/lib/rateLimit.ts` is the same algorithm for the Next
+// `web/src/lib/sandbox/rateLimit.ts` is the same algorithm for the Next
 // routes. The two workspaces share no code, so the duplication is intentional.
 //
-// Different from MAX_RESERVATIONS in rooms.js: that caps how many unclaimed
+// Different from MAX_RESERVATIONS in rooms/lifecycle.js: that caps how many unclaimed
 // rooms may exist at all; this bounds a single caller.
 
 /**

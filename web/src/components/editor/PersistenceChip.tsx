@@ -3,7 +3,7 @@
 // "Is anything I do here being kept?" — tasks.md §10.8's persistence indicator.
 //
 // Presentational: every value arrives as a prop, and the estimate itself is
-// computed in `hooks/useRoomPersistence.ts`. See `lib/persistence.ts` for why
+// computed in `hooks/useRoomPersistence.ts`. See `lib/data/persistence.ts` for why
 // this can only ever be an estimate and why it speaks about *you* rather than
 // about the room.
 //
@@ -15,7 +15,7 @@ import {
   persistenceCopy,
   persistenceLabel,
   type PersistenceStatus,
-} from "@/lib/persistence";
+} from "@/lib/data/persistence";
 import { cn, focusRing } from "@/lib/ui";
 
 const DOT: Record<PersistenceStatus, string> = {

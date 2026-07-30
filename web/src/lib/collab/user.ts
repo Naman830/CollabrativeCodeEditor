@@ -12,7 +12,7 @@ export type CollabUser = {
    * in. Task 7.1 asks for it *on the client*, and client is where it stays: it
    * is deliberately absent from the awareness payload in `hooks/useCollabRoom.ts`,
    * because awareness is peer-controlled and any client could claim any ID
-   * (see `lib/awareness.ts`). Task 7.3 needs the sync server to know who was
+   * (see `lib/collab/awareness.ts`). Task 7.3 needs the sync server to know who was
    * signed in, and it will have to verify a Clerk token itself to find out —
    * this field can never be that source of truth.
    */
@@ -42,7 +42,7 @@ export function randomColor(): string {
 
 /**
  * Anything that cannot survive a trip into Postgres. Kept in step by hand with
- * `UNSTORABLE` in `server/roomState.js`, which is the copy that matters: a
+ * `UNSTORABLE` in `server/src/rooms/state.js`, which is the copy that matters: a
  * participant name reaches `dead_room_members`' sibling `participants` column,
  * and one unpaired surrogate there makes `JSON.stringify` emit a bare `\ud83d`,
  * which Postgres rejects with `unsupported Unicode escape sequence` — taking
@@ -56,7 +56,7 @@ const UNSTORABLE =
 /**
  * Names end up in a CSS `content:` string above a caret, so keep them to one
  * line of printable text. A UX guard, not the security boundary — remote names
- * never pass through here, so `lib/awareness.ts` is what has to hold.
+ * never pass through here, so `lib/collab/awareness.ts` is what has to hold.
  *
  * The cut is by code *point*: `.slice(0, 24)` counts UTF-16 code units and can
  * halve a surrogate pair, which is the one way this function could manufacture

@@ -5,11 +5,11 @@ import { useRouter } from "next/navigation";
 import IdentityDialog from "@/components/ui/IdentityDialog";
 import SiteNav from "@/components/layout/SiteNav";
 import { BoltIcon, CursorIcon, ShieldIcon } from "@/components/ui/icons";
-import { signedInUser, useClerkIdentity } from "@/lib/clerkIdentity";
-import { DEFAULT_LANGUAGE, LANGUAGES, type LanguageValue } from "@/lib/languages";
-import { RoomCreateError, createRoom } from "@/lib/rooms";
+import { signedInUser, useClerkIdentity } from "@/lib/collab/clerkIdentity";
+import { DEFAULT_LANGUAGE, LANGUAGES, type LanguageValue } from "@/lib/editor/languages";
+import { RoomCreateError, createRoom } from "@/lib/collab/rooms";
 import { cn, inputField, primaryButton, secondaryButton } from "@/lib/ui";
-import { setActiveUser, type CollabUser } from "@/lib/user";
+import { setActiveUser, type CollabUser } from "@/lib/collab/user";
 
 // "No sign-up" was true in v1 and stopped being true the moment Clerk landed.
 // Signing in is optional, not absent — which is the claim worth making.

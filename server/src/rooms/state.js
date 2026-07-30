@@ -1,10 +1,10 @@
 // What a room was, as opposed to whether it exists.
 //
-// `rooms.js` answers one question — does this room exist — and answered it with
+// `server/src/rooms/lifecycle.js` answers one question — does this room exist — and answered it with
 // nothing but two maps of timers. Task 7.3 needs four things it never recorded:
 // when the room was created, which *verified* Clerk users were in it, how long
 // each stayed, and whether they actually edited anything. That bookkeeping lives
-// here so `rooms.js` keeps its single, narrow job.
+// here so `server/src/rooms/lifecycle.js` keeps its single, narrow job.
 //
 // ---------------------------------------------------------------------------
 // HARD RULE: every function here is lookup-only. Nothing may create room state
@@ -47,17 +47,17 @@ const MAX_PARTICIPANTS = 50;
 // the cap only matters if `forgetConn` were ever missed.
 const MAX_PENDING_EDITS = 500;
 
-// The third copy of these rules, after server/rateLimit.js mirroring
-// app/lib/rateLimit.ts and CLOSE_ROOM_NOT_FOUND living in two files. The two
+// The third copy of these rules, after server/src/http/rateLimit.js mirroring
+// web/src/lib/sandbox/rateLimit.ts and CLOSE_ROOM_NOT_FOUND living in two files. The two
 // workspaces share no code and this one has no build step, so importing
-// app/lib/user.ts and app/lib/awareness.ts is not an option — but the values must
+// web/src/lib/collab/user.ts and web/src/lib/collab/awareness.ts is not an option — but the values must
 // stay in step by hand.
-const MAX_NAME_LENGTH = 24; // == app/lib/user.ts
-const HEX_COLOR = /^#[0-9a-f]{6}$/i; // == app/lib/awareness.ts
-const FALLBACK_COLOR = "#9e9e9e"; // == app/lib/awareness.ts
+const MAX_NAME_LENGTH = 24; // == web/src/lib/collab/user.ts
+const HEX_COLOR = /^#[0-9a-f]{6}$/i; // == web/src/lib/collab/awareness.ts
+const FALLBACK_COLOR = "#9e9e9e"; // == web/src/lib/collab/awareness.ts
 
 // ── Multi-file rooms (tasks.md §10.1) ──────────────────────────────────────
-// The shared-document names, mirroring app/lib/roomFiles.ts. This server never
+// The shared-document names, mirroring web/src/lib/collab/roomFiles.ts. This server never
 // writes them — it only reads the room's final state at the moment it dies.
 const FILES_MAP_NAME = "files";
 const FILE_TEXT_PREFIX = "file:";
@@ -65,24 +65,24 @@ const FILE_TEXT_PREFIX = "file:";
 // one any more, but the fallback in `snapshotFiles` costs a branch and the
 // alternative is a silently empty snapshot.
 const LEGACY_TEXT_NAME = "monaco";
-const MAX_FILES = 20; // == app/lib/roomFiles.ts
-const MAX_FILENAME_LENGTH = 64; // == app/lib/roomFiles.ts
+const MAX_FILES = 20; // == web/src/lib/collab/roomFiles.ts
+const MAX_FILENAME_LENGTH = 64; // == web/src/lib/collab/roomFiles.ts
 
 // The **sixth** hand-maintained cross-workspace duplication, after
 // rateLimit.js/rateLimit.ts, CLOSE_ROOM_NOT_FOUND, sanitizeName/HEX_COLOR above,
 // TRUNCATION_MARKER and MEMBER_MIN_CONNECTED_MS. It is the `value` column of
-// LANGUAGES in app/lib/languages.ts.
+// LANGUAGES in web/src/lib/editor/languages.ts.
 //
 // An allowlist rather than "store whatever arrived": `POST /rooms?language=` is
 // an anonymous, unauthenticated endpoint, and this value is written to
 // `dead_rooms.language` and rendered on /profile. Five known strings cost
 // nothing to check and mean nothing arbitrary can ever reach the column.
 const ROOM_LANGUAGES = ["javascript", "python", "typescript", "java", "cpp"];
-const DEFAULT_LANGUAGE = "javascript"; // == app/lib/languages.ts
+const DEFAULT_LANGUAGE = "javascript"; // == web/src/lib/editor/languages.ts
 
 // Only used to name a fallback file — a room that died before its first sync
 // seeded one, or a pre-§10.1 room. Every file a client actually created carries
-// its own name. == `ext` in app/lib/languages.ts.
+// its own name. == `ext` in web/src/lib/editor/languages.ts.
 const LANGUAGE_EXT = {
   javascript: "js",
   python: "py",
@@ -91,7 +91,7 @@ const LANGUAGE_EXT = {
   cpp: "cpp",
 };
 
-/** `Main.java` / `main.py`, matching `downloadFileName` in app/lib/languages.ts. */
+/** `Main.java` / `main.py`, matching `downloadFileName` in web/src/lib/editor/languages.ts. */
 function defaultFileName(language) {
   if (language === "java") return "Main.java";
   return `main.${LANGUAGE_EXT[language] ?? "txt"}`;
@@ -162,7 +162,7 @@ const states = new Map();
  *
  * `creatorKey` is the creating caller's IP (task 7.5's pacing key). It lives
  * only here, dies with the room, and is never written to Postgres — see
- * `db.js`'s `saveDeadRoom`.
+ * `server/src/storage/db.js`'s `saveDeadRoom`.
  *
  * `language` (task §10.1) is the same story with the opposite ending: also
  * recorded once, at `POST /rooms`, because that is the only moment anyone states
@@ -271,7 +271,7 @@ function forgetConn(roomId, conn) {
 
 /**
  * One of that user's sockets closed. Callers must guarantee this runs at most
- * once per socket — see the `ended` flag in yjsConnection.js. A double decrement
+ * once per socket — see the `ended` flag in sync/connection.js. A double decrement
  * strands `openCount` below zero, the `=== 0` branch never fires again, and that
  * user's time stops accruing for the rest of the room's life.
  */
@@ -439,7 +439,7 @@ function snapshotText(yText, budgetBytes = MAX_SNAPSHOT_BYTES) {
 /**
  * A filename safe to store and to render on /profile.
  *
- * The server's copy of `sanitizeFileName` in `app/lib/roomFiles.ts` — the client
+ * The server's copy of `sanitizeFileName` in `web/src/lib/collab/roomFiles.ts` — the client
  * sanitizes what it puts into the shared map, but the map is peer-supplied and a
  * raw Yjs client never runs that code. The path-separator strip is the part that
  * matters most: /profile hands this straight to an `<a download>`.
@@ -566,7 +566,7 @@ function buildSnapshot(roomId, doc, now) {
     // INSERT's `now()`: since 7.5 the write can be paced, and /profile both
     // sorts on and renders this value. See db.js's INSERT.
     diedAt: new Date(now),
-    // The pacing key for `snapshotQueue.js`. Falls back to the room ID rather
+    // The pacing key for `server/src/storage/snapshotQueue.js`. Falls back to the room ID rather
     // than a shared sentinel: `clientKey()` already returns the literal
     // "unknown" for an unidentifiable caller, so sharing that string would put
     // every unattributable room in one bucket and serialise them behind each

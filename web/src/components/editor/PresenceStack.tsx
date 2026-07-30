@@ -7,12 +7,12 @@
 // here, in their cursor colour, with the local user marked — but it now costs
 // about 90px of a row it shares with everything else.
 //
-// Everything rendered here comes from `readPeers` (see `lib/awareness.ts`),
+// Everything rendered here comes from `readPeers` (see `lib/collab/awareness.ts`),
 // which sanitizes untrusted awareness state. Never read `awareness.getStates()`
 // from a component: a colour straight off the wire reaching an inline `style`
 // is the injection that indirection exists to stop.
 
-import type { Peer } from "@/lib/awareness";
+import type { Peer } from "@/lib/collab/awareness";
 
 /** Avatars shown before the rest collapse into a "+N". */
 const MAX_VISIBLE = 4;

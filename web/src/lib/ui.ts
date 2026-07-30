@@ -1,8 +1,8 @@
 // The shared class strings for buttons, cards, inputs and pills.
 //
 // This file exists because `primaryButton`/`secondaryButton` were previously
-// declared twice, byte-for-byte, in `components/ProfileShell.tsx` and
-// `components/RoomGate.tsx` — with a comment in the former admitting they were
+// declared twice, byte-for-byte, in `components/layout/ProfileShell.tsx` and
+// `components/editor/RoomGate.tsx` — with a comment in the former admitting they were
 // "the same values as RoomGate". Two copies of a colour is how a redesign ends
 // up half-applied.
 //

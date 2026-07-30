@@ -9,14 +9,14 @@
 // and a `+` that adds another.
 //
 // Presentational. Every file here has already been through `readRoomFiles`
-// (`lib/roomFiles.ts`), which is the boundary that makes a peer-supplied filename
+// (`lib/collab/roomFiles.ts`), which is the boundary that makes a peer-supplied filename
 // safe to render — the same rule `readPeers` sets for peer-supplied names.
 
 import { useEffect, useRef, useState } from "react";
 import FileTabMenu, { type FileTabMenuAction } from "./FileTabMenu";
 import { PanelActions, PanelStrip } from "./PanelStrip";
 import { MoreIcon, PlusIcon, StarIcon } from "@/components/ui/icons";
-import { MAX_FILES, type RoomFile } from "@/lib/roomFiles";
+import { MAX_FILES, type RoomFile } from "@/lib/collab/roomFiles";
 import { cn, focusRing } from "@/lib/ui";
 
 type MenuState = { fileId: string; x: number; y: number };

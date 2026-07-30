@@ -16,9 +16,9 @@ import PresenceStack from "./PresenceStack";
 import ThemeToggle from "@/components/layout/ThemeToggle";
 import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
 import type { SyncStatus } from "@/hooks/useCollabRoom";
-import type { Peer } from "@/lib/awareness";
-import { languageLabel } from "@/lib/languages";
-import type { PersistenceStatus } from "@/lib/persistence";
+import type { Peer } from "@/lib/collab/awareness";
+import { languageLabel } from "@/lib/editor/languages";
+import type { PersistenceStatus } from "@/lib/data/persistence";
 import { shortcutLabel } from "@/lib/platform";
 import { chip, cn, focusRing, runButton } from "@/lib/ui";
 import { CheckIcon, CopyIcon, DownloadIcon, LogoMark, PlayIcon } from "@/components/ui/icons";
@@ -84,7 +84,7 @@ type RoomChromeProps = {
   /** False for an empty single-file room — Save's only disabled state. */
   canSave: boolean;
   onSave: () => void;
-  /** §10.8's estimate. An estimate — see `lib/persistence.ts`. */
+  /** §10.8's estimate. An estimate — see `lib/data/persistence.ts`. */
   persistenceStatus: PersistenceStatus;
   persistenceRemainingMs: number;
   isLastPeer: boolean;

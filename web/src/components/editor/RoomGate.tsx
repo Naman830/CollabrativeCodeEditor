@@ -3,8 +3,8 @@
 import { useCallback, useEffect, useState } from "react";
 import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
-import { DEFAULT_LANGUAGE, type LanguageValue } from "@/lib/languages";
-import { checkRoom } from "@/lib/rooms";
+import { DEFAULT_LANGUAGE, type LanguageValue } from "@/lib/editor/languages";
+import { checkRoom } from "@/lib/collab/rooms";
 import { card, primaryButton, secondaryButton } from "@/lib/ui";
 import { LockIcon, WifiOffIcon } from "@/components/ui/icons";
 

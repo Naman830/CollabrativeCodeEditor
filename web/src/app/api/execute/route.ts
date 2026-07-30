@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
-import { fileExtFor } from "@/lib/languages";
-import { MAX_CODE_BYTES, TOO_LARGE_MESSAGE, payloadTooLarge } from "@/lib/execution";
-import { clientKey, createRateLimiter } from "@/lib/rateLimit";
+import { fileExtFor } from "@/lib/editor/languages";
+import { MAX_CODE_BYTES, TOO_LARGE_MESSAGE, payloadTooLarge } from "@/lib/sandbox/execution";
+import { clientKey, createRateLimiter } from "@/lib/sandbox/rateLimit";
 
 const PISTON_EXECUTE_URL = `${process.env.PISTON_API_URL ?? "http://localhost:2000"}/api/v2/execute`;
 
@@ -42,7 +42,7 @@ const runLimiter = createRateLimiter({ limit: 10, windowMs: 60_000 });
 const REQUEST_BYTE_CEILING = MAX_CODE_BYTES * 2 + 4 * 1024;
 
 // Pinned against Piston's /runtimes output — update after a Piston image
-// change. Extensions live in `app/lib/languages.ts` instead, since the client's
+// change. Extensions live in `lib/editor/languages.ts` instead, since the client's
 // Save button needs them too.
 const LANGUAGE_MAP: Record<string, { language: string; version: string }> = {
   javascript: { language: "javascript", version: "18.15.0" },
@@ -166,7 +166,7 @@ export async function POST(request: Request) {
 
   // The authoritative size check: measured on the decoded program *and* its
   // input, so framing and escaping can't change the answer. One combined
-  // budget — see `payloadTooLarge` in `app/lib/execution.ts`.
+  // budget — see `payloadTooLarge` in `lib/sandbox/execution.ts`.
   const oversize = payloadTooLarge(code, stdinText);
   if (oversize) {
     return NextResponse.json({ success: false, error: oversize }, { status: 413 });

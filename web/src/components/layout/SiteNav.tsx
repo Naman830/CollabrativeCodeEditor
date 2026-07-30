@@ -11,7 +11,7 @@ import Link from "next/link";
 import { SignInButton, SignUpButton, UserButton } from "@clerk/nextjs";
 import ThemeToggle from "./ThemeToggle";
 import { ArrowLeftIcon, LogoMark } from "@/components/ui/icons";
-import { useClerkIdentity } from "@/lib/clerkIdentity";
+import { useClerkIdentity } from "@/lib/collab/clerkIdentity";
 import { cn, focusRing } from "@/lib/ui";
 
 const navLink = cn(

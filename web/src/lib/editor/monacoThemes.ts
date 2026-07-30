@@ -7,7 +7,7 @@
 // override only the chrome.
 //
 // Typed off `BeforeMount` rather than by importing `monaco-editor`: that module
-// touches `window` at import time, and `lib/monacoTypes.ts` exists for the same
+// touches `window` at import time, and `lib/editor/monacoTypes.ts` exists for the same
 // reason.
 
 import type { BeforeMount } from "@monaco-editor/react";
@@ -17,7 +17,7 @@ type Monaco = Parameters<BeforeMount>[0];
 export const MONACO_DARK = "collab-dark";
 export const MONACO_LIGHT = "collab-light";
 
-/** Keep these in step with `--code-bg` and friends in `app/globals.css`. */
+/** Keep these in step with `--code-bg` and friends in `styles/globals.css`. */
 const DARK_COLORS: Record<string, string> = {
   "editor.background": "#0a0b0d",
   "editor.foreground": "#e8eaed",

@@ -4,15 +4,15 @@
 // person whose tab close destroys the room, and tell them whether anything of it
 // survives.
 //
-// Nothing here talks to the server. See `lib/persistence.ts` for why the answer
+// Nothing here talks to the server. See `lib/data/persistence.ts` for why the answer
 // is necessarily an estimate and why the wording promises less than the server
 // guarantees.
 
 import { useEffect, useRef, useState } from "react";
 import type { SyncStatus } from "./useCollabRoom";
-import type { Peer } from "@/lib/awareness";
-import { MEMBER_MIN_CONNECTED_MS, type PersistenceStatus } from "@/lib/persistence";
-import type { CollabUser } from "@/lib/user";
+import type { Peer } from "@/lib/collab/awareness";
+import { MEMBER_MIN_CONNECTED_MS, type PersistenceStatus } from "@/lib/data/persistence";
+import type { CollabUser } from "@/lib/collab/user";
 
 /** How often the countdown re-renders while one is running. */
 const TICK_MS = 1_000;

@@ -2,7 +2,7 @@
 // signed-out gate, and the centred panel that the empty, not-found and error
 // states all reuse.
 //
-// No `"use client"` and no import of `lib/deadRooms.ts`: `error.tsx` is a Client
+// No `"use client"` and no import of `lib/data/deadRooms.ts`: `error.tsx` is a Client
 // Component and imports `ProfilePanel` from here, so nothing in this file may
 // reach the database. Clerk's `SignInButton` and `SiteNav` are Client Components
 // themselves, which a Server Component may render as long as it passes no

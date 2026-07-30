@@ -2,7 +2,7 @@
 // peer, injected into <head> because Monaco owns the DOM the carets live in and
 // there is no React element to hang a style prop on.
 //
-// It consumes `readPeers`'s output (see `lib/awareness.ts`) and must never read
+// It consumes `readPeers`'s output (see `lib/collab/awareness.ts`) and must never read
 // `awareness.getStates()` itself — a colour straight off the wire reaching a CSS
 // rule is the injection this indirection exists to stop.
 

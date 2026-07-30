@@ -16,8 +16,8 @@ import ProfileShell, { ProfileSignInGate } from "@/components/layout/ProfileShel
 import SnapshotDownloadAll from "@/components/profile/SnapshotDownloadAll";
 import SnapshotFile from "@/components/profile/SnapshotFile";
 import { LockIcon } from "@/components/ui/icons";
-import { absoluteTime, getDeadRoomForUser, lifetime, relativeTime } from "@/lib/deadRooms";
-import { languageLabel } from "@/lib/languages";
+import { absoluteTime, getDeadRoomForUser, lifetime, relativeTime } from "@/lib/data/deadRooms";
+import { languageLabel } from "@/lib/editor/languages";
 
 export const metadata: Metadata = {
   title: "Saved room",
@@ -54,7 +54,7 @@ export default async function SnapshotPage(props: PageProps<"/profile/[deadRoomI
 
   // Membership-scoped: null covers "no such snapshot" and "not yours" with the
   // same answer, so the page cannot be used to probe which ids exist. See the
-  // HARD RULE in `lib/deadRooms.ts`.
+  // HARD RULE in `lib/data/deadRooms.ts`.
   const room = await getDeadRoomForUser(userId, deadRoomId);
   if (!room) notFound();
 

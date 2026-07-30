@@ -9,7 +9,7 @@
 
 import { useCallback, useRef } from "react";
 import type * as Y from "yjs";
-import { payloadTooLarge } from "@/lib/execution";
+import { payloadTooLarge } from "@/lib/sandbox/execution";
 import {
   EXECUTION_KEY,
   EXECUTION_MAP_NAME,
@@ -17,9 +17,9 @@ import {
   type ExecuteSuccess,
   type ExecutionState,
   type RunAttribution,
-} from "@/lib/executionState";
-import { fileTextName, type RoomFile } from "@/lib/roomFiles";
-import { displayName, type CollabUser } from "@/lib/user";
+} from "@/lib/sandbox/executionState";
+import { fileTextName, type RoomFile } from "@/lib/collab/roomFiles";
+import { displayName, type CollabUser } from "@/lib/collab/user";
 
 type UseCodeRunnerOptions = {
   /** The live doc from `useCollabRoom`; null while disconnected. */

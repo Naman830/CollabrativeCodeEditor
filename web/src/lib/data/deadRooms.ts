@@ -63,10 +63,10 @@ export const DEAD_ROOM_ID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
- * Verbatim copy of `TRUNCATION_MARKER` in `server/roomState.js`.
+ * Verbatim copy of `TRUNCATION_MARKER` in `server/src/rooms/state.js`.
  *
  * The fourth hand-maintained duplication across the two workspaces, after
- * `rateLimit.js`/`rateLimit.ts`, `CLOSE_ROOM_NOT_FOUND`, and `roomState.js`'s
+ * `rateLimit.js`/`rateLimit.ts`, `CLOSE_ROOM_NOT_FOUND`, and `rooms/state.js`'s
  * copies of `sanitizeName`/`HEX_COLOR`. The workspaces share no code and the
  * server has no build step, so this string must be kept in step by hand; if it
  * drifts, the only symptom is a truncated snapshot quietly losing its notice.
@@ -95,7 +95,7 @@ export function isTruncated(content: string): boolean {
  *
  * The server writes the literal `"main.txt"` today, but this reads a `jsonb`
  * column: Prisma types it `JsonValue` and guarantees nothing about its shape, so
- * this is the same kind of boundary `lib/awareness.ts` is for peer state. Path
+ * this is the same kind of boundary `lib/collab/awareness.ts` is for peer state. Path
  * separators matter most — a download attribute is the one place a filename is
  * interpreted rather than merely displayed.
  */
@@ -111,7 +111,7 @@ function safeFilename(raw: string): string {
 
 /**
  * Narrows the `files` column. The counterpart to `readPeers` in
- * `lib/awareness.ts`: one place turns an untyped value into something the UI may
+ * `lib/collab/awareness.ts`: one place turns an untyped value into something the UI may
  * render, and no component reads the raw column.
  *
  * Always returns at least one entry, so no caller has to render "a snapshot with

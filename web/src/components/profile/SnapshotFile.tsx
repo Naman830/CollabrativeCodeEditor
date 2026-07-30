@@ -6,7 +6,7 @@
 //     closed. An editor is the one widget on this site that means "you can type
 //     here"; rendering one and switching `readOnly` on says the opposite of what
 //     the page is for.
-//  2. `lib/monacoLoader.ts` imports `monaco-editor` at module scope, which
+//  2. `lib/editor/monacoLoader.ts` imports `monaco-editor` at module scope, which
 //     touches `window`. Keeping that import chain out of this route's graph is
 //     what lets /profile server-render at all, and the standing regression test
 //     is `curl -s localhost:3000/profile/<id> | grep -c monaco` == 0.
@@ -19,7 +19,7 @@
 // snapshot is not worth 5 MB of editor on a page that otherwise ships no
 // JavaScript at all.
 
-import { isTruncated, type SnapshotFile as SnapshotFileData } from "@/lib/deadRooms";
+import { isTruncated, type SnapshotFile as SnapshotFileData } from "@/lib/data/deadRooms";
 import SnapshotActions from "./SnapshotActions";
 
 /** Human-readable byte count. The cap it approaches is 256 KB. */

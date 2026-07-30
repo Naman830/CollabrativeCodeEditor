@@ -8,7 +8,7 @@
 // Since §10.1 a language is a property of the *room*, chosen once at creation
 // and told to the sync server, rather than a per-user editing preference. The
 // server keeps its own copy of the `value` list (`ROOM_LANGUAGES` in
-// `server/roomState.js`) because the two workspaces share no code — keep them in
+// `server/src/rooms/state.js`) because the two workspaces share no code — keep them in
 // step by hand.
 
 export const LANGUAGES = [

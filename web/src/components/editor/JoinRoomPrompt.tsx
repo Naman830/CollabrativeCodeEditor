@@ -1,8 +1,8 @@
 "use client";
 
 import IdentityDialog from "@/components/ui/IdentityDialog";
-import { signedInUser, useClerkIdentity } from "@/lib/clerkIdentity";
-import { setActiveUser } from "@/lib/user";
+import { signedInUser, useClerkIdentity } from "@/lib/collab/clerkIdentity";
+import { setActiveUser } from "@/lib/collab/user";
 
 /**
  * The name prompt shown when someone reaches a room without an identity — a

@@ -4,9 +4,9 @@ import type { KeyboardEvent } from "react";
 import { IconButton, PanelActions, PanelStrip, PanelTab } from "./PanelStrip";
 import { ChevronDownIcon, SplitIcon, TerminalIcon } from "@/components/ui/icons";
 import type { Orientation } from "@/hooks/useRoomLayout";
-import { MAX_CODE_BYTES, codeByteLength } from "@/lib/execution";
-import { isFailedRun, type ExecutionState } from "@/lib/executionState";
-import { languageLabel } from "@/lib/languages";
+import { MAX_CODE_BYTES, codeByteLength } from "@/lib/sandbox/execution";
+import { isFailedRun, type ExecutionState } from "@/lib/sandbox/executionState";
+import { languageLabel } from "@/lib/editor/languages";
 import { cn, focusRing } from "@/lib/ui";
 
 /** Past this, the field starts reporting its size against the shared budget. */

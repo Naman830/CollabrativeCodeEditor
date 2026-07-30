@@ -7,11 +7,12 @@
 //
 // Server-only. This must never be imported from a "use client" module: the
 // import would pull the database driver — and the connection string — toward the
-// browser bundle. `app/lib/clerkIdentity.ts` is the client-side boundary; this
+// browser bundle. `lib/collab/clerkIdentity.ts` is the client-side boundary; this
 // is the server-side one.
 
 import { PrismaPg } from "@prisma/adapter-pg";
-import { PrismaClient } from "../../generated/prisma/client";
+// Relative, not aliased: `generated/` is machine-written and sits outside src/.
+import { PrismaClient } from "../../../generated/prisma/client";
 
 // Not "@prisma/client". Prisma 7's `prisma-client` generator emits the client
 // into the path named by `output` in schema.prisma, and importing the old

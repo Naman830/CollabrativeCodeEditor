@@ -30,7 +30,7 @@
 
 import { memo, useMemo } from "react";
 import Editor, { type BeforeMount, type OnChange, type OnMount } from "@monaco-editor/react";
-import { MONACO_DARK, MONACO_LIGHT, defineMonacoThemes } from "@/lib/monacoThemes";
+import { MONACO_DARK, MONACO_LIGHT, defineMonacoThemes } from "@/lib/editor/monacoThemes";
 import { useTheme } from "@/components/layout/ThemeProvider";
 
 // Module scope, so the prop identity is stable across renders.
@@ -51,7 +51,7 @@ const BASE_OPTIONS = {
 type EditorPaneProps = {
   language: string;
   /**
-   * The active file's Monaco model URI (`modelPathFor` in `lib/roomFiles.ts`).
+   * The active file's Monaco model URI (`modelPathFor` in `lib/collab/roomFiles.ts`).
    * Undefined only before the first sync, when the room has no files yet.
    */
   path: string | undefined;

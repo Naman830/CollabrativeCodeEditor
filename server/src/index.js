@@ -19,7 +19,7 @@ const PORT = process.env.PORT || 8080;
 
 // 10 rooms/minute/IP. Creating a room is a deliberate act, so this sits far
 // above real use while stopping a loop from exhausting the reservation ceiling
-// in rooms.js. Only POST /rooms is limited; the other routes allocate nothing.
+// in rooms/lifecycle.js. Only POST /rooms is limited; the other routes allocate nothing.
 const createRoomLimiter = createRateLimiter({ limit: 10, windowMs: 60_000 });
 
 // The frontend is always a different origin (localhost:3000 -> :8080 in dev,
@@ -53,7 +53,7 @@ const server = http.createServer((req, res) => {
   // is fine — this host is only ever used as wss:// plus the routes below.
   if (req.method === "GET" && path === "/") {
     return json(res, 200, {
-      service: "collab-code-editor sync server",
+      service: "collabcode sync server",
       status: "ok",
       transport: "websocket (yjs sync protocol) on this same port",
       routes: ["GET /health", "POST /rooms", "GET /rooms/:roomId"],
@@ -133,7 +133,7 @@ server.listen(PORT, () => {
 });
 
 // Without this, a Railway redeploy silently loses every dead-room snapshot: the
-// eviction timers in rooms.js are unref'd, so a queued eviction never fires on
+// eviction timers in rooms/lifecycle.js are unref'd, so a queued eviction never fires on
 // SIGTERM, and a room someone was actively working in is never even queued.
 // Invisible locally, guaranteed in production.
 let shutdownStarted = false;

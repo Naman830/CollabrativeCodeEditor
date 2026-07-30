@@ -142,7 +142,7 @@ flowchart TB
 
     subgraph SYNC["🔌 Node WebSocket Server · Railway"]
         WS["Yjs sync protocol"]
-        RM["rooms.js<br/><i>reserve · claim · evict</i>"]
+        RM["rooms/lifecycle.js<br/><i>reserve · claim · evict</i>"]
         HTTP["POST /rooms<br/>GET /rooms/:id<br/>GET /health"]
         WS --- RM
         HTTP --- RM
@@ -217,10 +217,10 @@ lands on the same document, **with no server arbitration at all**.
 | Cost | Per-character metadata overhead | Smaller payloads |
 
 For this project the tradeoff is one-sided: the metadata overhead is invisible at editor scale,
-and the payoff is a sync server that needs **zero** knowledge of text editing. `server/yjsConnection.js`
+and the payoff is a sync server that needs **zero** knowledge of text editing. `server/src/sync/connection.js`
 relays opaque binary frames; it has no idea what a character is.
 
-**Where it lives:** `collab-code-editor/app/components/CodeEditor.tsx` — the `Y.Doc`, provider,
+**Where it lives:** `web/src/components/editor/CodeEditor.tsx` — the `Y.Doc`, provider,
 awareness handler, and `MonacoBinding` are all created and destroyed inside one effect keyed on
 the room and the local user.
 
@@ -237,7 +237,7 @@ protocol. Peers render it as coloured carets, name labels, and presence chips.
 **The catch:** a peer sets its own `user` field to *whatever it likes*. That value never passes
 through our form, so sanitizing at the input boundary proves nothing.
 
-`app/lib/awareness.ts` → **`readPeers()`** is the single boundary where raw awareness state
+`web/src/lib/collab/awareness.ts` → **`readPeers()`** is the single boundary where raw awareness state
 becomes values the UI may render:
 
 - 🧼 **Names are re-sanitized.** React escapes HTML, but an unbounded or control-character name
@@ -287,7 +287,7 @@ stateDiagram-v2
     end note
 ```
 
-**`server/rooms.js` is the only module that knows about any of this**, and the only thing that
+**`server/src/rooms/lifecycle.js` is the only module that knows about any of this**, and the only thing that
 ever deletes a room.
 
 **Why it has to exist:** y-websocket's `closeConn` puts `docs.delete(doc.name)` *inside* an
@@ -300,7 +300,7 @@ landing mid-grace must not lose its document to an already-queued timer.
 **Why the gate must be server-side:** `setupWSConnection` calls `map.setIfUndefined(docs, docName, …)`,
 so *connecting to a room is what creates it*. A client-side check alone would be bypassed the
 instant the socket opened, and the "dead" room would spring back into existence, empty.
-`server/yjsConnection.js` refuses unknown rooms **before** calling `setupWSConnection` — which is
+`server/src/sync/connection.js` refuses unknown rooms **before** calling `setupWSConnection` — which is
 also what stops an old tab, reconnecting after an eviction or a server restart, from silently
 resurrecting the room it remembers.
 
@@ -569,7 +569,7 @@ cd Real-Time-Collabrative-Code-Editor-with-Sandbox-Execution-
 **1️⃣ Piston sandbox**
 
 ```bash
-cd collab-code-editor
+cd web
 docker compose up -d
 ```
 
@@ -593,7 +593,7 @@ npm run dev
 **3️⃣ Frontend**
 
 ```bash
-cd collab-code-editor
+cd web
 npm install
 npm run dev
 ```
@@ -656,9 +656,9 @@ one-line `curl --resolve` check that settles it.
 <table>
 <tr><th align="left">Variable</th><th align="left">Where</th><th align="left">Default</th><th align="left">Purpose</th></tr>
 
-<tr><td><code>NEXT_PUBLIC_WS_URL</code></td><td><code>collab-code-editor/.env.local</code></td><td><code>ws://localhost:8080</code></td><td>Sync server URL. <b>Also the source of the room-routes HTTP base</b> — <code>app/lib/rooms.ts</code> just swaps the scheme, so there's no second variable that could drift.</td></tr>
+<tr><td><code>NEXT_PUBLIC_WS_URL</code></td><td><code>web/.env.local</code></td><td><code>ws://localhost:8080</code></td><td>Sync server URL. <b>Also the source of the room-routes HTTP base</b> — <code>web/src/lib/collab/rooms.ts</code> just swaps the scheme, so there's no second variable that could drift.</td></tr>
 
-<tr><td><code>PISTON_API_URL</code></td><td><code>collab-code-editor</code></td><td><code>http://localhost:2000</code></td><td>Piston base URL. <b>No trailing slash</b> — the route appends <code>/api/v2/execute</code> itself. In production this is the tunnel hostname; a Vercel env change only reaches a <i>new</i> deployment, so it needs a redeploy to take effect.</td></tr>
+<tr><td><code>PISTON_API_URL</code></td><td><code>web</code></td><td><code>http://localhost:2000</code></td><td>Piston base URL. <b>No trailing slash</b> — the route appends <code>/api/v2/execute</code> itself. In production this is the tunnel hostname; a Vercel env change only reaches a <i>new</i> deployment, so it needs a redeploy to take effect.</td></tr>
 
 <tr><td><code>PORT</code></td><td><code>server/.env</code></td><td><code>8080</code></td><td>Serves both the WebSocket upgrade and the room HTTP routes — one listener, one port.</td></tr>
 
@@ -668,9 +668,9 @@ one-line `curl --resolve` check that settles it.
 
 <tr><td><code>PISTON_*</code> (7 vars)</td><td><code>docker-compose.yml</code></td><td>see file</td><td><b>Ceilings inside the container, not app config.</b> Piston rejects any per-request limit above them.</td></tr>
 
-<tr><td><code>DATABASE_URL</code></td><td><code>collab-code-editor/.env.local</code> and <code>server/.env</code></td><td>—</td><td>Neon's <b>pooled</b> connection string (host contains <code>-pooler</code>), used at runtime by both workspaces. <b>Optional in <code>server/</code></b> — unset, no pool is opened and the dead-room snapshot is a no-op, so the sync server runs exactly as it did in v1.</td></tr>
+<tr><td><code>DATABASE_URL</code></td><td><code>web/.env.local</code> and <code>server/.env</code></td><td>—</td><td>Neon's <b>pooled</b> connection string (host contains <code>-pooler</code>), used at runtime by both workspaces. <b>Optional in <code>server/</code></b> — unset, no pool is opened and the dead-room snapshot is a no-op, so the sync server runs exactly as it did in v1.</td></tr>
 
-<tr><td><code>DIRECT_URL</code></td><td><code>collab-code-editor/.env.local</code></td><td>—</td><td>Neon's <b>unpooled</b> string, used by <code>prisma migrate</code> alone. <b>Not interchangeable with <code>DATABASE_URL</code></b>: the pooler can't hold the session-level lock a migration takes, so migrations aimed at it hang or half-apply.</td></tr>
+<tr><td><code>DIRECT_URL</code></td><td><code>web/.env.local</code></td><td>—</td><td>Neon's <b>unpooled</b> string, used by <code>prisma migrate</code> alone. <b>Not interchangeable with <code>DATABASE_URL</code></b>: the pooler can't hold the session-level lock a migration takes, so migrations aimed at it hang or half-apply.</td></tr>
 
 </table>
 
@@ -680,7 +680,7 @@ one-line `curl --resolve` check that settles it.
 
 ```
 .
-├── collab-code-editor/              ▲ Next.js 16 frontend (Vercel)
+├── web/              ▲ Next.js 16 frontend (Vercel)
 │   ├── app/
 │   │   ├── page.tsx                 landing — create / join a room
 │   │   ├── room/[roomId]/page.tsx   the room route; roomId IS the Yjs doc name
@@ -705,8 +705,8 @@ one-line `curl --resolve` check that settles it.
 │
 └── server/                          🔌 Node WebSocket server (Railway)
     ├── index.js                     one listener: HTTP routes + WS upgrade
-    ├── yjsConnection.js             the only place that speaks the Yjs wire protocol
-    ├── rooms.js                     ⭐ the one authority on whether a room exists
+    ├── sync/connection.js             the only place that speaks the Yjs wire protocol
+    ├── rooms/lifecycle.js                     ⭐ the one authority on whether a room exists
     ├── db.js                        one pg pool + one INSERT — no ORM, on purpose
     └── rateLimit.js                 sliding window (copy #2)
 ```

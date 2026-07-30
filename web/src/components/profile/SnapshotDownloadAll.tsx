@@ -10,8 +10,8 @@
 // browser from data already on the page, and nothing is written anywhere.
 
 import { useState } from "react";
-import { PROJECT_ZIP_NAME, downloadZipFile } from "@/lib/download";
-import type { SnapshotFile } from "@/lib/deadRooms";
+import { PROJECT_ZIP_NAME, downloadZipFile } from "@/lib/editor/download";
+import type { SnapshotFile } from "@/lib/data/deadRooms";
 import { DownloadIcon } from "@/components/ui/icons";
 import { cn, focusRing } from "@/lib/ui";
 

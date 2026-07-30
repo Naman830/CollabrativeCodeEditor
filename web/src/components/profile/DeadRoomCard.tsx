@@ -1,7 +1,7 @@
 // One row in the profile listing.
 //
-// Server-rendered, and it must stay that way: it imports `lib/deadRooms.ts`,
-// which reaches `lib/db.ts`. Only the formatting helpers are used here, but the
+// Server-rendered, and it must stay that way: it imports `lib/data/deadRooms.ts`,
+// which reaches `lib/data/db.ts`. Only the formatting helpers are used here, but the
 // module graph is what counts.
 
 import Link from "next/link";
@@ -10,7 +10,7 @@ import {
   lifetime,
   relativeTime,
   type DeadRoomSummary,
-} from "@/lib/deadRooms";
+} from "@/lib/data/deadRooms";
 import { ArchiveIcon, LockIcon } from "@/components/ui/icons";
 
 /**
