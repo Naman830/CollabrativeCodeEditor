@@ -84,6 +84,43 @@ type PistonResponse = {
   message?: string;
 };
 
+type BodyRead = { ok: true; text: string } | { ok: false; reason: "too-large" | "unreadable" };
+
+// INVARIANT: the body is read through this, never `request.json()`. A chunked POST carries no
+// Content-Length, so the cheap header check cannot see it and `request.json()` buffers the whole
+// thing before a 413 can fire. Next route handlers apply no cap of their own, and this route is
+// unauthenticated — it is the front door to a privileged container.
+async function readCappedText(request: Request, maxBytes: number): Promise<BodyRead> {
+  if (!request.body) return { ok: true, text: "" };
+
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        void reader.cancel().catch(() => {});
+        return { ok: false, reason: "too-large" };
+      }
+      chunks.push(value);
+    }
+  } catch {
+    return { ok: false, reason: "unreadable" };
+  }
+
+  const joined = new Uint8Array(total);
+  let at = 0;
+  for (const chunk of chunks) {
+    joined.set(chunk, at);
+    at += chunk.byteLength;
+  }
+  return { ok: true, text: new TextDecoder().decode(joined) };
+}
+
 export async function POST(request: Request) {
   const limit = runLimiter(clientKey(request));
   if (!limit.allowed) {
@@ -93,16 +130,27 @@ export async function POST(request: Request) {
     );
   }
 
-  // Deliberately loose pre-read check on an absent-or-lying header; the exact
-  // `payloadTooLarge` check below is what enforces the cap.
-  const declaredLength = Number(request.headers.get("content-length"));
-  if (Number.isFinite(declaredLength) && declaredLength > REQUEST_BYTE_CEILING) {
+  // Deliberately loose, and only when the header is actually present: `Number(null)` is 0 and
+  // `Number("abc")` is NaN, so the old form silently passed every chunked request straight
+  // through to a full buffer. The exact `payloadTooLarge` check below still enforces the cap.
+  const declared = request.headers.get("content-length");
+  if (declared !== null && Number(declared) > REQUEST_BYTE_CEILING) {
     return NextResponse.json({ success: false, error: TOO_LARGE_MESSAGE }, { status: 413 });
+  }
+
+  const read = await readCappedText(request, REQUEST_BYTE_CEILING);
+  if (!read.ok) {
+    return read.reason === "too-large"
+      ? NextResponse.json({ success: false, error: TOO_LARGE_MESSAGE }, { status: 413 })
+      : NextResponse.json(
+          { success: false, error: "Request body could not be read." },
+          { status: 400 }
+        );
   }
 
   let body: unknown;
   try {
-    body = await request.json();
+    body = JSON.parse(read.text);
   } catch {
     return NextResponse.json(
       { success: false, error: "Request body must be valid JSON." },

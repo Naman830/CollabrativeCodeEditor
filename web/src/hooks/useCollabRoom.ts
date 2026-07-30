@@ -10,8 +10,9 @@ import { readPeers, type Peer } from "@/lib/collab/awareness";
 import { useClerkToken } from "@/lib/collab/clerkIdentity";
 import { removeAwarenessStyles, renderAwarenessStyles } from "@/lib/collab/cursorStyles";
 import {
-  EXECUTION_KEY,
-  EXECUTION_MAP_NAME,
+  executionMapOf,
+  readExecution,
+  writeExecution,
   IDLE_EXECUTION,
   STALE_RUN_MS,
   type ExecutionState,
@@ -224,9 +225,9 @@ export function useCollabRoom({
     // Null until the first snapshot, so peers already here fire no "joined" toast.
     let knownPeers: Map<number, Peer> | null = null;
 
-    const executionMap = yDoc.getMap<ExecutionState>(EXECUTION_MAP_NAME);
+    const executionMap = executionMapOf(yDoc);
     const applyExecutionState = () => {
-      setExecState(executionMap.get(EXECUTION_KEY) ?? IDLE_EXECUTION);
+      setExecState(readExecution(executionMap));
     };
     executionMap.observe(applyExecutionState);
     applyExecutionState();
@@ -245,13 +246,15 @@ export function useCollabRoom({
     applyEntry();
 
     // Any peer may heal a run abandoned by its starter; the other ticks are no-ops.
+    // INVARIANT: read through the boundary here too. An un-narrowed read would let this handler
+    // copy a forged record's fields into a fresh one, re-publishing the poison as an `error`.
     const staleRunWatchdog = setInterval(() => {
-      const current = executionMap.get(EXECUTION_KEY);
+      const current = readExecution(executionMap);
       if (
-        current?.status === "running" &&
+        current.status === "running" &&
         Date.now() - current.startedAt > STALE_RUN_MS
       ) {
-        executionMap.set(EXECUTION_KEY, {
+        writeExecution(executionMap, {
           status: "error",
           runId: current.runId,
           language: current.language,

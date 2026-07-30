@@ -1,4 +1,8 @@
 // In-memory sliding-window rate limiter; keep in sync with web/src/lib/sandbox/rateLimit.ts.
+// One process, one counter, and since the key is no longer caller-chosen, POST /rooms is a real
+// per-address bound. (The web copy stays approximate for a different reason: per-instance state.)
+
+const { intFromEnv } = require("../env");
 
 function createRateLimiter({ limit, windowMs, maxKeys = 10_000 }) {
   /** @type {Map<string, number[]>} */
@@ -33,15 +37,44 @@ function createRateLimiter({ limit, windowMs, maxKeys = 10_000 }) {
   };
 }
 
-// Railway terminates TLS ahead of this process, so `x-forwarded-for` holds the client address.
-// INVARIANT: that header is forgeable — this bounds scripts, not attackers.
+// INVARIANT: x-forwarded-for is only trustworthy from the *right*. A proxy that appends puts
+// the address it observed last; everything left of that is caller-supplied. Reading the
+// left-most value let one script mint a fresh limiter bucket — and a fresh snapshot pacing
+// key — per request. Keep in sync with web/src/lib/sandbox/rateLimit.ts.
+const TRUSTED_PROXY_HOPS = intFromEnv(process.env.TRUSTED_PROXY_HOPS, 1, {
+  min: 0,
+  max: 8,
+  name: "TRUSTED_PROXY_HOPS",
+});
+
+// Loose on purpose: this only has to reject junk that would otherwise become a limiter key.
+const IP_LITERAL = /^[0-9a-f.:]{3,45}$/i;
+
+function normalizeIp(value) {
+  if (value === undefined || value === null) return null;
+  const trimmed = String(value).trim().replace(/^\[|\]$/g, "");
+  // "1.2.3.4:5678" would otherwise be a distinct key per connection.
+  const bare = /^\d{1,3}(\.\d{1,3}){3}:\d+$/.test(trimmed)
+    ? trimmed.slice(0, trimmed.indexOf(":"))
+    : trimmed;
+  return IP_LITERAL.test(bare) ? bare.toLowerCase() : null;
+}
+
 function clientKey(req) {
-  const forwarded = req.headers["x-forwarded-for"];
-  if (typeof forwarded === "string" && forwarded.length > 0) {
-    const first = forwarded.split(",")[0].trim();
-    if (first) return first;
-  }
-  return req.socket.remoteAddress || "unknown";
+  const direct = normalizeIp(req.socket?.remoteAddress) ?? "unknown";
+  if (TRUSTED_PROXY_HOPS === 0) return direct;
+
+  const header = req.headers["x-forwarded-for"];
+  const chain = (Array.isArray(header) ? header.join(",") : (header ?? ""))
+    .split(",")
+    .map(normalizeIp)
+    .filter(Boolean);
+  if (chain.length === 0) return direct;
+
+  // Right-most minus (hops - 1): the address the closest trusted proxy observed. Correct
+  // whether the platform appends to the header or overwrites it; left-most is correct for
+  // neither. An over-count clamps to the left-most, i.e. degrades to the old behaviour.
+  return chain[Math.max(0, chain.length - TRUSTED_PROXY_HOPS)];
 }
 
 module.exports = { createRateLimiter, clientKey };

@@ -1,5 +1,7 @@
 // INVARIANT: remote awareness state is peer-supplied; this module is the only place
-// that turns it into values the UI may render.
+// that turns *awareness* into values the UI may render. It is one of three such
+// boundaries — see also `readRoomFiles` and `readExecutionState`; nothing may read a
+// peer-written shared type directly.
 
 import { CURSOR_COLORS, sanitizeName, initials as initialsOf } from "./user";
 import type { Awareness } from "y-protocols/awareness";
@@ -8,9 +10,11 @@ import type { Awareness } from "y-protocols/awareness";
 // close the block and restyle every other participant's page.
 export const HEX_COLOR = /^#[0-9a-f]{6}$/i;
 
-const FALLBACK_COLOR = "#9e9e9e";
+// Exported so `readExecutionState` resolves an unusable colour/name to the same values this
+// module does: one definition for every peer-supplied attribution in the app.
+export const FALLBACK_COLOR = "#9e9e9e";
 
-const FALLBACK_NAME = "Anonymous";
+export const FALLBACK_NAME = "Anonymous";
 
 export type Peer = {
   clientID: number;

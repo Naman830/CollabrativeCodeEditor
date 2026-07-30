@@ -44,13 +44,34 @@ export function createRateLimiter({ limit, windowMs, maxKeys = 10_000 }: Options
   };
 }
 
-// `x-forwarded-for` is trustworthy only because Vercel overwrites it; anything
-// unattributable shares one bucket, which fails closed.
+const TRUSTED_PROXY_HOPS = (() => {
+  const parsed = Number(process.env.TRUSTED_PROXY_HOPS ?? "1");
+  return Number.isInteger(parsed) && parsed >= 0 && parsed <= 8 ? parsed : 1;
+})();
+
+// Loose on purpose: this only has to reject junk that would otherwise become a limiter key.
+const IP_LITERAL = /^[0-9a-f.:]{3,45}$/i;
+
+function normalizeIp(value: string | null): string | null {
+  if (!value) return null;
+  const trimmed = value.trim().replace(/^\[|\]$/g, "");
+  const bare = /^\d{1,3}(\.\d{1,3}){3}:\d+$/.test(trimmed)
+    ? trimmed.slice(0, trimmed.indexOf(":"))
+    : trimmed;
+  return IP_LITERAL.test(bare) ? bare.toLowerCase() : null;
+}
+
+// INVARIANT: right-most minus (hops - 1) — correct whether the platform appends to
+// x-forwarded-for or overwrites it; left-most is correct for neither, and it let a caller pick
+// its own bucket. Anything unattributable shares one "unknown" bucket, which fails closed.
+// Keep in sync with server/src/http/rateLimit.js.
 export function clientKey(request: Request): string {
-  const forwarded = request.headers.get("x-forwarded-for");
-  if (forwarded) {
-    const first = forwarded.split(",")[0].trim();
-    if (first) return first;
+  if (TRUSTED_PROXY_HOPS > 0) {
+    const chain = (request.headers.get("x-forwarded-for") ?? "")
+      .split(",")
+      .map(normalizeIp)
+      .filter((value): value is string => value !== null);
+    if (chain.length > 0) return chain[Math.max(0, chain.length - TRUSTED_PROXY_HOPS)];
   }
-  return request.headers.get("x-real-ip")?.trim() || "unknown";
+  return normalizeIp(request.headers.get("x-real-ip")) ?? "unknown";
 }

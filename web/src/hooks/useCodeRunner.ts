@@ -7,11 +7,11 @@ import { useCallback, useRef } from "react";
 import type * as Y from "yjs";
 import { payloadTooLarge } from "@/lib/sandbox/execution";
 import {
-  EXECUTION_KEY,
-  EXECUTION_MAP_NAME,
+  executionMapOf,
+  readExecution,
+  writeExecution,
   type ExecuteFailure,
   type ExecuteSuccess,
-  type ExecutionState,
   type RunAttribution,
 } from "@/lib/sandbox/executionState";
 import { fileTextName, type RoomFile } from "@/lib/collab/roomFiles";
@@ -39,9 +39,9 @@ export function useCodeRunner({
     const yDoc = docRef.current;
     if (!yDoc || !user || !entryFile) return;
 
-    const executionMap = yDoc.getMap<ExecutionState>(EXECUTION_MAP_NAME);
+    const executionMap = executionMapOf(yDoc);
     // Guards a same-tab double-click; a peer's concurrent click is caught by runId.
-    if (executionMap.get(EXECUTION_KEY)?.status === "running") return;
+    if (readExecution(executionMap).status === "running") return;
 
     // INVARIANT: read the entry file's Y.Text, never Monaco — it may have no model here.
     const code = yDoc.getText(fileTextName(entryFile.id)).toString();
@@ -53,7 +53,7 @@ export function useCodeRunner({
     const startedAt = Date.now();
 
     if (code.length === 0) {
-      executionMap.set(EXECUTION_KEY, {
+      writeExecution(executionMap, {
         status: "error",
         runId,
         language,
@@ -70,7 +70,7 @@ export function useCodeRunner({
     // Courtesy pre-check; the route enforces the same one combined code+stdin budget.
     const oversize = payloadTooLarge(code, stdin);
     if (oversize) {
-      executionMap.set(EXECUTION_KEY, {
+      writeExecution(executionMap, {
         status: "error",
         runId,
         language,
@@ -84,7 +84,7 @@ export function useCodeRunner({
       return;
     }
 
-    executionMap.set(EXECUTION_KEY, {
+    writeExecution(executionMap, {
       status: "running",
       runId,
       language,
@@ -97,8 +97,9 @@ export function useCodeRunner({
     // Lost a race to another peer, or torn down mid-fetch: must not clobber current.
     const stale = () => {
       if (docRef.current !== yDoc) return true;
-      const current = executionMap.get(EXECUTION_KEY);
-      return current?.status === "idle" || current?.runId !== runId;
+      const current = readExecution(executionMap);
+      // A missing record narrows to "idle", which is stale by the same test as before.
+      return current.status === "idle" || current.runId !== runId;
     };
 
     try {
@@ -113,7 +114,7 @@ export function useCodeRunner({
 
       const finishedAt = Date.now();
       if (!res.ok || !data.success) {
-        executionMap.set(EXECUTION_KEY, {
+        writeExecution(executionMap, {
           status: "error",
           runId,
           language,
@@ -127,7 +128,7 @@ export function useCodeRunner({
         return;
       }
 
-      executionMap.set(EXECUTION_KEY, {
+      writeExecution(executionMap, {
         status: "success",
         runId,
         language,
@@ -140,7 +141,7 @@ export function useCodeRunner({
       });
     } catch {
       if (stale()) return;
-      executionMap.set(EXECUTION_KEY, {
+      writeExecution(executionMap, {
         status: "error",
         runId,
         language,
