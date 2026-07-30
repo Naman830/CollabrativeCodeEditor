@@ -569,7 +569,6 @@ cd Real-Time-Collabrative-Code-Editor-with-Sandbox-Execution-
 **1️⃣ Piston sandbox**
 
 ```bash
-cd web
 docker compose up -d
 ```
 
@@ -678,38 +677,58 @@ one-line `curl --resolve` check that settles it.
 
 ## 📁 Repo layout
 
+Two independent workspaces, one sandbox container. **There is no root `package.json`** — `web/`
+and `server/` install and run separately.
+
 ```
 .
-├── web/              ▲ Next.js 16 frontend (Vercel)
-│   ├── app/
-│   │   ├── page.tsx                 landing — create / join a room
-│   │   ├── room/[roomId]/page.tsx   the room route; roomId IS the Yjs doc name
-│   │   ├── api/execute/route.ts     Piston proxy · rate limit · size cap · sandbox limits
+├── docker-compose.yml               🐳 the Piston sandbox + its ceilings
+├── docs/tasks.md                    the v2 feature checklist
+│
+├── web/                             ▲ Next.js 16 frontend (Vercel)
+│   ├── src/
+│   │   ├── app/                     ROUTES ONLY — nothing shared lives here
+│   │   │   ├── page.tsx                 landing — create / join a room
+│   │   │   ├── room/[roomId]/page.tsx   the room; roomId IS the Yjs doc name
+│   │   │   ├── profile/                 a signed-in user's saved dead rooms
+│   │   │   └── api/execute/route.ts     Piston proxy · rate limit · size cap
 │   │   ├── components/
-│   │   │   ├── CodeEditor.tsx       ⭐ the whole client Yjs stack + Run/Save
-│   │   │   ├── RoomGate.tsx         decides if a room may be entered — BEFORE any socket opens
-│   │   │   ├── UserBar.tsx          presence chips
-│   │   │   ├── IdentityDialog.tsx   name + colour prompt
-│   │   │   └── ActivityToasts.tsx   join / leave banners
-│   │   └── lib/
-│   │       ├── awareness.ts         🛡️ readPeers() — the untrusted-input boundary
-│   │       ├── user.ts              identity as an external store
-│   │       ├── rooms.ts             WS_URL, createRoom(), checkRoom()
-│   │       ├── languages.ts         the ONE language enumeration
-│   │       ├── execution.ts         MAX_CODE_BYTES, shared by client and route
-│   │       ├── db.ts                the ONE place the app learns about Postgres
-│   │       └── rateLimit.ts         sliding window (copy #1)
+│   │   │   ├── editor/              the room screen (CodeEditor, RoomGate, …)
+│   │   │   ├── profile/             the /profile screen
+│   │   │   ├── layout/              nav, page shell, theme
+│   │   │   └── ui/                  dialogs and icons, used by both screens
+│   │   ├── hooks/                   useCollabRoom ⭐ the whole client Yjs stack
+│   │   ├── lib/
+│   │   │   ├── collab/              awareness 🛡️ · rooms · roomFiles · user
+│   │   │   ├── editor/              languages (the ONE enumeration) · monaco · download
+│   │   │   ├── sandbox/             execution caps · shared run state · rate limit
+│   │   │   ├── data/                db ⭐ the only door to Postgres · deadRooms
+│   │   │   └── ui.ts theme.ts platform.ts sound.ts
+│   │   ├── styles/globals.css       the whole design system
+│   │   └── proxy.ts                 Clerk's request hook (Next 16 renamed middleware.ts)
 │   ├── prisma/schema.prisma         ⭐ the authority on the dead_rooms table
-│   ├── prisma.config.ts             Prisma CLI config — migrations use DIRECT_URL
-│   └── docker-compose.yml           🐳 Piston + its ceilings
+│   └── prisma.config.ts             Prisma CLI config — migrations use DIRECT_URL
 │
 └── server/                          🔌 Node WebSocket server (Railway)
-    ├── index.js                     one listener: HTTP routes + WS upgrade
-    ├── sync/connection.js             the only place that speaks the Yjs wire protocol
-    ├── rooms/lifecycle.js                     ⭐ the one authority on whether a room exists
-    ├── db.js                        one pg pool + one INSERT — no ORM, on purpose
-    └── rateLimit.js                 sliding window (copy #2)
+    └── src/
+        ├── index.js                 one listener: HTTP routes + WS upgrade
+        ├── sync/connection.js       the only place that speaks the Yjs wire protocol
+        ├── rooms/lifecycle.js       ⭐ the one authority on whether a room exists
+        ├── rooms/state.js           what a room *was* — members, language, snapshot
+        ├── storage/db.js            one pg pool + one INSERT — no ORM, on purpose
+        ├── storage/snapshotQueue.js when a snapshot is actually written
+        ├── auth/clerk.js            the one place a token becomes a user ID
+        └── http/rateLimit.js        sliding window (copy #2)
 ```
+
+**Conventions worth knowing before you edit:**
+
+- **`src/app/` holds routes and nothing else.** Anything importable lives in `components/`,
+  `hooks/`, `lib/` or `styles/` beside it.
+- **Imports crossing a folder use the `@/` alias** (`@/lib/collab/user`); same-folder imports
+  stay relative (`./FileTabMenu`). `@/` maps to `web/src/`.
+- **In `server/src/`, the folder carries the domain and the file carries the role** — hence
+  `rooms/lifecycle.js`, not `rooms/rooms.js`.
 
 > **`rateLimit` and the `4404` close code exist twice on purpose.** The two workspaces share no
 > build and no code — a shared package would be the only alternative, and it isn't worth it for
@@ -719,7 +738,8 @@ one-line `curl --resolve` check that settles it.
 
 ## 🗺️ Roadmap
 
-**v1 is feature-complete.** Every box in [`V1_Tasks.md`](V1_Tasks.md) is ticked.
+**v1 is feature-complete** — its checklist was removed once every box was ticked. v2's is
+[`docs/tasks.md`](docs/tasks.md).
 
 <table>
 <tr><th align="left">Deliberately out of scope for v1</th><th align="left">Why</th></tr>

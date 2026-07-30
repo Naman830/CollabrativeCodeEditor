@@ -3,11 +3,11 @@
 A multiplayer code editor: Yjs CRDT sync over WebSockets, plus sandboxed multi-language
 execution via a self-hosted Piston instance.
 
-## Scope of work: follow `tasks.md`
+## Scope of work: follow `docs/tasks.md`
 
-`tasks.md` at the repo root is the **authoritative feature checklist for v2**, and the only
+`docs/tasks.md` is the **authoritative feature checklist for v2**, and the only
 checklist left in the repo — v1 shipped complete and `V1_Tasks.md` was deleted once every box
-was ticked (commit `dfbaf1b`). Read `tasks.md` before starting any feature work: the user
+was ticked (commit `dfbaf1b`). Read `docs/tasks.md` before starting any feature work: the user
 prompts against its items, so "build the profile page" means the `/profile` lines in section
 7.4, not a fresh interpretation.
 
@@ -28,22 +28,22 @@ Rules:
 
 Before reporting any task done, do all three of these — not in a follow-up commit:
 
-1. **Tick the box in `tasks.md`.** Same change as the code, never before it.
+1. **Tick the box in `docs/tasks.md`.** Same change as the code, never before it.
 2. **Update this file (`CLAUDE.md`).** Add or revise whatever section the change makes true:
    a new key file in the *Repo layout* table, a new env var in the *Environment variables*
    table, a new invariant, and — importantly — anything that bit you while building it. This
    file's value is the gotchas, not the feature list; if a limit, ordering, or lifecycle
    detail was non-obvious enough to cost you a debugging session, write it down.
-3. **Write down features that were not in `tasks.md`.** If you build something the checklist
+3. **Write down features that were not in `docs/tasks.md`.** If you build something the checklist
    never listed — an extra guardrail, a helper endpoint, a UI affordance the user asked for
-   mid-task — add it to `tasks.md` as a new, already-ticked line under the nearest matching
+   mid-task — add it to `docs/tasks.md` as a new, already-ticked line under the nearest matching
    section (or a new subsection if none fits), so the checklist keeps describing what actually
    shipped. A checklist that omits shipped work is worse than no checklist.
 
 The same rule applies to anything that turns out to be *false*: when a change contradicts a
 paragraph in this file, rewrite that paragraph rather than appending a correction next to it.
 
-## What v2 adds (`tasks.md` in one paragraph)
+## What v2 adds (`docs/tasks.md` in one paragraph)
 
 v1's defining constraint was **zero persistence** — a room and everything in it vanished when
 the last person left. v2 keeps that for the live room and relaxes it in exactly one place:
@@ -60,12 +60,37 @@ object, and room names (all still to come).
 
 ## Repo layout
 
-Two independent workspaces. **There is no root `package.json`** — install and run each separately.
+Two independent workspaces, plus the sandbox container and the docs at the root. **There is no
+root `package.json`** — install and run each workspace separately.
 
 | Path | What it is |
 | --- | --- |
 | `web/` | Next.js 16 (App Router) frontend. Monaco editor, room routing, and the `/api/execute` proxy to Piston. |
 | `server/` | Standalone Node.js WebSocket server speaking the Yjs sync protocol, plus the room-lifetime HTTP routes on the same port. Deployed to Railway. |
+| `docker-compose.yml` | The Piston sandbox. At the **repo root**, not inside `web/` — it is a third service, not part of the frontend. |
+| `docs/` | `tasks.md`, the v2 checklist. `README.md` and this file stay at the root by convention. |
+
+### The four structural rules
+
+These are conventions, not preferences — each one closes a specific failure the flat layout had.
+
+1. **`web/src/app/` holds routes and nothing else.** Every `page`/`layout`/`route`/`error` file
+   lives there; everything importable lives beside it in `components/`, `hooks/`, `lib/` or
+   `styles/`. Putting a shared module back under `app/` makes it indistinguishable from a route.
+2. **Cross-folder imports use the `@/` alias; same-folder imports stay relative.**
+   `@/lib/collab/user` from anywhere, `./FileTabMenu` between siblings. `@/*` maps to `./src/*`
+   in `web/tsconfig.json`. Before this, all 158 internal imports were relative and 14 climbed two
+   levels, so any move was a rename storm — which is exactly what the alias exists to prevent.
+   **One deliberate exception:** `lib/data/db.ts` imports the generated Prisma client with
+   `../../../generated/prisma/client`, because `generated/` sits *outside* `src/` and so has no
+   alias. Do not "fix" it into `@/`.
+3. **In both workspaces the folder carries the domain and the file carries the role.** Hence
+   `server/src/rooms/lifecycle.js` rather than `rooms/rooms.js`, and `lib/sandbox/` rather than
+   `lib/execution/execution.ts`. `lib/ui.ts`, `theme.ts`, `platform.ts` and `sound.ts` stay at the
+   `lib/` root because a one-file folder would only add a stutter.
+4. **`web/src/proxy.ts` is inside `src/`, and must stay level with `app/`.** Next resolves the
+   proxy convention at the project root *or* inside `src/` — never `src/app/`. The check that it
+   is still wired is `ƒ Proxy (Middleware)` in `next build` output; a misplaced file fails silently.
 
 Key files:
 - `web/src/proxy.ts` — Clerk's request hook. **Next 16 renamed `middleware.ts` to `proxy.ts`**; it attaches the session and protects nothing
@@ -135,8 +160,8 @@ Key files:
 Three processes:
 
 ```bash
-# 1. Piston sandbox (code execution)
-cd web && docker compose up -d
+# 1. Piston sandbox (code execution) — from the REPO ROOT, not web/
+docker compose up -d
 
 # 2. Yjs WebSocket server -> :8080
 cd server && npm install && cp .env.example .env && npm run dev
@@ -146,6 +171,15 @@ cd web && npm install && npm run dev
 ```
 
 ## Gotchas
+
+**`docker-compose.yml` pins `name: collab-code-editor`, and that line is load-bearing.** Compose
+derives its project name from the containing directory, which names the volume
+(`<project>_piston_data`) and labels the container. Renaming the app directory from
+`collab-code-editor/` to `web/` — and moving the compose file to the root — would therefore have
+pointed at a *new* project: a fresh empty `piston_data`, with every installed language package
+re-downloaded, and a name collision against the still-running `piston_api`. Pinning the old
+project name keeps both. It reads as a stale name; it is the opposite. Verified with
+`docker --context default compose ps` reporting the pre-existing container as part of this project.
 
 **Docker context.** The running Piston container may live on the `default` docker context
 while `desktop-linux` is *current*. `docker ps` then looks empty even though Piston is
@@ -260,7 +294,7 @@ the root layout's `<head>`, and a route that 500s never ships one.
 
 ## Architecture invariant
 
-**`tasks.md`'s section-5 sequence diagram draws execution wrong — do not implement it as
+**`docs/tasks.md`'s section-5 sequence diagram draws execution wrong — do not implement it as
 drawn.** It shows `FE → WS → Piston`, i.e. the code travelling to the WebSocket server, which
 then calls Piston and broadcasts the result. That is not how v1 works and must not become how
 v2 works: the browser posts to the Next.js route `/api/execute`, which proxies to Piston, and
@@ -583,7 +617,7 @@ yDoc
  └─ Y.Map  "execution" unchanged
 ```
 
-**`tasks.md` §10.1 says "each file = its own Yjs sub-document". That is not what shipped, and it
+**`docs/tasks.md` §10.1 says "each file = its own Yjs sub-document". That is not what shipped, and it
 could not be.** `setupWSConnection` in `y-websocket/bin/utils.js` syncs exactly one doc per
 socket and never handles `doc.on('subdocs')`, so real subdocs would need a provider and a
 separately-gated WebSocket per open file, N token-refresh paths, and child-doc handling in
@@ -881,7 +915,7 @@ snapshot write queue" under "Rate limiting and payload size".
 (`MEMBER_MIN_CONNECTED_MS`) **and actually edited the document**. There is no owner and no
 ownership transfer. The two halves do different jobs and neither is redundant: the timer stops
 a drive-by, and **the edit check is the only thing that stops a lurker**, since anyone who
-leaves a tab open passes 60s. `tasks.md` §6.1 originally said "connected while the document was
+leaves a tab open passes 60s. `docs/tasks.md` §6.1 originally said "connected while the document was
 non-empty" instead — that is unimplementable here, because `useCollabRoom` seeds the starter file
 on `sync`, so every room is non-empty milliseconds after the *first* client arrives and the
 clause filters nothing.
@@ -1217,7 +1251,7 @@ limiter stops one script exhausting the ceiling, the ceiling stops many callers 
 ### The snapshot write queue (task 7.5)
 
 There is a **third** limiter, and it is not an endpoint: `server/src/storage/snapshotQueue.js` sits between
-`destroyRoom()` and `db.saveDeadRoom()`. It is what `tasks.md` §7.5's "rate-limit DB writes the
+`destroyRoom()` and `db.saveDeadRoom()`. It is what `docs/tasks.md` §7.5's "rate-limit DB writes the
 same way v1 rate-limits room creation" became.
 
 **It defers; it never refuses.** This is the difference that matters, and it is not a
@@ -1397,7 +1431,7 @@ carry the same single migration. `web/.env.local` and `server/.env` point at
 **The Neon database was not empty when 7.2 migrated it, and this is worth knowing before you
 trust anything in it.** It held a `Room` table (42 rows of `ydocState bytea`) and a
 `_prisma_migrations` row `20260706083131_init` from an abandoned experiment that persisted live
-Yjs documents to Postgres — precisely what `tasks.md` §8 rules out. Those commits are dangling,
+Yjs documents to Postgres — precisely what `docs/tasks.md` §8 rules out. Those commits are dangling,
 reachable from no branch, so nothing in the repo explained the tables. Both were dumped to a
 backup and dropped, so `dead_rooms` now has a single migration history that replays cleanly
 from an empty database. If a future `prisma migrate` reports drift, check for leftovers like
@@ -1476,7 +1510,7 @@ because of a database it was not even using. And `DATABASE_URL` is **optional**:
 is opened and `saveDeadRoom()` is a logged no-op, so the guest flow (which stores nothing and
 is the whole of v1) never depends on database infrastructure it does not touch.
 
-`ON CONFLICT (room_id) DO NOTHING` is what enforces `tasks.md` §6's write-once rule against a
+`ON CONFLICT (room_id) DO NOTHING` is what enforces `docs/tasks.md` §6's write-once rule against a
 retry or a restart that re-evicts an already-saved room, and it only works because `room_id`
 carries a `UNIQUE` constraint.
 
@@ -1512,7 +1546,7 @@ verifies against Node's bundled CA store, so the URL in `.env.local` needs nothi
 `&sslrootcert=system`. **Never put `sslrootcert=system` in an env file**: node-postgres reads
 that value as a *filename* and will try to open a file called `system`.
 
-### Two deliberate departures from `tasks.md` §6
+### Two deliberate departures from `docs/tasks.md` §6
 
 - **`room_id` is `UNIQUE`.** This makes the database enforce "written once, never updated"
   instead of trusting the writer, and it is what `ON CONFLICT (room_id) DO NOTHING` rests on.
@@ -1633,7 +1667,7 @@ The whole v2 loop now closes: `server/src/rooms/lifecycle.js`'s `destroyRoom()` 
 `/profile` reads it back, so a signed-in user's work really does outlive the tab. An older note
 here said "nothing reads it yet — do not add UI pointing at one"; that is no longer true.
 
-**A UI/UX redesign also shipped, outside the checklist** — it is recorded as `tasks.md` §7.7
+**A UI/UX redesign also shipped, outside the checklist** — it is recorded as `docs/tasks.md` §7.7
 and described under "Design system and theming" and "The resizable room layout" above. It
 changed no behaviour in sync, presence, execution, auth or persistence, but it touched nearly
 every component, so notes written before it may describe markup that no longer exists.

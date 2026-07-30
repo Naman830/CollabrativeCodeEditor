@@ -1,36 +1,50 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# web — CollabCode frontend
 
-## Getting Started
+Next.js 16 (App Router) + Monaco + Yjs. Renders the room, proxies code execution to Piston, and
+reads dead-room snapshots back out of Postgres for `/profile`.
 
-First, run the development server:
+See the [repo README](../README.md) for the architecture and the full three-process quick start.
+
+## Run
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm install
+cp .env.example .env.local   # then fill in the Clerk and Neon values
+npm run dev                  # → http://localhost:3000
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Use `localhost`, not `127.0.0.1` — Clerk's dev instance only allows the former, and on the wrong
+host it silently never loads.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+The room needs the sync server on `:8080` (`cd ../server && npm run dev`), and **Run** needs the
+Piston container (`docker compose up -d` from the repo root).
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Scripts
 
-## Learn More
+| Script | What it does |
+| --- | --- |
+| `npm run dev` | Dev server |
+| `npm run build` | `prisma generate` then `next build` — generate must come first |
+| `npm run lint` | ESLint |
+| `npm run db:migrate` | `prisma migrate dev` (uses `DIRECT_URL`, the unpooled endpoint) |
+| `npm run db:studio` | Prisma Studio |
 
-To learn more about Next.js, take a look at the following resources:
+## Layout
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+```
+src/
+├── app/          routes ONLY — page/layout/route/error files
+├── components/   editor · profile · layout · ui
+├── hooks/        useCollabRoom holds the entire client Yjs stack
+├── lib/          collab · editor · sandbox · data, plus 4 root utilities
+├── styles/       globals.css — the whole design system
+└── proxy.ts      Clerk's request hook (Next 16's rename of middleware.ts)
+```
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+Two rules this layout depends on:
 
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- **`src/app/` contains routes and nothing importable.** A shared module goes in `components/`,
+  `hooks/`, `lib/` or `styles/`.
+- **Cross-folder imports use `@/`** (`@/lib/collab/user`, mapped to `src/`); same-folder imports
+  stay relative (`./FileTabMenu`). The one exception is `lib/data/db.ts`, which reaches the
+  Prisma client in `generated/` — that sits outside `src/`, so it stays relative.
