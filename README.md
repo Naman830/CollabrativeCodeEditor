@@ -109,7 +109,7 @@ CollabCode fixes that with a room you can share by URL:
 
 <tr><td>▶️ <b>Shared execution</b></td><td>Run streams stdout / stderr / exit code to <b>everyone in the room</b>, captioned with who ran it and in which language.</td></tr>
 
-<tr><td>🌍 <b>5 languages</b></td><td>JavaScript · Python · TypeScript · Java · C++ — one dropdown drives syntax highlighting, the sandbox runtime, and the download extension.</td></tr>
+<tr><td>🌍 <b>5 languages</b></td><td>JavaScript · Python · TypeScript · Java · C++ — chosen <b>once, when the room is created</b>, and fixed for its lifetime. It drives syntax highlighting, the sandbox runtime, and every file's extension.</td></tr>
 
 <tr><td>💾 <b>Save to device</b></td><td>Downloads the current buffer with the right extension (<code>main.py</code>, <code>main.cpp</code>, <code>Main.java</code>…). Purely local — nothing touches the server.</td></tr>
 
@@ -675,6 +675,34 @@ one-line `curl --resolve` check that settles it.
 
 ---
 
+## 🧪 Tests
+
+**281 tests across four tiers**, plus CI. Full report — strategy, every bug found, root causes,
+fixes, and the remaining limitations — is in **[`docs/TESTING.md`](docs/TESTING.md)**.
+
+The first three tiers are **hermetic**: no database, no Clerk keys, no network. A contributor with
+no credentials runs exactly what CI runs.
+
+```bash
+cd web    && npm run lint && npm run typecheck && npm test   # unit + dom + cross-workspace drift
+cd server && npm run lint && npm run test:unit && npm run test:integration
+cd web    && npm run test:e2e                                # needs all three services running
+```
+
+<table>
+<tr><th align="left">Tier</th><th align="left">What it covers</th><th align="left">Needs</th></tr>
+<tr><td><b>unit</b></td><td>Every sanitizer against one shared adversarial corpus (NUL, lone surrogates, path traversal, CSS breakout, RTL overrides); both rate limiters; the membership arithmetic; the snapshot queue's concurrency cap</td><td>nothing</td></tr>
+<tr><td><b>drift</b></td><td>The eight hand-maintained cross-workspace duplications — including <code>docker-compose.yml</code>'s Piston ceilings vs the execute route's limits, and <code>db.js</code>'s hand-written INSERT vs <code>schema.prisma</code></td><td>nothing</td></tr>
+<tr><td><b>integration</b></td><td>Spawns the real sync server and drives it with raw WebSockets speaking the Yjs protocol: the 4404 room gate, grace-window reconnect, shutdown close codes, abusive frames</td><td>nothing</td></tr>
+<tr><td><b>e2e</b></td><td>Playwright: two tabs in one context, concurrent editing converging, shared execution output, the dead-room gate, the resizable layout</td><td>all three services</td></tr>
+</table>
+
+> **Running the e2e tier?** Start the sync server with `ROOM_CREATE_LIMIT=300` — the suite creates
+> ~20 rooms in two minutes and otherwise trips the 10/min default, which surfaces as a confusing
+> timeout inside an unrelated spec.
+
+---
+
 ## 📁 Repo layout
 
 Two independent workspaces, one sandbox container. **There is no root `package.json`** — `web/`
@@ -753,10 +781,11 @@ and `server/` install and run separately.
 - [ ] 🐳 Host Piston on a VPS that allows privileged containers, so **Run** on the live demo stops
       depending on a developer machine being online (the image is **amd64-only**, so ARM free tiers
       are out)
-- [ ] 🗄️ Postgres persistence — **in progress (v2).** The `dead_rooms` table and both
-      connections exist; the snapshot write on room death and the `/profile` page do not yet.
-      Note this never makes a *live* room survive a restart: a snapshot is read-only and is
-      written when a room dies normally.
+- [x] 🗄️ Postgres persistence — **shipped (v2).** A room's final files are written once to
+      `dead_rooms` when it dies, but only if at least one participant was signed in *and* stayed
+      *and* edited; `/profile` reads them back, read-only, forever. Fully-guest rooms still store
+      nothing at all. Note this never makes a *live* room survive a restart: a snapshot is
+      read-only and is written when a room dies normally.
 - [ ] 🔴 Redis pub/sub — multiple sync instances sharing room state, and a global rate limiter
 - [ ] 🔗 Shareable short links
 

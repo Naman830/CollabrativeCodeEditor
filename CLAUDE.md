@@ -68,9 +68,13 @@ root `package.json`** — install and run each workspace separately.
 | `web/` | Next.js 16 (App Router) frontend. Monaco editor, room routing, and the `/api/execute` proxy to Piston. |
 | `server/` | Standalone Node.js WebSocket server speaking the Yjs sync protocol, plus the room-lifetime HTTP routes on the same port. Deployed to Railway. |
 | `docker-compose.yml` | The Piston sandbox. At the **repo root**, not inside `web/` — it is a third service, not part of the frontend. |
-| `docs/` | `tasks.md`, the v2 checklist. `README.md` and this file stay at the root by convention. |
+| `docs/` | `tasks.md`, the v2 checklist, and `TESTING.md`, the audit report. `README.md` and this file stay at the root by convention. |
+| `web/tests/` | vitest: the unit tier, the `drift/` tier, `fixtures/hostile.ts`, and `setup/no-ambient-secrets.ts`. |
+| `web/e2e/` | Playwright. The only cross-service tier; `helpers.ts` holds every selector trap. |
+| `server/tests/` | vitest: `unit/` (hermetic) and `integration/` (spawns the real server, raw `ws`). |
+| `.github/workflows/` | CI. Two jobs, one per workspace, plus a job that states what CI cannot cover. |
 
-### The four structural rules
+### The five structural rules
 
 These are conventions, not preferences — each one closes a specific failure the flat layout had.
 
@@ -91,6 +95,14 @@ These are conventions, not preferences — each one closes a specific failure th
 4. **`web/src/proxy.ts` is inside `src/`, and must stay level with `app/`.** Next resolves the
    proxy convention at the project root *or* inside `src/` — never `src/app/`. The check that it
    is still wired is `ƒ Proxy (Middleware)` in `next build` output; a misplaced file fails silently.
+5. **Tests live inside the workspace they test, and `web/e2e/` is the only cross-service tier.**
+   `web/tests/`, `server/tests/`, `web/e2e/`. There is no third top-level test directory and no root
+   `package.json`, so the gate is two commands and CI is a two-job matrix — rule 5 exists to keep
+   rule 0 ("there is no root `package.json`") true. The corollary is that anything shared between the
+   two workspaces' tests is **duplicated on purpose**, exactly like the source it tests:
+   `web/tests/fixtures/hostile.ts` and `server/tests/fixtures/hostile.mjs` are the eighth and ninth
+   entries on the hand-maintained-duplication list, and `web/tests/unit/drift/` is what stops the
+   whole list rotting silently.
 
 ### Comments: this file carries the rationale, the code carries the rule
 
@@ -120,8 +132,23 @@ is closer to deleting code than to tidying a comment.
 One mechanical trap found while doing it: **`server/src/rooms/state.js` contains regex literals
 with `\u0000` and `\uD800`–`\uDFFF` escapes.** Tool-call arguments JSON-decode `\uXXXX`, so
 rewriting those lines through an editing tool can silently write *real* NUL and lone-surrogate
-bytes and turn the file binary. Edit around them, and check with
-`grep -P '\x00'` plus `file server/src/rooms/state.js` (must still say "UTF-8 text").
+bytes and turn the file binary. Edit around them.
+
+**An earlier version of this paragraph prescribed `grep -P '\x00'` as the check. That check has
+never worked** — grep classifies the file as binary and reports nothing unless you pass `-a`. The
+audit hit this the hard way: writing `\u0000` into two new files produced real NUL bytes, git
+flagged them as binary, and the documented guard stayed silent. Two things replaced it:
+
+- `file server/src/rooms/state.js` must still say "UTF-8 text" — that one *does* work, because
+  `file` reports "data" for a NUL-bearing file.
+- `GUARD-01` in `web/tests/unit/guards/source-encoding.test.ts` scans the whole tree at the byte
+  level on every test run, which is the real guard. It caught itself on its first execution.
+
+Also worth knowing, because it explains why some files survive and others do not: **`\u0000` gets
+JSON-decoded into a real byte, but `\uD800` does not** — JSON cannot encode a lone surrogate, so it
+passes through as literal text. That is why `executionState.ts`'s `/[\uD800-\uDBFF]$/` was fine
+while a `\u0000` two lines away was not. New test fixtures build every dangerous character with
+`String.fromCharCode` for exactly this reason.
 
 Key files:
 - `web/src/proxy.ts` — Clerk's request hook. **Next 16 renamed `middleware.ts` to `proxy.ts`**; it attaches the session and protects nothing
@@ -186,6 +213,46 @@ Key files:
 - `web/src/components/profile/SnapshotFile.tsx` / `SnapshotActions.tsx` / `SnapshotDownloadAll.tsx` / `DeadRoomCard.tsx` — the `<pre>` code view, its Copy/Download buttons, the multi-file `project.zip` button (these three are the only client-side code on `/profile`), and one listing row
 - `server/src/storage/db.js` — the sync server's whole database surface: one `pg` pool and one INSERT, no ORM
 
+## Testing
+
+Full procedure and results: **`docs/TESTING.md`**. The division of labour is the same one this file
+already draws for comments — **`CLAUDE.md` keeps the rationale and the traps, `docs/TESTING.md` keeps
+the procedure and the numbers.** Do not duplicate one into the other.
+
+Four tiers. The first three are hermetic: no Postgres, no Clerk, no network.
+
+```bash
+cd web    && npm run lint && npm run typecheck && npm test   # unit + dom + drift
+cd server && npm run lint && npm run test:unit && npm run test:integration
+cd web    && npm run test:e2e                                # needs all three services
+```
+
+**Every test title begins with its case ID**, so a claim anywhere is traceable to its proof:
+`grep -rn "SEC-05d" web/tests server/tests web/e2e`.
+
+Traps that are *new* with the suite (the pre-existing ones — `dialog.accept()`, `localhost` not
+`127.0.0.1`, the non-breaking spaces, `#room-language` — already have their own sections above and
+are not repeated here):
+
+- **Start the sync server with `ROOM_CREATE_LIMIT=300` for the e2e tier.** It creates ~20 rooms in
+  two minutes and otherwise trips the 10/min default, surfacing as a room-creation timeout inside an
+  unrelated spec.
+- **A visible Monaco is not a ready room.** The starter file lands only after the provider fires
+  `sync`; before that `entryFile` is null and `useCodeRunner` returns early *without writing
+  anything*, so a Run click is silently swallowed and the output pane still reads "Output will appear
+  here…". Use `waitForRoomReady()`. Measured 10/10 rooms seed correctly, so this is a test-timing
+  trap, not a seeding bug.
+- **Never read room text from `document.body.innerText`** — Monaco keeps a hidden accessibility
+  mirror, so it shows the document twice. That looks exactly like a double-seed bug and is not.
+- **Focus Monaco by clicking `.view-lines`, never its hidden `textarea`.** Clicking the textarea
+  appears to work — select-all even takes effect — but the keystrokes never reach the model.
+- **`server/src/rooms/state.js` and `snapshotQueue.js` read `process.env` at module load**, so any
+  test varying a knob must bust `require.cache` and re-require. Hence `pool: "forks"`.
+- **`bindRoomObservers` reads `doc.awareness`**, which y-websocket attaches in production. A bare
+  `Y.Doc` in a test makes every observer throw.
+- **`retries: 0` in Playwright is deliberate.** A retry that goes green hides the CRDT and presence
+  races the suite exists to catch. Two flakes surfaced this way and both were real bugs.
+
 ## Running locally
 
 Three processes:
@@ -200,6 +267,38 @@ cd server && npm install && cp .env.example .env && npm run dev
 # 3. Frontend -> :3000
 cd web && npm install && npm run dev
 ```
+
+## Failing safe: the sync server must not die
+
+**A crash is not SIGTERM.** That single sentence is why this section exists. `flushAndDestroyAll()`
+runs on SIGTERM and nowhere else, so an uncaught fault took every live room's unsaved snapshot with
+the process — and the restart came up with an empty registry, so nothing could ever retry the write.
+One anonymous request could therefore destroy everyone's work in every room. The audit found **three**
+ways to do it, all unauthenticated:
+
+1. **`GET /rooms/%`** — `decodeURIComponent` throws `URIError` on `%`, `%zz`, and on any escape that
+   decodes to a lone surrogate (`%ED%A0%80`). Now `safeDecode()` returns null. **The route still
+   answers 200 with `exists:false`, never 400**: `checkRoom()` reads any non-ok response as
+   *unreachable*, which would show the retry screen for a room that never existed.
+2. **A malformed `Host` header** (`Host: a b`) or an absolute-form request target (`GET http://[`) —
+   `new URL(req.url, "http://" + host)` throws `TypeError`. The origin was never used, only the path
+   and the query, so `requestTarget()` splits the target by hand and uses `URLSearchParams`, which
+   never throws on any input.
+3. **Any malformed WebSocket frame.** `y-websocket`'s `setupWSConnection` registers
+   `conn.on('message')`, `'close'` and `'pong'` — and **no `'error'`**. `ws` emits `'error'` on the
+   WebSocket for every protocol fault, and an `'error'` event with no listener *throws*. Reachable
+   before the room gate, so no room id was even needed.
+
+**The ordering in point 3 is the part to remember.** `ws` defaults `maxPayload` to 100 MiB, and
+capping it is the obvious hardening — but a frame over the cap raises *the same* unhandled `'error'`.
+Setting `maxPayload` without first registering `ws.on("error")` converts a memory-pressure problem
+into a **one-frame remote kill switch**. They must land together, and `connection.js` registers the
+listener before any early return so it also covers sockets that are about to be refused.
+
+On top of those three: the request listener is wrapped in `try/catch`, and
+`uncaughtException`/`unhandledRejection` handlers drain snapshots before exiting non-zero — so the
+*next* unknown fault is survivable rather than silently lossy. `process.exitCode` rather than
+`process.exit()`, because `exit()` truncates pending stdout on Railway.
 
 ## Gotchas
 
@@ -344,9 +443,27 @@ Within sync, there are likewise two protocols on the same socket:
 
 Don't merge them: cursor positions must never enter document history.
 
-**Awareness state is untrusted input.** Any peer sets its own `user` field to whatever it
+**Everything a peer writes into a shared type is untrusted input, and there are exactly three
+boundaries that narrow it.** One rule covers all of them: **nothing may read a peer-written shared
+type directly.**
+
+| Shared type | Boundary | Lives in |
+| --- | --- | --- |
+| awareness (`user`) | `readPeers()` | `web/src/lib/collab/awareness.ts` |
+| the `files` map | `readRoomFiles()` | `web/src/lib/collab/roomFiles.ts` |
+| the `execution` map | `readExecutionState()` | `web/src/lib/sandbox/executionState.ts` |
+
+An earlier version of this section named `readPeers` as *the* single point. That was true when it was
+written and stopped being true when the `execution` map arrived: it was the one peer-supplied shared
+type with no boundary at all, and the audit found the consequence was a one-write, room-wide,
+*persistent* denial of service — a peer writing `{status:"success"}` made every **other**
+participant's `OutputPanel` throw during render and unwind to `error.tsx`, and reloading landed
+straight back in the poisoned record. See "The execution map boundary" below. A fourth shared type
+gets a fourth boundary; that is the pattern, not an exception.
+
+**Awareness specifically.** Any peer sets its own `user` field to whatever it
 likes — it never passes through our form, so sanitizing at the input boundary proves
-nothing. `readPeers()` (`web/src/lib/collab/awareness.ts`) is the single point that turns that raw state
+nothing. `readPeers()` turns that raw state
 into values the UI may render: names are re-sanitized (React escapes them, but an unbounded
 or control-character name still wrecks the layout) and a colour failing `HEX_COLOR`
 (`/^#[0-9a-f]{6}$/i`, exported from `web/src/lib/collab/awareness.ts`) falls back to grey instead of
@@ -678,7 +795,11 @@ reaches a tab label, an `<a download>`, a **zip entry key**, and ultimately `dea
 Path separators matter most, since those three interpret a name rather than merely displaying
 it. `server/src/rooms/state.js` repeats the whole check on its own side, because the client code never
 runs for a hostile peer; verified end to end by putting `../../etc/pa sswd<lone surrogate>.py`
-into a real room and finding `....etcpasswd.py` in Postgres. Nothing may read the raw map.
+into a real room and finding `....etcpa sswd.py` in Postgres. Nothing may read the raw map.
+
+(An earlier version of that sentence wrote the result as `....etcpasswd.py`. Off by one character:
+the internal space is **collapsed** by the `\s+` pass, not removed. `VAL-04e` pins the real value.
+The part that matters is unchanged — the separators and the lone surrogate are both gone.)
 
 ### Monaco: one model and one binding per file, one editor forever
 
@@ -1010,7 +1131,18 @@ has not noticed. Flushing only rooms already inside their grace window would sav
 nobody was using and lose every room someone was working in, on every deploy. Shutdown closes
 sockets with **1012 (Service Restart), not 4404** — the client treats 4404 as permanent and
 stops retrying, which is exactly wrong for a redeploy — and `/health` answers 503 while
-draining so Railway stops routing. Since 7.5 the flush also calls `snapshotQueue.releasePacing()`
+draining so Railway stops routing.
+
+**That 503 was unreachable until the audit, and an earlier version of this paragraph stated it as
+fact.** `shutdown()` called `server.close()` *before* `flushAndDestroyAll()` set the flag, so by the
+time `/health` would have answered 503 the listener was already refusing connections and the
+platform saw `ECONNREFUSED` instead. The flag is now set first, by `beginShutdown()`, and
+`server.close()` runs last. One consequence had to land in the same change: because the listener
+now stays open through the flush, **`POST /rooms` must refuse with 503 too** — `flushAndDestroyAll`
+iterates `docs` and never `reservations`, so a room minted mid-drain would never be flushed and its
+creator would meet "this room has closed" after the restart.
+
+Since 7.5 the flush also calls `snapshotQueue.releasePacing()`
 **before** the destroy loop and `snapshotQueue.destroy()` after the deadline race; both are
 explained under "The snapshot write queue", and without the first a queue with no live rooms
 behind it is lost outright.
@@ -1273,11 +1405,43 @@ in-memory sliding window, duplicated once per workspace (`server/src/http/rateLi
 database is a v1 constraint, not an oversight, so there is no shared counter: on Vercel each
 serverless instance keeps its own, and a caller spread across N warm instances gets up to N
 times the nominal limit. It converts an unbounded flood into a bounded one; it is not a
-security boundary. The sync-server side *is* exact — one Railway process, one counter.
+security boundary.
+
+**An earlier version of this paragraph ended "The sync-server side *is* exact — one Railway process,
+one counter." That was false as written,** and the audit demonstrated it: the counter was exact per
+*key*, and `clientKey` read the **left-most** `x-forwarded-for` entry — the one value a caller fully
+controls. Twelve requests with a rotating forged prefix all succeeded. Worse, that same key becomes
+the room's `creatorKey` and then the snapshot queue's pacing key, so a forged header also sidestepped
+`MAX_QUEUED_PER_KEY` and `SNAPSHOT_WRITE_LIMIT`.
+
+Both copies now read **right-most minus (hops − 1)**, via `TRUSTED_PROXY_HOPS` (default 1), which is
+correct whether the platform appends to the header or overwrites it — left-most is correct under
+neither. An over-count clamps to the left-most, i.e. degrades to the old behaviour rather than to a
+wrong bucket. Junk that is not an IP literal never becomes a key, and a port is stripped so one
+client is not many keys. With that in place the two framings are legitimately different, and each
+comment says its own thing rather than sharing one hedge:
+
+- **sync server:** one process, one counter, and a key the caller can no longer choose. `POST /rooms`
+  is a real per-address bound.
+- **frontend:** still approximate, for a reason that has nothing to do with XFF — there is no shared
+  counter across serverless instances.
+
+`DRIFT-15a` runs one deterministic key/time sequence through both limiters and asserts the verdict
+streams are identical arrays, which is the only mechanism that catches a one-sided edit.
 
 **This is a different thing from `MAX_RESERVATIONS`.** That is a global ceiling on unclaimed
 rooms with no notion of who created them; this bounds a single caller. Both are needed: the
 limiter stops one script exhausting the ceiling, the ceiling stops many callers doing it.
+`MAX_RESERVATIONS = 1000` is a **deliberate non-env constant** — it bounds memory, not a caller, and
+`LC-05` is the only test that can reach it (it fills the ceiling, so it lives in its own file:
+reservations sit in module state behind a 5-minute unref'd timer with nothing exported to clear
+them, and a filled ceiling makes `reserveRoom` return null, which would silently make every later
+test in the same file assert against a room id of `null`).
+
+**`POST /rooms`' own limit is env-overridable since the audit** — `ROOM_CREATE_LIMIT` /
+`ROOM_CREATE_WINDOW_MS`, default unchanged at 10 per 60s. Not a product requirement: an end-to-end
+suite legitimately creates ~20 rooms in two minutes, and the symptom of tripping the default is a
+room-creation timeout deep inside an unrelated spec, indistinguishable from a product bug.
 
 ### The snapshot write queue (task 7.5)
 
@@ -1611,7 +1775,10 @@ that value as a *filename* and will try to open a file called `system`.
 | `MEMBER_MIN_CONNECTED_MS` | `server/.env` | How long a signed-in participant must be connected before they can earn a `dead_room_members` row. Defaults to `60000`. Only half the threshold — see "Who a dead room belongs to". **The frontend hardcodes this default too** (`web/src/lib/data/persistence.ts`, for §10.8's chip), and cannot see this variable — so overriding it here silently desynchronises the in-room estimate from the rule it estimates. |
 | `SNAPSHOT_FLUSH_MS` | `server/.env` | Ceiling on how long a shutdown waits for snapshot writes. Defaults to `20000`. A ceiling, not a delay — but since 7.5 it bounds a *drain*, not one batch: N queued rooms take `ceil(N / POOL_MAX) × per-write`, measured ~6.6s for 40 rooms against a warm Neon. An empty queue still shuts down in about half a second. |
 | `SNAPSHOT_WRITE_LIMIT`, `SNAPSHOT_WRITE_WINDOW_MS` | `server/.env` | The snapshot write pacing, keyed on the room creator's IP. Default `60` per `60000`ms — deliberately *not* `POST /rooms`' 10; see "The snapshot write queue". Over-limit writes wait rather than being dropped. Lower both to exercise the deferral path in seconds. |
-| `DB_CONNECT_TIMEOUT_MS` | `server/.env` | Per-attempt Postgres connect timeout. Defaults to `10000`. Must stay **under** `SNAPSHOT_FLUSH_MS` and **over** a Neon cold start — see "Dead-room snapshots". |
+| `DB_CONNECT_TIMEOUT_MS` | `server/.env` | Per-attempt Postgres connect timeout. Defaults to `10000`. Must stay **under** `SNAPSHOT_FLUSH_MS` and **over** a Neon cold start — see "Dead-room snapshots". Now checked at boot rather than merely documented: a warning fires if it is `>=` the flush deadline. |
+| `TRUSTED_PROXY_HOPS` | `web/.env.local` **and** `server/.env` | How many proxy hops in front of the process to trust in `x-forwarded-for`. Default `1`, correct for both Railway and Vercel. The rate-limit key is the **right-most minus (hops − 1)** entry. `0` ignores the header entirely (direct connections only); raise it only if a CDN sits in front. An over-count clamps to the left-most, i.e. degrades to the old forgeable behaviour rather than to a wrong bucket. **Under-counting is the failure to watch**: everyone behind a CDN collapses into one bucket. |
+| `CLERK_AUTHORIZED_PARTIES` | `server/.env` | Optional, comma-separated app origins the session token's `azp` claim must match. **Unset means unchecked, on purpose.** `@clerk/backend` fails a token whose `azp` is *absent* just as hard as one that mismatches, so a wrong value fails every token with the same invisible symptom as a wrong secret key: rooms work, snapshots never appear. Vercel previews have per-deployment hostnames and must leave this unset. |
+| `ROOM_CREATE_LIMIT`, `ROOM_CREATE_WINDOW_MS` | `server/.env` | `POST /rooms` rate limit. Default `10` per `60000`ms, unchanged from before it was made configurable. **Raise it (300) to run the e2e suite** — see "Testing". Floor of 1 on both: a limit of 0 makes `recent.length >= 0` always true and no room could ever be created. |
 
 ## Production execution path
 
