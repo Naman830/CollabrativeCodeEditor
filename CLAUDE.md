@@ -52,9 +52,11 @@ files are written **once** to a `dead_rooms` table in **PostgreSQL** — but onl
 participant was signed in. Fully-guest rooms still save nothing at all. The snapshot is
 read-only forever: a `/profile` page lists a signed-in user's past rooms and lets them view and
 copy the code, never run or rejoin it. Sync, awareness, room lifetime, and Piston execution are
-all **unchanged** from v1. Three extras ride along (section 10): multi-file rooms with the
-language chosen once at creation and a starred entry file, an ephemeral in-room chat over the
-existing WebSocket, and optional room passwords held only in the in-memory room object.
+all **unchanged** from v1. Section 10's extras ride along: **multi-file rooms with the language
+chosen once at creation and a starred entry file (built — see "Multi-file rooms")**, stdin,
+keyboard shortcuts, snapshot deletion and the leaving warning (all built), plus an ephemeral
+in-room chat over the existing WebSocket, optional room passwords held only in the in-memory room
+object, and room names (all still to come).
 
 ## Repo layout
 
@@ -70,8 +72,9 @@ Key files:
 - `collab-code-editor/app/lib/clerkIdentity.ts` — the one boundary between Clerk and the app; nothing else imports `useUser` or `useAuth`. Also exports `useClerkToken()`, the sanctioned way an account ID reaches the sync server
 - `collab-code-editor/app/lib/monacoLoader.ts` — points `@monaco-editor/react` at the npm package so no global AMD loader is installed
 - `collab-code-editor/app/components/CodeEditor.tsx` — the room screen. **Composition only**: it holds `language`, `code` and the Monaco instance, and hands everything else to the hooks and panels below
-- `collab-code-editor/app/hooks/useCollabRoom.ts` — the whole client-side Yjs stack (doc, provider, awareness, Monaco binding, the shared `execution` map and the stale-run watchdog), plus the peers/toasts it mirrors into React
-- `collab-code-editor/app/hooks/useCodeRunner.ts` — the Run button: the POST to `/api/execute` and the shared-map write, including the `runId` staleness check
+- `collab-code-editor/app/hooks/useCollabRoom.ts` — the whole client-side Yjs stack (doc, provider, awareness, one Monaco model + binding per file, the shared `execution` map and the stale-run watchdog), plus the peers/files/toasts it mirrors into React and the four file actions
+- `collab-code-editor/app/lib/roomFiles.ts` — the only description of a multi-file room's shared shape: the map/text names, the fixed `"main"` entry id, `MAX_FILES`, and `readRoomFiles()`, the boundary that makes a peer-supplied filename safe to render, download and store
+- `collab-code-editor/app/hooks/useCodeRunner.ts` — the Run button: reads the **entry file** out of the doc at click time, then the POST to `/api/execute` and the shared-map write, including the `runId` staleness check
 - `collab-code-editor/app/hooks/useEditorShortcuts.ts` — Ctrl/Cmd+Enter and Ctrl/Cmd+S, bound to the Monaco instance and never to `window`
 - `collab-code-editor/app/hooks/useRoomPersistence.ts` — the sole-peer `beforeunload` and the client-side estimate of whether this room reaches your profile
 - `collab-code-editor/app/lib/persistence.ts` — the estimate's constant, states and wording, and the long note on why it can only ever be an estimate
@@ -83,19 +86,20 @@ Key files:
 - `collab-code-editor/app/hooks/useCopyToClipboard.ts` — copy + the transient "copied" flag, with the non-secure-context fallback
 - `collab-code-editor/app/lib/executionState.ts` — the `ExecutionState` union, the map/key names, `STALE_RUN_MS`, and `isFailedRun()`; imported by the hooks *and* the output panel
 - `collab-code-editor/app/lib/cursorStyles.ts` — the remote-cursor `<style>` block; the only thing that writes a peer colour into CSS
-- `collab-code-editor/app/lib/download.ts` — Save, in full: a Blob and a throwaway `<a download>`, nothing else. Shared with `/profile`'s Download button since 7.4
+- `collab-code-editor/app/lib/download.ts` — Save, in full: a Blob and a throwaway `<a download>`, nothing else. Shared with `/profile`'s Download button since 7.4, and since §10.1 also `downloadZipFile`, which loads JSZip behind a dynamic import
 - `collab-code-editor/app/components/RoomChrome.tsx` — the room's single chrome bar (room id + sync dot, presence, theme, Save, Run). Replaced `EditorToolbar.tsx` and `UserBar.tsx`, which were two full-width rows
-- `collab-code-editor/app/components/EditorPane.tsx` — Monaco, and only Monaco. `memo`'d, and the file that documents why it must never be keyed, conditionally rendered, or moved between parents
-- `collab-code-editor/app/components/EditorTabBar.tsx` / `OutputPanel.tsx` / `PanelStrip.tsx` / `icons.tsx` — the chrome around Monaco; presentational, no Yjs. `PanelStrip` is the shared tab strip and exports `PANEL_STRIP_HEIGHT`
+- `collab-code-editor/app/components/EditorPane.tsx` — Monaco, and only Monaco. `memo`'d, and the file that documents why it must never be keyed, conditionally rendered, or moved between parents — and why its `path` prop is the one sanctioned way to change file
+- `collab-code-editor/app/components/EditorTabBar.tsx` / `FileTabMenu.tsx` — the file tabs (entry star, `+`, inline rename) and the right-click/kebab menu behind them. Presentational: every file they render has already been through `readRoomFiles`
+- `collab-code-editor/app/components/OutputPanel.tsx` / `PanelStrip.tsx` / `icons.tsx` — the rest of the chrome around Monaco; presentational, no Yjs. `PanelStrip` is the shared tab strip and exports `PANEL_STRIP_HEIGHT`
 - `collab-code-editor/app/components/ResizeHandle.tsx` — the drag divider; wraps `react-resizable-panels`' `Separator`
 - `collab-code-editor/app/hooks/useRoomLayout.ts` — split orientation, persisted sizes, output-collapsed state, and the narrow-screen override
 - `collab-code-editor/app/components/JoinRoomPrompt.tsx` — the room's name prompt, and the only room-side reader of Clerk
 - `collab-code-editor/app/room/[roomId]/page.tsx` — dynamic room route; `roomId` is the Yjs document name
 - `collab-code-editor/app/components/RoomGate.tsx` — decides whether a room may be entered at all, *before* the editor (and therefore the socket) exists
-- `collab-code-editor/app/lib/rooms.ts` — the client's view of room lifetime: `WS_URL`, the derived HTTP base, `createRoom()`, `checkRoom()`
+- `collab-code-editor/app/lib/rooms.ts` — the client's view of room lifetime: `WS_URL`, the derived HTTP base, `createRoom(language)`, `checkRoom()` (which since §10.1 also returns the room's language)
 - `collab-code-editor/app/lib/user.ts` — the entire user model: palette, name sanitizing, and identity as an external store
 - `collab-code-editor/app/lib/awareness.ts` — `readPeers()`, the one boundary that turns hostile remote awareness state into values the UI may render
-- `collab-code-editor/app/lib/languages.ts` — the one supported-language enumeration: dropdown labels, file extensions, and the Save filename; shared by the editor and the execute route
+- `collab-code-editor/app/lib/languages.ts` — the one supported-language enumeration: labels, file extensions, the Save filename, per-language starter code, and the new-file name suggestion; shared by the landing page's room-creation select, the editor and the execute route
 - `collab-code-editor/app/components/PresenceStack.tsx` — presence as an overlapping avatar stack; renders only what `readPeers` returned
 - `collab-code-editor/app/components/IdentityDialog.tsx` — the name/colour prompt, shared by the create and join flows
 - `collab-code-editor/app/globals.css` — the whole design system: the light and dark token values, and the `@theme inline` block that turns them into Tailwind utilities
@@ -113,7 +117,7 @@ Key files:
 - `server/yjsConnection.js` — the only place that speaks the Yjs wire protocol; also the gate that refuses connections to rooms that don't exist, and where a `?token=` becomes a member session
 - `server/rooms.js` — the one authority on whether a room exists, and the only thing that ever deletes one. `destroyRoom()` is the single destroy site and therefore the one place a snapshot is *taken* — since 7.5 it hands that snapshot to `snapshotQueue.js` rather than writing it
 - `server/snapshotQueue.js` — the one place that decides *when* a snapshot is written: the concurrency cap, the per-creator-IP pacing, and the shutdown drain. Nothing else may call `db.saveDeadRoom()`
-- `server/roomState.js` — what a room *was*, as opposed to whether it exists: `created_at`, the verified-member set with its connected-time and did-edit accounting, the accumulated participant list, and `buildSnapshot()`
+- `server/roomState.js` — what a room *was*, as opposed to whether it exists: `created_at`, the room's language, the verified-member set with its connected-time and did-edit accounting, the accumulated participant list, and `buildSnapshot()` (which since §10.1 walks the whole file map inside one shared byte budget)
 - `server/clerkAuth.js` — the one place a Clerk token becomes a user ID. Never refuses a socket
 - `collab-code-editor/prisma/schema.prisma` — the authority on the `dead_rooms` table's shape, and the only place it is described declaratively
 - `collab-code-editor/prisma/migrations/` — the applied SQL history, committed. Two migrations: `20260729084725_init_dead_rooms` and `20260729122125_dead_room_members` (which drops `owner_user_id` and its index), replaying from an empty database
@@ -123,7 +127,7 @@ Key files:
 - `collab-code-editor/app/profile/page.tsx` / `[deadRoomId]/page.tsx` — the listing and one read-only snapshot; both async Server Components that gate on `await auth()`
 - `collab-code-editor/app/profile/error.tsx` / `[deadRoomId]/not-found.tsx` — "the database is unreachable" and "that snapshot isn't yours", kept distinct from each other and from an empty profile
 - `collab-code-editor/app/components/ProfileShell.tsx` — the profile chrome: page frame, the shared panel, and the signed-out gate. Carries no database import, because `error.tsx` is a Client Component and imports from it
-- `collab-code-editor/app/components/SnapshotFile.tsx` / `SnapshotActions.tsx` / `DeadRoomCard.tsx` — the `<pre>` code view, its Copy/Download buttons (the only client-side code on `/profile`), and one listing row
+- `collab-code-editor/app/components/SnapshotFile.tsx` / `SnapshotActions.tsx` / `SnapshotDownloadAll.tsx` / `DeadRoomCard.tsx` — the `<pre>` code view, its Copy/Download buttons, the multi-file `project.zip` button (these three are the only client-side code on `/profile`), and one listing row
 - `server/db.js` — the sync server's whole database surface: one `pg` pool and one INSERT, no ORM
 
 ## Running locally
@@ -176,16 +180,21 @@ Like `PISTON_OUTPUT_MAX_SIZE`, those vars live only in compose, so a Piston star
 other way reverts to defaults — and the defaults are the *tighter* ones (3s run), which
 means every run fails outright rather than silently loosening. See "Execution limits" below.
 
-**Seeding the document.** Starter code is inserted into the `Y.Text` only after the provider
-fires `sync`. Seeding before sync would insert the boilerplate into a still-empty local doc,
+**Seeding the document.** The starter file — its name and `starterCode(language)` from
+`lib/languages.ts` — is created only after the provider fires `sync`, and only if the `files` map
+is still empty. Seeding before sync would insert the boilerplate into a still-empty local doc,
 and the CRDT would merge it into the existing document for everyone else in the room. Never
 move the seed earlier, and never give Monaco a `defaultValue` — `MonacoBinding` resets the
-model to the `Y.Text` contents when it attaches, so it would be discarded anyway.
+model to the `Y.Text` contents when it attaches, so it would be discarded anyway. (Since §10.1
+the seeded file's id is the fixed string `"main"`; see "Multi-file rooms" for why a random one
+would let two peers seed two identical tabs.)
 
-**Yjs lifecycle is effect-scoped.** The `Y.Doc`, provider, awareness handler, and binding are
-all created and destroyed inside one effect keyed on `roomId` *and the local user*, in
-`hooks/useCollabRoom.ts`. **That is why it is one hook and not several**: the pieces share a
-single teardown, so splitting the doc, the provider and the binding into separate hooks would
+**Yjs lifecycle is effect-scoped.** The `Y.Doc`, provider, awareness handler, and the per-file
+bindings are all created and destroyed inside `hooks/useCollabRoom.ts`, in two effects keyed on
+`roomId`, the editor *and the local user*. **That is why it is one hook and not several**: the
+pieces share a single teardown — the binding effect is declared first precisely so its cleanup
+runs before the doc dies — so splitting the doc, the provider and the bindings into separate
+hooks would
 hand each its own cleanup order and reintroduce the destroy-a-doc-nothing-recreates bug. Do not
 hoist the `Y.Doc` into component state — a cleanup that destroys a doc nothing recreates
 breaks both room switching and React StrictMode's dev remount. The effect deliberately
@@ -749,9 +758,11 @@ socket to the sync server is opened when a dead room ID is visited.
 Clicking Run broadcasts the result to **everyone in the room**, not just the clicker. This
 rides entirely on Yjs, not a new server message: `hooks/useCollabRoom.ts` puts a second shared type,
 `yDoc.getMap<ExecutionState>("execution")`, on the *same* `Y.Doc` that already holds the code
-(`yDoc.getText("monaco")`). y-websocket's sync protocol doesn't distinguish between shared
+(one `Y.Text` per file since §10.1 — `yDoc.getText("file:<id>")`, previously the single
+`"monaco"`). y-websocket's sync protocol doesn't distinguish between shared
 types — it merges the whole document — so this new map syncs to every peer, including late
-joiners, for free. `server/yjsConnection.js` needed zero changes.
+joiners, for free. `server/yjsConnection.js` needed zero changes, and §10.1's file map and entry
+pointer rode in on exactly the same property.
 
 **One key, whole-record replacement.** The map has a single key, `"state"`, whose value is
 the entire `ExecutionState` object — never separate sub-fields. That way a `.set("state", …)`
@@ -789,11 +800,13 @@ the fetch abort to 15s and a legitimate 10s-compile-plus-5s-run reports "Executi
 out"; set the watchdog below the fetch abort and a merely-slow run is reported room-wide as
 a lost connection. Change one and re-check all three.
 
-**The output panel shows the run's own `language`, never the viewer's local dropdown
-selection.** The language selector is a per-user editing preference — two peers can have
-different languages selected locally while watching the same run — so the caption
-("Run by Alice A. · Python") always reflects what actually executed, sourced from the shared
-record, not from `language` state.
+**The output panel shows the run's own `language` and `filename`, never anything local to the
+viewer.** The caption ("Run by Alice A. · main.py · Python") is sourced entirely from the shared
+record. `filename` is the half that still bites since §10.1: Run executes the room's **entry**
+file, which need not be the tab the person watching has open, so without it the output belongs to
+no visible file. (`language` was the same problem for a different reason before §10.1 — it was a
+per-user dropdown, so two peers could watch one run with different languages selected. It is now
+a property of the room, but the rule is unchanged: read the record, not local state.)
 
 **The run's `stdin` is on the shared record; the box you type into is not (§10.4).**
 `ExecutionState` carries `stdin`, so every peer can see what produced the output they are
@@ -869,7 +882,7 @@ snapshot write queue" under "Rate limiting and payload size".
 ownership transfer. The two halves do different jobs and neither is redundant: the timer stops
 a drive-by, and **the edit check is the only thing that stops a lurker**, since anyone who
 leaves a tab open passes 60s. `tasks.md` §6.1 originally said "connected while the document was
-non-empty" instead — that is unimplementable here, because `useCollabRoom` seeds `DEFAULT_CODE`
+non-empty" instead — that is unimplementable here, because `useCollabRoom` seeds the starter file
 on `sync`, so every room is non-empty milliseconds after the *first* client arrives and the
 clause filters nothing.
 
@@ -1043,7 +1056,7 @@ turns a shared `/profile` link into a silent bounce.
 
 **The code view is a `<pre>`, and Monaco must not come back.** An editor is the one widget on
 this site that means "you can type here", which is the opposite of what §7.4's last bullet
-asks for; there is nothing to highlight while `language` is null; and `lib/monacoLoader.ts`
+asks for; and `lib/monacoLoader.ts`
 imports `monaco-editor` at module scope, which is why that import must stay out of this
 route's graph. **An earlier version of this paragraph said the regression test was `/profile`
 answering 200 while `/room/<id>` answered 500. That contrast no longer exists** — the UI
@@ -1061,12 +1074,25 @@ is capped at 100 rows (`take: LIST_LIMIT + 1`, so the cap can be *detected*) and
 the cap bites.
 
 **What the page has to render around, and these are real values, not placeholders.** There is
-**no room name** — `dead_rooms` has no name column, so the original `room_id` is the title.
-`language` is null on every row and shows as "not recorded"; `is_private` is `false` on every
-row and is not rendered at all. Both become meaningful only when §10.1 and §10.3 land.
-`participants` is written but deliberately **unread**: nothing on `/profile` renders a peer
-name or colour today, and anything that starts to must go through a sanitizing boundary like
-`readSnapshotFiles`, never straight from the column.
+**no room name** — `dead_rooms` has no name column, so the original `room_id` is the title, until
+§10.6. `is_private` is `false` on every row and is not rendered at all rather than shown as a
+meaningless "public"; that becomes meaningful only when §10.3 lands. `participants` is written but
+deliberately **unread**: nothing on `/profile` renders a peer name or colour today, and anything
+that starts to must go through a sanitizing boundary like `readSnapshotFiles`, never straight
+from the column.
+
+**An earlier version of that paragraph also said `language` is null on every row and shows as
+"not recorded". §10.1 made that false**: the language is now chosen at room creation and every
+new row carries it, so the page renders a real one and shows a file count beside it. "Not
+recorded" survives only for rows written before §10.1, which is the honest answer for them — no
+migration can invent a language for a room whose peers each had their own.
+
+**The multi-file snapshot needed no change to this page, and that was the point of 7.2's
+schema.** `[deadRoomId]/page.tsx` already mapped over `room.files`, and `readSnapshotFiles`
+already capped at 50 entries and sanitized every filename — so §10.1's rooms render by running
+the same loop more than once. All that was added is a "Download all (`project.zip`)" button,
+shown only when there is genuinely more than one file, since for one file it would wrap what the
+existing per-file Download already hands over uncompressed.
 
 **Dates are relative on purpose.** "Closed 3 hours ago" and "lasted 12 minutes" are pure
 deltas, so the server and the browser agree; a locale- or timezone-formatted absolute date
@@ -1127,13 +1153,18 @@ never about the room.** Do not "improve" it into a promise without adding a real
 channel — and note that writing user IDs into the shared doc to build one would leak them to
 every peer, guests included.
 
-**The local did-edit test filters on `transaction.origin === binding`, and that filter is
+**The local did-edit test filters on `origin instanceof MonacoBinding`, and that filter is
 load-bearing.** It is the client mirror of the server taking the WebSocket as the transaction
-origin. Without it the `DEFAULT_CODE` seed — a local transaction with a null origin — marks
+origin. Without it the starter-file seed — a local transaction with a null origin — marks
 every joiner as having edited within milliseconds of arriving, which is exactly the lurker §6.1
 exists to exclude. Note this makes the client **stricter** than the server, which counts the
 seed. That asymmetry is deliberate: the error must never fall on the side of claiming "saving"
 earlier than the server would.
+
+`instanceof`, not identity against one binding: since §10.1 a room has one binding per file and
+typing in any of them is typing. The four file actions (create/rename/delete/set-entry) latch
+`didEdit` explicitly at their call sites, because they are local transactions with a null origin
+— indistinguishable from the seed to this filter, and different from it only in intent.
 
 **`peers.length === 0` is not "alone".** It is the pre-connect and torn-down state, before this
 client has published its own awareness — the same distinction `PresenceStack` draws with its
@@ -1144,6 +1175,8 @@ being you. Getting this wrong registers a `beforeunload` on every room the momen
 `rateLimit.js`/`rateLimit.ts`, `CLOSE_ROOM_NOT_FOUND`, `roomState.js`'s `sanitizeName`/
 `HEX_COLOR`, and `TRUNCATION_MARKER`. It is worse than those in one way: the server's value is
 env-overridable, so the two can legitimately disagree at runtime with nothing to detect it.
+(§10.1 added a **sixth**: `ROOM_LANGUAGES` plus the shared-document names and filename rules in
+`server/roomState.js`, mirroring `app/lib/languages.ts` and `app/lib/roomFiles.ts`.)
 
 **The countdown ticks only while it is on screen** and stops the moment the threshold is met —
 ~60 ticks per session, never a permanent per-second re-render of the room. It is primed with a
@@ -1265,8 +1298,10 @@ Ctrl/Cmd+Enter runs, Ctrl/Cmd+S saves. Both are registered on the Monaco instanc
 `hooks/useEditorShortcuts.ts`.
 
 **They must never become a `window` keydown listener.** The room has other focusable controls,
-so a global handler would fire Run while someone is typing in the language select, in the stdin
-box, or — once §10.2 lands — in the chat box.
+so a global handler would fire Run while someone is typing in the stdin box, in §10.1's inline
+new-file/rename field, or — once §10.2 lands — in the chat box. (That list used to start with the
+language select, which §10.1 removed from the room; the filename field replaced it as the reason,
+and that field additionally calls `stopPropagation` on its own keydowns.)
 
 **Registered once, handlers read through refs.** `handleRun`/`handleSave` close over `code`, so
 they are new functions on every keystroke; an effect depending on them directly would tear down
@@ -1296,35 +1331,38 @@ was visibly off.
 ## Saving (the Save button)
 
 Since 7.4 `lib/download.ts` has a second caller — `/profile`'s Download button, which saves a
-dead room's `main.txt`. That does not change anything below: it is still a Blob and an `<a
+dead room's files. That does not change anything below: it is still a Blob and an `<a
 download>`, still nothing stored, and it is neither a Run nor a Rejoin, which is what §8
 forbids on a dead room.
 
 Save is the mirror image of Run: **entirely local**, and deliberately so. `lib/download.ts`
-builds a `Blob`
-from the editor's current text, clicks a throwaway `<a download>`, and revokes the object URL
-— no Yjs write, no request to the server, nothing stored anywhere (v1's core principle:
-"saving a file means downloading it to the user's device"). v2 keeps Save local; the only
-thing that ever reaches Postgres is the automatic dead-room snapshot, never a Save click. Note
-section 10.1 of `tasks.md` changes *what* Save produces once multi-file lands — one file
-downloads directly as today, 2+ files zip into `project.zip` via JSZip — but not where it
-goes.
+builds a `Blob`, clicks a throwaway `<a download>`, and revokes the object URL — no Yjs write,
+no request to the server, nothing stored anywhere (v1's core principle: "saving a file means
+downloading it to the user's device"). v2 keeps Save local; the only thing that ever reaches
+Postgres is the automatic dead-room snapshot, never a Save click.
 
-It must stay off the shared `Y.Doc`. The language selector is a per-user editing preference,
-so two peers looking at the same text can be on different languages, and each has to get
-their own extension — verified with two tabs: one on C++ downloaded `main.cpp` while the
-other downloaded `Main.java`, same contents. Putting the filename or a "last saved" flag into
-shared state would force one peer's choice onto everyone.
+**§10.1 gave Save two shapes, and neither changes where it goes.** One file downloads directly;
+2+ files zip into `project.zip` through `downloadZipFile`, which loads JSZip behind a **dynamic**
+`import("jszip")` so ~100 KB of zip library never enters the room route's first chunk. That makes
+`downloadZipFile` async where `downloadTextFile` is not — harmless, because a programmatic
+`<a download>` click needs no user activation.
 
-**The selector is the file tab, not a toolbar dropdown.** Since the UI redesign it lives in
-`EditorTabBar.tsx` as a real `<select>` layered invisibly (`opacity-0`) over the tab, with the
-visible `main.py` / `Main.java` label `aria-hidden` beneath it. The filename is derived from
-the language by `downloadFileName()`, so making the tab the control that changes it keeps one
-idea in one place — and the invisible-native-select trick keeps the mobile picker, the
-keyboard contract and the screen-reader semantics for free. Match it in tests on
-`select[aria-label="Language"]`; there is no `#language-select` id any more. This is still a
-per-user preference and still nowhere near the shared doc — §10.1 moving it to room creation
-is unaffected.
+**Save reads the shared doc, not Monaco.** A file that has never been opened in this tab has no
+Monaco model, so `CodeEditor`'s `code` mirror only ever holds the *active* file; `handleSave`
+walks `room.files` and calls `readFile(id)`, which reads each `Y.Text` directly. This is also why
+Save's disabled state is now "a single file that is empty" rather than "the document is empty":
+with two files there is always an archive worth producing, and `handleSave` still refuses an empty
+single file so the Ctrl+S shortcut inherits exactly the button's guard.
+
+**An earlier version of this section said the filename must stay off the shared `Y.Doc` because
+the language selector is a per-user editing preference, and that the selector *is* the file tab —
+a `<select>` layered invisibly over it, matched in tests on `select[aria-label="Language"]`.
+§10.1 made all of that false.** The language is now a property of the room, chosen on the
+creation screen and fixed for its lifetime, so every peer downloads the same filenames; the tab
+strip holds real file tabs and there is no language `<select>` in the room at all. Tests that
+matched that selector must now use the landing page's `#room-language` instead. What survives is
+the *reason* the old design existed — one idea in one place: the filename is still derived from
+the language, only now at file creation rather than on every render.
 
 **`app/lib/languages.ts` is the only place languages are enumerated.** It holds the dropdown
 labels, the Monaco/Piston language ids, and the file extensions; the editor components and
@@ -1425,8 +1463,11 @@ for real and reading both tables back, which is why that acceptance check exists
 `rateLimit.js`/`rateLimit.ts` and `CLOSE_ROOM_NOT_FOUND`. It carries its own copies of
 `sanitizeName` (from `app/lib/user.ts`) and `HEX_COLOR` (from `app/lib/awareness.ts`), because
 `participants` is peer-supplied data that will be rendered on `/profile` and the server has no
-way to import either. Keep the values in step by hand; the alternative — trusting awareness —
-is a hole, not a simplification.
+way to import either. Since §10.1 it also carries `ROOM_LANGUAGES` (the `value` column of
+`LANGUAGES` in `app/lib/languages.ts`), the shared-document names, and a second copy of the
+filename sanitizer — all for the same reason, since `files[].filename` is peer-supplied and lands
+on `/profile` too. Keep the values in step by hand; the alternative — trusting awareness, or
+trusting a filename a client put in a `Y.Map` — is a hole, not a simplification.
 
 Two things there are load-bearing. `pool.on("error", …)` is mandatory, not defensive: an idle
 connection dropped by Neon's pooler emits an `error` event on the pool, and unhandled that is
@@ -1480,12 +1521,13 @@ that value as a *filename* and will try to open a file called `system`.
   creator-owns with `dead_room_members`. That table's composite primary key
   `(user_id, dead_room_id)` — `user_id` leading, so one user's rows are contiguous — is now the
   index the profile listing uses, and the listing is a join.
-- **`language` is nullable**, where §6 writes plain `text`. This is forced, not stylistic: the
-  language dropdown is a per-user editing preference kept deliberately off the shared `Y.Doc`
-  (see "Saving"), so **the server has no language to record** until §10.1 moves the selector to
-  room creation. It is written as `null` today, and the snapshot's single file is named
-  `main.txt` for the same reason — there is no room-wide language from which to derive an
-  extension.
+- **`language` is nullable**, where §6 writes plain `text`. That was forced rather than
+  stylistic: the language dropdown *was* a per-user editing preference kept deliberately off the
+  shared `Y.Doc`, so the server had no language to record, and `NOT NULL` would have made 7.3
+  unbuildable. **§10.1 has since moved the selector to room creation and every new row carries a
+  real language** — the snapshot's files carry their real names too, so the old `main.txt`
+  placeholder is gone. The column stays nullable for the rows written before it: no migration can
+  invent a language for a room whose peers each had their own.
 
 ## Environment variables
 
@@ -1572,22 +1614,20 @@ image is **amd64-only** (single-arch manifest) — ARM free tiers cannot host it
 (Postgres)", "Dead-room snapshots", "The profile page" and "The snapshot write queue" above,
 which replace older notes here claiming none of them existed.
 
-**Half of section 10 is done as well.** It has eight subsections rather than the original three,
-and **10.4 (stdin for runs), 10.5 (keyboard shortcuts), 10.7 (deleting a snapshot from
-`/profile`) and 10.8 (the last-person-leaving warning) are all built** — see "Shared code
-execution", "Keyboard shortcuts", "The profile page" and "The leaving warning and the persistence
-estimate" above. An older version of this paragraph said none of section 10 was built; that is no
-longer true.
+**Five of section 10's eight subsections are done** (it has eight rather than the original
+three): **10.1 (multi-file rooms), 10.4 (stdin for runs), 10.5 (keyboard shortcuts), 10.7
+(deleting a snapshot from `/profile`) and 10.8 (the last-person-leaving warning)** — see
+"Multi-file rooms", "Shared code execution", "Keyboard shortcuts", "The profile page" and "The
+leaving warning and the persistence estimate" above. Two older versions of this paragraph said
+first that none of section 10 was built and then that half of it was; both are out of date.
 
-**What remains unticked: 10.1 multi-file, 10.2 in-room chat, 10.3 room passwords and 10.6 room
-names.** So there is still no multi-file room, no chat, no password, and `/profile` still titles
-every card with the raw `room_id`. Two of those carry consequences recorded elsewhere in this
-file: **10.1 is what finally gives `dead_rooms.language` a value and `files` more than one
-entry** (until then `language` is null on every row and the single file is always `main.txt`),
-and **10.6 is the one that needs a third migration**. Section 10 ends with a suggested order,
-which is by payoff rather than dependency. Redis pub/sub for horizontal scaling is
-*not* a v2 item at all — section 8 puts it explicitly out of scope, so it stays deferred past
-v2.
+**What remains unticked: 10.2 in-room chat, 10.3 room passwords and 10.6 room names.** So there
+is still no chat, no password, and `/profile` still titles every card with the raw `room_id`.
+**10.6 is now the only remaining item that needs a migration** — 10.1 needed none, because 7.2
+had already shaped `files` as a `jsonb` array and `language` as nullable for exactly this.
+Section 10 ends with a suggested order, which is by payoff rather than dependency. Redis pub/sub
+for horizontal scaling is *not* a v2 item at all — section 8 puts it explicitly out of scope, so
+it stays deferred past v2.
 
 The whole v2 loop now closes: `server/rooms.js`'s `destroyRoom()` writes the snapshot and
 `/profile` reads it back, so a signed-in user's work really does outlive the tab. An older note
@@ -1618,7 +1658,9 @@ this.
 
 The two facts 7.4 was warned about both held, and are now documented under "The profile page":
 the listing is a join from `dead_room_members`, not a column filter; and `language` being null
-with every file called `main.txt` is a permanent state until §10.1, not a backfill.
+with every file called `main.txt` was correctly treated as a state to live with rather than a
+backfill — **§10.1 has since ended it for new rows**, and the old rows still read "not recorded",
+which is what "not a backfill" meant.
 
 **Documents are in-memory only — room state does not survive a WebSocket server restart**, and
 since a restart wipes the room registry too, every client still in a room gets its reconnect
