@@ -121,7 +121,7 @@ describe("DI-05 the queue defers, and never drops for pacing reasons", () => {
   afterEach(() => vi.useRealTimers());
 
   it("DI-05a over-limit snapshots wait their turn rather than being refused", async () => {
-    const { queue, settleAll, pending } = loadQueue({
+    const { queue, settleAll } = loadQueue({
       poolMax: 3,
       env: { SNAPSHOT_WRITE_LIMIT: "2", SNAPSHOT_WRITE_WINDOW_MS: "1000" },
     });

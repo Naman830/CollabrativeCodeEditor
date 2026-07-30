@@ -13,13 +13,26 @@ const {
   isShuttingDown,
 } = require("./rooms/lifecycle");
 const { createRateLimiter, clientKey } = require("./http/rateLimit");
+const { intFromEnv } = require("./env");
 const { getRoomLanguage, normalizeLanguage } = require("./rooms/state");
 const db = require("./storage/db");
 
 const PORT = process.env.PORT || 8080;
 
 // 10 rooms/minute/IP. Only POST /rooms is limited; the other routes allocate nothing.
-const createRoomLimiter = createRateLimiter({ limit: 10, windowMs: 60_000 });
+// Env-overridable like the snapshot pacing, because an end-to-end suite legitimately creates far
+// more rooms per minute than a person does, and a 429 mid-suite looks like a product bug.
+// INVARIANT: floor of 1 — a limit of 0 makes `recent.length >= 0` always true and no room could
+// ever be created.
+const ROOM_LIMIT = intFromEnv(process.env.ROOM_CREATE_LIMIT, 10, {
+  min: 1,
+  name: "ROOM_CREATE_LIMIT",
+});
+const ROOM_LIMIT_WINDOW_MS = intFromEnv(process.env.ROOM_CREATE_WINDOW_MS, 60_000, {
+  min: 1,
+  name: "ROOM_CREATE_WINDOW_MS",
+});
+const createRoomLimiter = createRateLimiter({ limit: ROOM_LIMIT, windowMs: ROOM_LIMIT_WINDOW_MS });
 
 // INVARIANT: ws defaults to 100 MiB per message. Must stay well above the largest legitimate
 // single update (one big paste, or a late joiner's sync-step-2 diff) — a client whose frame

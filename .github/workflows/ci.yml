@@ -1,0 +1,103 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Two workspaces, two jobs. There is deliberately no root package.json (CLAUDE.md treats its
+# absence as load-bearing), so the gate is a matrix rather than one `npm test`.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  web:
+    name: web — lint, types, unit + drift
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - run: npm ci
+
+      # INVARIANT: web/generated/ is gitignored, so the Prisma client must be generated before
+      # anything that imports lib/data/*. `npm ci` runs postinstall, but Vercel has been observed
+      # skipping it on a cached node_modules, so this stays an explicit step.
+      - name: Generate Prisma client
+        run: npx prisma generate
+
+      - run: npm run lint
+      - run: npm run typecheck
+
+      # Hermetic by construction: tests/setup/no-ambient-secrets.ts deletes every secret and stubs
+      # fetch to throw, so a contributor with no credentials runs exactly what CI runs.
+      - name: Unit + drift tests
+        run: npm test
+
+      # The drift tier reads ../server and ../docker-compose.yml, so it needs the sibling
+      # workspace's node_modules for the server modules it requires.
+      - name: Install server deps for the drift tier
+        working-directory: server
+        run: npm ci
+
+      - name: Cross-workspace drift
+        run: npm run test:drift
+
+  server:
+    name: server — lint, unit, integration
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+
+      - run: npm ci
+      - run: npm run lint
+
+      - name: Unit tests
+        run: npm run test:unit
+
+      # The integration tier spawns the real src/index.js on an ephemeral port and drives it with
+      # raw ws + the Yjs protocol. It needs neither Postgres nor Clerk: both are optional by
+      # design, and the guest flow is the whole of v1.
+      - name: Integration tests
+        run: npm run test:integration
+
+  # Documents what CI cannot do, so a green tick is never mistaken for full coverage.
+  #
+  #  * Piston needs a PRIVILEGED container (isolate, cgroups, tmpfs :exec). GitHub-hosted runners
+  #    do not permit that, so code execution — and every assertion about sandbox limits — is
+  #    local-only. DRIFT-17 still checks the compose ceilings against the route's limits
+  #    statically, which is the part that silently rots.
+  #  * Clerk sign-in needs real keys and a dev instance with Turnstile on sign-up. The membership
+  #    arithmetic is covered hermetically in server/tests/unit/state.test.mjs instead; only
+  #    "a real token becomes a member" needs credentials.
+  #  * Neon-specific behaviour (cold start, the pooled vs direct endpoints, sslmode) cannot be
+  #    reproduced against a plain postgres service container.
+  #  * The Playwright suite drives all three services and is run locally; see docs/TESTING.md.
+  coverage-notes:
+    name: what CI does not cover
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          echo "Not covered by CI, by necessity rather than by choice:"
+          echo "  - code execution (Piston needs a privileged container)"
+          echo "  - Clerk sign-in and dead-room membership (needs real keys)"
+          echo "  - Neon specifics (cold start, pooled vs direct endpoints)"
+          echo "  - the Playwright e2e suite (drives all three services)"
+          echo "See docs/TESTING.md for how each is covered instead."

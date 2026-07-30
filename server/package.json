@@ -10,7 +10,8 @@
     "test": "vitest run --project unit",
     "test:watch": "vitest --project unit",
     "test:unit": "vitest run --project unit",
-    "test:integration": "vitest run --project integration"
+    "test:integration": "vitest run --project integration",
+    "lint": "eslint ."
   },
   "dependencies": {
     "@clerk/backend": "^3.13.2",
@@ -21,6 +22,9 @@
     "yjs": "^13.6.31"
   },
   "devDependencies": {
+    "@eslint/js": "^9.39.5",
+    "eslint": "^9.39.5",
+    "globals": "^17.8.0",
     "lib0": "^0.2.117",
     "vitest": "^4.1.10",
     "y-protocols": "^1.0.7"

@@ -18,7 +18,7 @@ const state = require(join(SRC, "rooms/state.js"));
 const snapshotQueue = require(join(SRC, "storage/snapshotQueue.js"));
 
 const {
-  MAX_RESERVATIONS,
+
   reserveRoom,
   roomExists,
   claimRoom,
