@@ -245,6 +245,23 @@ function qualifyingMembers(state, now) {
   return userIds;
 }
 
+// Largest index <= limit that is a UTF-8 character boundary.
+// INVARIANT: decoding a buffer cut mid-sequence substitutes U+FFFD, which is THREE bytes and can
+// replace a one- or two-byte partial - so `subarray(0, room).toString()` could come back *over*
+// budget (measured: 262145 for a 262144 cap, cutting through emoji). Backing off to a boundary
+// keeps the cap honest and emits no replacement character at all.
+function utf8CutEnd(buf, limit) {
+  const end = Math.min(limit, buf.byteLength);
+  if (end >= buf.byteLength) return end;
+
+  let i = end;
+  while (i > 0 && (buf[i] & 0xc0) === 0x80) i--;
+  const lead = buf[i];
+  const width = lead < 0x80 ? 1 : lead >= 0xf0 ? 4 : lead >= 0xe0 ? 3 : lead >= 0xc0 ? 2 : 1;
+  // The character starting at i occupies i..i+width-1; keep it only if it ends before the cut.
+  return i + width <= end ? end : i;
+}
+
 // INVARIANT: strip on every path, and cut through Buffer rather than a byte index
 // into the string - a halved surrogate pair fails the whole INSERT.
 function snapshotText(yText, budgetBytes = MAX_SNAPSHOT_BYTES) {
@@ -253,7 +270,7 @@ function snapshotText(yText, budgetBytes = MAX_SNAPSHOT_BYTES) {
   if (buf.byteLength <= budgetBytes) return raw;
 
   const room = Math.max(0, budgetBytes - Buffer.byteLength(TRUNCATION_MARKER, "utf8"));
-  return buf.subarray(0, room).toString("utf8") + TRUNCATION_MARKER;
+  return buf.subarray(0, utf8CutEnd(buf, room)).toString("utf8") + TRUNCATION_MARKER;
 }
 
 // Peer-supplied; == `sanitizeFileName` in web/src/lib/collab/roomFiles.ts. The
