@@ -81,18 +81,21 @@ That banner does **not** mean the server is down. `checkRoom()`/`createRoom()` i
 identical from the browser. Prove which it is with a request that skips DNS entirely:
 
 ```bash
-# IP from a resolver you trust: nslookup <host> 1.1.1.1
-curl -s --resolve collabrativecodeeditor-production.up.railway.app:443:69.46.46.117 \
-  https://collabrativecodeeditor-production.up.railway.app/health
+# IP from a resolver you trust: nslookup <sync-host> 1.1.1.1
+curl -s --resolve <sync-host>:443:<that-ip> https://<sync-host>/health
 ```
 
 `{"ok":true}` means the server is healthy and the problem is your own network's DNS.
-Some mobile-carrier resolvers answer `REFUSED` for the whole delegated `up.railway.app`
-zone while resolving `railway.app` normally — a hotspot is the usual culprit. Fix it by
+Some mobile-carrier resolvers answer `REFUSED` for a whole delegated hosting zone
+(`up.railway.app`, say) while resolving the parent domain normally — a phone hotspot is the
+usual culprit, and it is indistinguishable from a dead deployment in the browser. Fix it by
 pinning a public resolver on that connection rather than chasing the deployment:
 
 ```bash
 sudo nmcli con mod "<wifi name>" ipv4.dns "1.1.1.1 8.8.8.8" ipv4.ignore-auto-dns yes
 sudo nmcli con up "<wifi name>"
-getent hosts collabrativecodeeditor-production.up.railway.app   # now returns an address
+getent hosts <sync-host>   # now returns an address
 ```
+
+Running everything locally, this banner almost always just means the sync server on `:8080`
+is not started.

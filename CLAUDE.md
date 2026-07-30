@@ -3,60 +3,65 @@
 A multiplayer code editor: Yjs CRDT sync over WebSockets, plus sandboxed multi-language
 execution via a self-hosted Piston instance.
 
-## Scope of work: follow `docs/tasks.md`
+## Scope of work: there is no checklist any more
 
-`docs/tasks.md` is the **authoritative feature checklist for v2**, and the only
-checklist left in the repo — v1 shipped complete and `V1_Tasks.md` was deleted once every box
-was ticked (commit `dfbaf1b`). Read `docs/tasks.md` before starting any feature work: the user
-prompts against its items, so "build the profile page" means the `/profile` lines in section
-7.4, not a fresh interpretation.
+**`docs/tasks.md` was deleted on 2026-07-30, and with it the last checklist in the repo.** v1's
+`V1_Tasks.md` had already gone the same way once every box was ticked (commit `dfbaf1b`). Older
+paragraphs in this file cite it by section number — `§6.1`, `§7.5`, `§10.1` — and those citations
+are kept deliberately: they are the historical names of decisions this file now explains in full,
+and they still resolve in git history. **Do not chase them; nothing outstanding lives there.**
 
-Rules:
-- Work in the order given by its *Suggested build order for v2* section (section 9) unless
-  the user names a specific item. The extras in section 10 (multi-file, chat, room password)
-  come after the six numbered steps unless the user says otherwise.
-- Tick a box (`- [ ]` → `- [x]`) **only after** the feature is implemented and verified
-  running, in the same change that implements it. Never tick ahead of the code.
-- A parent bullet stays unticked until every one of its sub-bullets is ticked.
-- Respect its *Explicitly out of scope for v2* list (section 8): **Postgres is the only data
-  store — no Redis, no cache, no session store**; a dead room is never re-run, re-joined, or
-  edited in place; no horizontal scaling. Do not add them even as a convenience.
-- If a task turns out to be wrong or impossible as written, say so and update the checklist
-  text rather than silently ticking or skipping it.
+What replaced it:
 
-### Every completed task updates the docs in the same change
+- **This file is the authority on what exists and why.** Every section below describes shipped
+  behaviour. If a feature is not described here, it is not built.
+- **`README.md` is the authority on what is *not* built.** Its *Future improvements* list is the
+  only forward-looking record: in-room chat, room passwords, room names, a per-socket update
+  budget, a shared rate-limit counter, and hosting Piston on a VPS. Nothing is "next" by default —
+  the user names the work.
+- **`docs/TESTING.md` is the authority on what is proven**, and §12 there is the honest list of
+  what was deliberately not covered.
 
-Before reporting any task done, do all three of these — not in a follow-up commit:
+**Out of scope, and not to be added even as a convenience:**
 
-1. **Tick the box in `docs/tasks.md`.** Same change as the code, never before it.
-2. **Update this file (`CLAUDE.md`).** Add or revise whatever section the change makes true:
-   a new key file in the *Repo layout* table, a new env var in the *Environment variables*
-   table, a new invariant, and — importantly — anything that bit you while building it. This
-   file's value is the gotchas, not the feature list; if a limit, ordering, or lifecycle
-   detail was non-obvious enough to cost you a debugging session, write it down.
-3. **Write down features that were not in `docs/tasks.md`.** If you build something the checklist
-   never listed — an extra guardrail, a helper endpoint, a UI affordance the user asked for
-   mid-task — add it to `docs/tasks.md` as a new, already-ticked line under the nearest matching
-   section (or a new subsection if none fits), so the checklist keeps describing what actually
-   shipped. A checklist that omits shipped work is worse than no checklist.
+- **Postgres is the only data store — no Redis, no cache, no session store.** This is why the
+  frontend's rate limiter is per-instance and says so, rather than being "fixed" with a round trip.
+- A dead room is never re-run, re-joined, or edited in place.
+- No horizontal scaling across multiple sync-server instances. Room lifetime is owned by exactly
+  one module in exactly one process, and that assumption is load-bearing throughout.
+
+### Every completed change updates the docs in the same change
+
+Before reporting any work done, do both of these — not in a follow-up commit:
+
+1. **Update this file (`CLAUDE.md`).** Add or revise whatever section the change makes true: a new
+   key file in the *Repo layout* table, a new env var in the *Environment variables* table, a new
+   invariant, and — importantly — anything that bit you while building it. This file's value is the
+   gotchas, not the feature list; if a limit, ordering, or lifecycle detail was non-obvious enough
+   to cost you a debugging session, write it down.
+2. **Update `README.md` if the change is user-visible.** A new feature belongs in its *Features*
+   table; a feature that ships moves *off* the *Future improvements* list. The README is written for
+   developers, recruiters and beginners, so keep it free of the internal detail that belongs here —
+   but never let it describe something that no longer exists.
 
 The same rule applies to anything that turns out to be *false*: when a change contradicts a
 paragraph in this file, rewrite that paragraph rather than appending a correction next to it.
 
-## What v2 adds (`docs/tasks.md` in one paragraph)
+## What v2 added, in one paragraph
 
 v1's defining constraint was **zero persistence** — a room and everything in it vanished when
 the last person left. v2 keeps that for the live room and relaxes it in exactly one place:
 **Clerk** adds real accounts alongside the unchanged guest flow, and when a room dies its final
 files are written **once** to a `dead_rooms` table in **PostgreSQL** — but only if at least one
-participant was signed in. Fully-guest rooms still save nothing at all. The snapshot is
-read-only forever: a `/profile` page lists a signed-in user's past rooms and lets them view and
-copy the code, never run or rejoin it. Sync, awareness, room lifetime, and Piston execution are
-all **unchanged** from v1. Section 10's extras ride along: **multi-file rooms with the language
-chosen once at creation and a starred entry file (built — see "Multi-file rooms")**, stdin,
-keyboard shortcuts, snapshot deletion and the leaving warning (all built), plus an ephemeral
-in-room chat over the existing WebSocket, optional room passwords held only in the in-memory room
-object, and room names (all still to come).
+participant was signed in, stayed, and edited. Fully-guest rooms still save nothing at all. The
+snapshot is read-only forever: a `/profile` page lists a signed-in user's past rooms and lets them
+view, copy, download and delete the code, never run or rejoin it. Sync, awareness, room lifetime,
+and Piston execution are all **unchanged** from v1. Riding along with it: **multi-file rooms with
+the language chosen once at creation and a starred entry file**, stdin, keyboard shortcuts,
+snapshot deletion, the leaving warning, a full UI/UX redesign with light and dark themes, a
+repository reorganization, and an audit that added the test suite and CI. **Still unbuilt:** an
+ephemeral in-room chat over the existing WebSocket, optional room passwords held only in the
+in-memory room object, and room names.
 
 ## Repo layout
 
@@ -66,9 +71,9 @@ root `package.json`** — install and run each workspace separately.
 | Path | What it is |
 | --- | --- |
 | `web/` | Next.js 16 (App Router) frontend. Monaco editor, room routing, and the `/api/execute` proxy to Piston. |
-| `server/` | Standalone Node.js WebSocket server speaking the Yjs sync protocol, plus the room-lifetime HTTP routes on the same port. Deployed to Railway. |
+| `server/` | Standalone Node.js WebSocket server speaking the Yjs sync protocol, plus the room-lifetime HTTP routes on the same port. Carries a `railway.json`; Railway is its deployment target when one is wanted. |
 | `docker-compose.yml` | The Piston sandbox. At the **repo root**, not inside `web/` — it is a third service, not part of the frontend. |
-| `docs/` | `tasks.md`, the v2 checklist, and `TESTING.md`, the audit report. `README.md` and this file stay at the root by convention. |
+| `docs/` | `TESTING.md`, the audit report — now the only file here, since `tasks.md` was deleted. `README.md`, `LICENSE` and this file stay at the root by convention. |
 | `web/tests/` | vitest: the unit tier, the `drift/` tier, `fixtures/hostile.ts`, and `setup/no-ambient-secrets.ts`. |
 | `web/e2e/` | Playwright. The only cross-service tier; `helpers.ts` holds every selector trap. |
 | `server/tests/` | vitest: `unit/` (hermetic) and `integration/` (spawns the real server, raw `ws`). |
@@ -424,10 +429,10 @@ the root layout's `<head>`, and a route that 500s never ships one.
 
 ## Architecture invariant
 
-**`docs/tasks.md`'s section-5 sequence diagram draws execution wrong — do not implement it as
-drawn.** It shows `FE → WS → Piston`, i.e. the code travelling to the WebSocket server, which
-then calls Piston and broadcasts the result. That is not how v1 works and must not become how
-v2 works: the browser posts to the Next.js route `/api/execute`, which proxies to Piston, and
+**The original v2 spec's sequence diagram drew execution wrong, and the wrong version is the
+intuitive one — so it is worth stating what *not* to build.** It showed `FE → WS → Piston`, i.e.
+the code travelling to the WebSocket server, which then calls Piston and broadcasts the result.
+That is not how this works and must not become how it works: the browser posts to the Next.js route `/api/execute`, which proxies to Piston, and
 the *result* is shared through the Yjs `execution` map (see "Shared code execution" below).
 The diagram's intent — everyone in the room sees the run — is already satisfied. Routing runs
 through the sync server would put an untrusted, resource-heavy, 18-second-timeout request on
@@ -769,8 +774,8 @@ yDoc
  └─ Y.Map  "execution" unchanged
 ```
 
-**`docs/tasks.md` §10.1 says "each file = its own Yjs sub-document". That is not what shipped, and it
-could not be.** `setupWSConnection` in `y-websocket/bin/utils.js` syncs exactly one doc per
+**The spec for multi-file rooms said "each file = its own Yjs sub-document". That is not what
+shipped, and it could not be.** `setupWSConnection` in `y-websocket/bin/utils.js` syncs exactly one doc per
 socket and never handles `doc.on('subdocs')`, so real subdocs would need a provider and a
 separately-gated WebSocket per open file, N token-refresh paths, and child-doc handling in
 `server/src/rooms/lifecycle.js` and `server/src/rooms/state.js`. A `Y.Text` per file on the *same* doc is the trick
@@ -1071,7 +1076,7 @@ snapshot write queue" under "Rate limiting and payload size".
 (`MEMBER_MIN_CONNECTED_MS`) **and actually edited the document**. There is no owner and no
 ownership transfer. The two halves do different jobs and neither is redundant: the timer stops
 a drive-by, and **the edit check is the only thing that stops a lurker**, since anyone who
-leaves a tab open passes 60s. `docs/tasks.md` §6.1 originally said "connected while the document was
+leaves a tab open passes 60s. The spec originally said "connected while the document was
 non-empty" instead — that is unimplementable here, because `useCollabRoom` seeds the starter file
 on `sync`, so every room is non-empty milliseconds after the *first* client arrives and the
 clause filters nothing.
@@ -1488,7 +1493,7 @@ room-creation timeout deep inside an unrelated spec, indistinguishable from a pr
 ### The snapshot write queue (task 7.5)
 
 There is a **third** limiter, and it is not an endpoint: `server/src/storage/snapshotQueue.js` sits between
-`destroyRoom()` and `db.saveDeadRoom()`. It is what `docs/tasks.md` §7.5's "rate-limit DB writes the
+`destroyRoom()` and `db.saveDeadRoom()`. It is what the guardrails spec's "rate-limit DB writes the
 same way v1 rate-limits room creation" became.
 
 **It defers; it never refuses.** This is the difference that matters, and it is not a
@@ -1668,7 +1673,7 @@ carry the same single migration. `web/.env.local` and `server/.env` point at
 **The Neon database was not empty when 7.2 migrated it, and this is worth knowing before you
 trust anything in it.** It held a `Room` table (42 rows of `ydocState bytea`) and a
 `_prisma_migrations` row `20260706083131_init` from an abandoned experiment that persisted live
-Yjs documents to Postgres — precisely what `docs/tasks.md` §8 rules out. Those commits are dangling,
+Yjs documents to Postgres — precisely what the out-of-scope list rules out. Those commits are dangling,
 reachable from no branch, so nothing in the repo explained the tables. Both were dumped to a
 backup and dropped, so `dead_rooms` now has a single migration history that replays cleanly
 from an empty database. If a future `prisma migrate` reports drift, check for leftovers like
@@ -1747,7 +1752,7 @@ because of a database it was not even using. And `DATABASE_URL` is **optional**:
 is opened and `saveDeadRoom()` is a logged no-op, so the guest flow (which stores nothing and
 is the whole of v1) never depends on database infrastructure it does not touch.
 
-`ON CONFLICT (room_id) DO NOTHING` is what enforces `docs/tasks.md` §6's write-once rule against a
+`ON CONFLICT (room_id) DO NOTHING` is what enforces the write-once rule against a
 retry or a restart that re-evicts an already-saved room, and it only works because `room_id`
 carries a `UNIQUE` constraint.
 
@@ -1783,7 +1788,7 @@ verifies against Node's bundled CA store, so the URL in `.env.local` needs nothi
 `&sslrootcert=system`. **Never put `sslrootcert=system` in an env file**: node-postgres reads
 that value as a *filename* and will try to open a file called `system`.
 
-### Two deliberate departures from `docs/tasks.md` §6
+### Two deliberate departures from the original schema spec
 
 - **`room_id` is `UNIQUE`.** This makes the database enforce "written once, never updated"
   instead of trusting the writer, and it is what `ON CONFLICT (room_id) DO NOTHING` rests on.
@@ -1883,67 +1888,60 @@ image is **amd64-only** (single-arch manifest) — ARM free tiers cannot host it
 
 ## Not built yet
 
-**What the audit deliberately did not cover** (added because "295 tests, all green" otherwise
-reads as "everything was checked"): §10.2 chat, §10.3 room passwords and §10.6 room names are
-unbuilt and were out of scope; the CSP ships **report-only** pending a signed-in browser pass;
-there is **no signed-in e2e tier** (sign-in → snapshot → `/profile` → delete needs Clerk test
-users — the membership *arithmetic* is covered hermetically, the browser journey is not); no real
-screen-reader pass was done; and CI cannot run privileged Piston, real Clerk, or a Neon cold start.
-Full list with reasons: `docs/TESTING.md` §12.
+**What the audit deliberately did not cover** (recorded because "295 tests, all green" otherwise
+reads as "everything was checked"): chat, room passwords and room names are unbuilt and were out
+of scope; the CSP ships **report-only** pending a signed-in browser pass; there is **no signed-in
+e2e tier** (sign-in → snapshot → `/profile` → delete needs Clerk test users — the membership
+*arithmetic* is covered hermetically, the browser journey is not); no real screen-reader pass was
+done; and CI cannot run privileged Piston, real Clerk, or a Neon cold start. Full list with
+reasons: `docs/TESTING.md` §12.
 
+**Everything v2 set out to build is built.** Clerk auth, Postgres, the dead-room snapshot,
+`/profile` and the guardrails all shipped — see "Accounts (Clerk)", "Persistence (Postgres)",
+"Dead-room snapshots", "The profile page" and "The snapshot write queue" above, which replace
+older notes here claiming none of them existed. So did the extras: multi-file rooms, stdin,
+keyboard shortcuts, snapshot deletion and the last-person-leaving warning — see "Multi-file
+rooms", "Shared code execution", "Keyboard shortcuts", "The profile page" and "The leaving warning
+and the persistence estimate".
 
-**Section 7 is complete: 7.1 (Clerk auth), 7.2 (Postgres), 7.3 (the dead-room snapshot),
-7.4 (`/profile`) and 7.5 (guardrails) are all done** — see "Accounts (Clerk)", "Persistence
-(Postgres)", "Dead-room snapshots", "The profile page" and "The snapshot write queue" above,
-which replace older notes here claiming none of them existed.
-
-**Five of section 10's eight subsections are done** (it has eight rather than the original
-three): **10.1 (multi-file rooms), 10.4 (stdin for runs), 10.5 (keyboard shortcuts), 10.7
-(deleting a snapshot from `/profile`) and 10.8 (the last-person-leaving warning)** — see
-"Multi-file rooms", "Shared code execution", "Keyboard shortcuts", "The profile page" and "The
-leaving warning and the persistence estimate" above. Two older versions of this paragraph said
-first that none of section 10 was built and then that half of it was; both are out of date.
-
-**What remains unticked: 10.2 in-room chat, 10.3 room passwords and 10.6 room names.** So there
-is still no chat, no password, and `/profile` still titles every card with the raw `room_id`.
-**10.6 is now the only remaining item that needs a migration** — 10.1 needed none, because 7.2
-had already shaped `files` as a `jsonb` array and `language` as nullable for exactly this.
-Section 10 ends with a suggested order, which is by payoff rather than dependency. Redis pub/sub
-for horizontal scaling is *not* a v2 item at all — section 8 puts it explicitly out of scope, so
-it stays deferred past v2.
+**Three features remain unbuilt: in-room chat, room passwords, and room names.** So there is still
+no chat, no password, and `/profile` still titles every card with the raw `room_id`. **Room names
+are the only remaining item that needs a migration** — multi-file needed none, because the schema
+had already shaped `files` as a `jsonb` array and `language` as nullable for exactly that. Redis
+pub/sub for horizontal scaling is not on the list at all; it is explicitly out of scope. The
+README's *Future improvements* section is the authoritative version of this list.
 
 The whole v2 loop now closes: `server/src/rooms/lifecycle.js`'s `destroyRoom()` writes the snapshot and
 `/profile` reads it back, so a signed-in user's work really does outlive the tab. An older note
 here said "nothing reads it yet — do not add UI pointing at one"; that is no longer true.
 
-**A UI/UX redesign also shipped, outside the checklist** — it is recorded as `docs/tasks.md` §7.7
-and described under "Design system and theming" and "The resizable room layout" above. It
+**A UI/UX redesign also shipped, outside the original plan** — it is described under "Design system
+and theming" and "The resizable room layout" above. It
 changed no behaviour in sync, presence, execution, auth or persistence, but it touched nearly
 every component, so notes written before it may describe markup that no longer exists.
 Three concrete things it invalidated across this file, all corrected in place: `/room/[roomId]`
 no longer 500s, the app is no longer dark-only, and `EditorToolbar.tsx`/`UserBar.tsx` are gone
 (now `RoomChrome.tsx` + `PresenceStack.tsx`).
 
-**7.5 is done, and two of its three bullets were ticked on verification rather than on new
-code.** An older note here said "do not tick it on that basis" — that instruction was followed:
-a dead room's `room_id` can never be reused and `/room/<old-dead-id>` sends you home have both
-been true since v1 (see "Room lifetime"), so instead of building a second, weaker copy of a gate
-that already works, a room was driven through its real lifecycle to death and the behaviour was
-observed — `{"exists": false}`, a raw socket closed with 4404, the ID still dead after the
-probe, and a browser watched being sent home. The third bullet, rate-limiting DB writes, is
-built: `server/src/storage/snapshotQueue.js`, described under "The snapshot write queue".
+**Two of the three guardrails were satisfied by verification rather than by new code, and that was
+the right call.** A dead room's `room_id` can never be reused, and `/room/<old-dead-id>` sends you
+home; both have been true since v1 (see "Room lifetime"). So instead of building a second, weaker
+copy of a gate that already works, a room was driven through its real lifecycle to death and the
+behaviour was observed — `{"exists": false}`, a raw socket closed with 4404, the ID still dead
+after the probe, and a browser watched being sent home. The third guardrail, rate-limiting DB
+writes, is real code: `server/src/storage/snapshotQueue.js`, described under "The snapshot write queue".
 
-**7.4's read path is still unlimited, and that remains a deliberate gap.** Every `/profile` view
-is one uncached Neon query. It is bounded by Clerk authentication and by a single indexed lookup
-per request, which is why 7.5 did not cover it — but nothing stops a signed-in user from
+**`/profile`'s read path is still unlimited, and that remains a deliberate gap.** Every view is one
+uncached Neon query. It is bounded by Clerk authentication and by a single indexed lookup per
+request, which is why the guardrail work did not cover it — but nothing stops a signed-in user from
 refreshing in a loop, so if the read path ever grows a second query or an unindexed one, revisit
 this.
 
-The two facts 7.4 was warned about both held, and are now documented under "The profile page":
-the listing is a join from `dead_room_members`, not a column filter; and `language` being null
-with every file called `main.txt` was correctly treated as a state to live with rather than a
-backfill — **§10.1 has since ended it for new rows**, and the old rows still read "not recorded",
-which is what "not a backfill" meant.
+The two risks flagged before `/profile` was built both held, and are now documented under "The
+profile page": the listing is a join from `dead_room_members`, not a column filter; and `language`
+being null with every file called `main.txt` was correctly treated as a state to live with rather
+than a backfill — **multi-file rooms have since ended it for new rows**, and the old rows still read
+"not recorded", which is what "not a backfill" meant.
 
 **Documents are in-memory only — room state does not survive a WebSocket server restart**, and
 since a restart wipes the room registry too, every client still in a room gets its reconnect
@@ -1960,13 +1958,41 @@ production.
 Room eviction *is* implemented — see "Room lifetime" above; that section replaces an older
 note here claiming rooms are never evicted. Execution resource limits and rate limiting are
 likewise implemented now — see "Execution limits" and "Rate limiting and payload size"; those
-sections replace older notes here calling both unbuilt. **Every v1 box was ticked before
-`V1_Tasks.md` was removed.**
+sections replace older notes here calling both unbuilt. **Every v1 item shipped before
+`V1_Tasks.md` was removed, and every v2 item shipped before `docs/tasks.md` was.**
 
 The one thing missing Redis genuinely costs: the frontend's rate limiter counts per
 serverless instance rather than globally. That is a documented approximation, not a gap to
 close inside v1's constraints — and **v2 does not close it either**, since Redis stays out of
 scope. Adding Postgres does not make it a candidate fix: a per-request DB round trip on the
 hot execute path is a worse trade than the approximation.
+
+## The public-facing docs
+
+Three files describe this project to humans, and they do not overlap:
+
+| File | Audience | Rule |
+| --- | --- | --- |
+| `README.md` | Developers, recruiters, beginners | What it is, how to run it, what it does, what is *not* built. Never internal debugging history. |
+| `CLAUDE.md` (this file) | Whoever edits the code next | The why: gotchas, rejected alternatives, invariants, measurements. |
+| `docs/TESTING.md` | Contributors and reviewers | The audit: procedure, case IDs, numbers, and §12's honest list of what is unproven. |
+
+**The README leads with why the app is not deployed, and that framing is deliberate.** The blocker
+is Piston and only Piston: the public API at `emkc.org` went whitelist-only, and self-hosting needs
+a privileged container, which needs a VPS. The tunnel that once bridged a local Piston to the
+deployed site was removed for the security reasons under "Production execution path", and the
+README says so in the user's own framing — *exposing a personal machine is not worth it for a
+demo.*
+
+**Do not re-add live deployment URLs to the README** without the user asking. Hosting projects do
+still exist for the frontend and the sync server, but pointing at them would be worse than saying
+nothing: Run cannot work there without Piston, and the repository reorganization renamed the
+frontend directory from `collab-code-editor/` to `web/`, which invalidates the Vercel project's
+*Root Directory* setting — with that stale, Vercel finds no framework and every path returns a bare
+`NOT_FOUND` while the dashboard still reports "Ready". A link in that state reads as a broken
+project rather than an intentional limitation.
+
+The three files must never disagree. When a change makes one wrong, fix all of them in the same
+commit — a stale README is the version most people read.
 
 @web/AGENTS.md

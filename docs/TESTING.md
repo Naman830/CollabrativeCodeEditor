@@ -38,11 +38,11 @@ Stated up front, because a green suite invites the assumption that everything wa
 
 | Not covered | Why |
 | --- | --- |
-| `docs/tasks.md` §10.2 in-room chat, §10.3 room passwords, §10.6 room names | Unbuilt. Scope, not defects. |
+| In-room chat, room passwords, room names | Unbuilt. Scope, not defects — see the README's *Future improvements*. |
 | Code execution on the deployed site | Piston needs a privileged container, which neither Vercel nor Railway permits. Execution is local-only **by design** — see [§12](#12-remaining-limitations). |
 | Enforced CSP | Ships as report-only pending a signed-in browser pass. [§8.4](#84-security-headers-and-csp) |
 | A real screen-reader pass | axe-core and keyboard traversal are not the same as NVDA/VoiceOver. [§10](#10-accessibility) |
-| Horizontal scaling | `docs/tasks.md` §8 rules it out of v2. |
+| Horizontal scaling | Explicitly out of scope — see `CLAUDE.md`, *Out of scope*. |
 | Load testing at scale | Single-instance app; the numbers in [§9](#9-performance) are single-node. |
 
 ### 1.3 Method
@@ -682,7 +682,7 @@ is now measured instead of assumed. `BUG-21` in §5.1.
   the *driver*, not the editor. Reported as unmeasured rather than as a bad number. The related
   behaviour that *is* covered: `EC-20a` proves a 70 KB document is refused before it crosses the
   wire, and `SEC-22c` proves a 600 KB paste syncs between peers.
-- **Load at scale.** Single-instance app; `docs/tasks.md` §8 puts horizontal scaling out of v2.
+- **Load at scale.** Single-instance app; horizontal scaling is explicitly out of scope.
 - **First Load JS per route** as an absolute budget. What *was* verified is the claim that matters:
   see below.
 
@@ -861,8 +861,8 @@ this audit deliberately did not cross.
 
 | Limitation | Note |
 | --- | --- |
-| §10.2 in-room chat, §10.3 room passwords, §10.6 room names are unbuilt | Out of the audit's scope by decision. `dead_rooms.is_private` is `false` on every row and `/profile` still titles each card with the raw `room_id` because there is no name column yet |
-| A dead room is never re-run, re-joined or edited | `docs/tasks.md` §8, by design |
+| In-room chat, room passwords and room names are unbuilt | Out of the audit's scope by decision. `dead_rooms.is_private` is `false` on every row and `/profile` still titles each card with the raw `room_id` because there is no name column yet |
+| A dead room is never re-run, re-joined or edited | By design; see `CLAUDE.md`, *Out of scope*. |
 
 ### Infrastructure
 
