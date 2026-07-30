@@ -56,9 +56,14 @@ export function useRoomPersistence({
   // socket of the account, this one counts a tab), which is the point of the
   // estimate framing.
   // ---------------------------------------------------------------------
+  // The refs are written and read only inside effects and timer callbacks, and
+  // the value that drives rendering is state. React 19's `react-hooks/refs` and
+  // `react-hooks/purity` rules reject the shorter version of this — a
+  // `Date.now()` and a `ref.current` read during render — and they are right to:
+  // a value that changes without a render is exactly what must not be rendered.
   const accumulatedRef = useRef(0);
   const sinceRef = useRef<number | null>(null);
-  const [now, setNow] = useState(() => Date.now());
+  const [elapsedMs, setElapsedMs] = useState(0);
 
   useEffect(() => {
     if (syncStatus === "connected") {
@@ -71,8 +76,6 @@ export function useRoomPersistence({
     }
   }, [syncStatus]);
 
-  const elapsedMs =
-    accumulatedRef.current + (sinceRef.current === null ? 0 : now - sinceRef.current);
   const thresholdMet = elapsedMs >= MEMBER_MIN_CONNECTED_MS;
 
   // Tick only while a countdown is actually on screen, and stop the moment the
@@ -82,8 +85,23 @@ export function useRoomPersistence({
   const counting = signedIn && didEdit && !thresholdMet && syncStatus === "connected";
   useEffect(() => {
     if (!counting) return;
-    const id = setInterval(() => setNow(Date.now()), TICK_MS);
-    return () => clearInterval(id);
+    const update = () => {
+      setElapsedMs(
+        accumulatedRef.current +
+          (sinceRef.current === null ? 0 : Date.now() - sinceRef.current),
+      );
+    };
+    // Primed on the next tick rather than a second later. Someone who joins,
+    // reads for two minutes and only then types would otherwise see a full 60s
+    // countdown appear and immediately jump — the elapsed time is already
+    // banked, it just has not been read yet. A `setTimeout` rather than a call
+    // here, because a synchronous set in an effect body is its own lint rule.
+    const primer = setTimeout(update, 0);
+    const id = setInterval(update, TICK_MS);
+    return () => {
+      clearTimeout(primer);
+      clearInterval(id);
+    };
   }, [counting]);
 
   // ---------------------------------------------------------------------

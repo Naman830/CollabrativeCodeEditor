@@ -11,12 +11,14 @@
 // through `readPeers`.
 
 import Link from "next/link";
+import PersistenceChip from "./PersistenceChip";
 import PresenceStack from "./PresenceStack";
 import ThemeToggle from "./ThemeToggle";
 import { useCopyToClipboard } from "../hooks/useCopyToClipboard";
 import type { SyncStatus } from "../hooks/useCollabRoom";
 import type { Peer } from "../lib/awareness";
 import { downloadFileName } from "../lib/languages";
+import type { PersistenceStatus } from "../lib/persistence";
 import { shortcutLabel } from "../lib/platform";
 import { cn, focusRing, runButton } from "../lib/ui";
 import { CheckIcon, CopyIcon, DownloadIcon, LogoMark, PlayIcon } from "./icons";
@@ -78,6 +80,10 @@ type RoomChromeProps = {
   /** False for an empty document — Save's only disabled state. */
   canSave: boolean;
   onSave: () => void;
+  /** §10.8's estimate. An estimate — see `lib/persistence.ts`. */
+  persistenceStatus: PersistenceStatus;
+  persistenceRemainingMs: number;
+  isLastPeer: boolean;
 };
 
 export default function RoomChrome({
@@ -89,6 +95,9 @@ export default function RoomChrome({
   onRun,
   canSave,
   onSave,
+  persistenceStatus,
+  persistenceRemainingMs,
+  isLastPeer,
 }: RoomChromeProps) {
   // §10.5's "show the binding in the Run and Save buttons' title". Read at
   // render, which is safe here: this tree only ever reaches the browser (see
@@ -121,6 +130,12 @@ export default function RoomChrome({
       <RoomChip roomId={roomId} syncStatus={syncStatus} />
 
       <div className="ml-auto flex min-w-0 items-center gap-2">
+        <PersistenceChip
+          status={persistenceStatus}
+          remainingMs={persistenceRemainingMs}
+          isLastPeer={isLastPeer}
+        />
+
         <PresenceStack peers={peers} connected={syncStatus === "connected"} />
 
         <span aria-hidden className="h-5 w-px bg-edge" />

@@ -28,6 +28,7 @@ import { useCodeRunner } from "../hooks/useCodeRunner";
 import { useCollabRoom } from "../hooks/useCollabRoom";
 import { useEditorShortcuts } from "../hooks/useEditorShortcuts";
 import { EDITOR_PANEL_ID, OUTPUT_PANEL_ID, useRoomLayout } from "../hooks/useRoomLayout";
+import { useRoomPersistence } from "../hooks/useRoomPersistence";
 import { downloadTextFile } from "../lib/download";
 import { downloadFileName } from "../lib/languages";
 import { configureMonacoLoader } from "../lib/monacoLoader";
@@ -76,12 +77,18 @@ export default function CodeEditor({ roomId, onRoomClosed }: CodeEditorProps) {
   );
   const user = identity.status === "present" ? identity.user : null;
 
-  const { syncStatus, peers, toasts, dismissToast, execState, docRef } = useCollabRoom({
-    roomId,
-    editor,
-    user,
-    onRoomClosed,
-  });
+  const { syncStatus, peers, toasts, dismissToast, execState, didEdit, docRef } =
+    useCollabRoom({
+      roomId,
+      editor,
+      user,
+      onRoomClosed,
+    });
+
+  // The leaving warning and the "is this being kept?" estimate (§10.8). One
+  // hook because they are one idea: the warning is only actionable if you know
+  // what closing the tab actually costs.
+  const persistence = useRoomPersistence({ peers, syncStatus, user, didEdit });
 
   const handleRun = useCodeRunner({ docRef, code, language, stdin, user });
   const layout = useRoomLayout();
@@ -154,6 +161,9 @@ export default function CodeEditor({ roomId, onRoomClosed }: CodeEditorProps) {
         onRun={handleRun}
         canSave={code.length > 0}
         onSave={handleSave}
+        persistenceStatus={persistence.status}
+        persistenceRemainingMs={persistence.remainingMs}
+        isLastPeer={persistence.isLastPeer}
       />
 
       {/* ── ONE Group, whose `orientation` is a prop. ────────────────────────
