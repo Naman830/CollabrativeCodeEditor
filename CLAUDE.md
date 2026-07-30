@@ -1296,7 +1296,11 @@ image is **amd64-only** (single-arch manifest) — ARM free tiers cannot host it
 7.4 (`/profile`) and 7.5 (guardrails) are all done** — see "Accounts (Clerk)", "Persistence
 (Postgres)", "Dead-room snapshots", "The profile page" and "The snapshot write queue" above,
 which replace older notes here claiming none of them existed. **What remains unticked:** all of
-section 10 — no multi-file, no chat, no room passwords. Redis pub/sub for horizontal scaling is
+section 10, which now has eight subsections rather than three — the original 10.1 multi-file,
+10.2 chat and 10.3 room passwords, plus 10.4 stdin for runs, 10.5 keyboard shortcuts,
+10.6 room names, 10.7 deleting a snapshot from `/profile` and 10.8 the last-person-leaving
+warning. None are built. Section 10 ends with a suggested order for them, which is by payoff
+rather than dependency. Redis pub/sub for horizontal scaling is
 *not* a v2 item at all — section 8 puts it explicitly out of scope, so it stays deferred past
 v2.
 

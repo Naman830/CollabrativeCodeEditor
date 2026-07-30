@@ -789,3 +789,132 @@ whole point was that the room keeps working exactly as 7.1–7.4 left it.
 - [ ] Join flow: if room has a password, prompt for it before connecting to the WebSocket/Yjs doc
 - [ ] Wrong password → clear error, no connection made
 - [ ] `dead_rooms.is_private` flag records whether the snapshot came from a password-protected room (for display purposes only — the password itself is never saved)
+
+### 10.4 Stdin for runs
+
+**How it works:** `/api/execute` currently sends Piston no `stdin` at all, so any program that
+reads input — `input()`, `Scanner`, `cin >>` — either hangs until the run timeout or dies on
+EOF. That rules out most beginner and interview programs, which is a large hole for an app
+whose headline feature is running code. Piston's `/api/v2/execute` already accepts a `stdin`
+string in the payload, so this is a text field, one more field on the request, and one more key
+on the shared execution record.
+
+The input belongs on the **shared** `execution` record, not in local component state: the run
+is broadcast to the whole room (see CLAUDE.md, "Shared code execution"), so a peer watching the
+output has to be able to see what was fed in, or the output is unexplainable. It is part of the
+run, not part of the editor — it must not go on the `Y.Text` and must not become a second
+shared type.
+
+- [ ] Collapsible "Input (stdin)" field in the output panel, above the output
+- [ ] Send it as `stdin` in the Piston payload from `app/api/execute/route.ts`
+- [ ] Carry the stdin used on the shared `ExecutionState` record, so every peer sees the input
+      that produced the output they are looking at
+- [ ] Cap its size and count it against the same UTF-8 byte budget as the code
+      (`MAX_CODE_BYTES` in `app/lib/execution.ts`) — checked client-side *and* in the route,
+      like the code payload already is
+- [ ] Strip nothing and trust nothing: stdin is user input on a path that already has a
+      documented double-check, so the loose `Content-Length` pre-check must account for it too
+
+### 10.5 Keyboard shortcuts
+
+**How it works:** Two bindings registered on the Monaco instance. Ctrl/Cmd+S is the important
+one — inside a code editor it currently opens the *browser's* "save page" dialog, which is
+actively wrong, not merely missing.
+
+Register them with `editor.addCommand` / `addAction` on the instance `CodeEditor` already
+holds. They must not be a `window` keydown listener: the room page has other focusable controls
+and a global handler would fire Run while someone is typing in the language select or (once
+10.2 lands) the chat box.
+
+- [ ] Ctrl/Cmd+Enter runs the code — respecting the same room-wide `"running"` lock that
+      disables the Run button, so a shortcut cannot start a second concurrent run
+- [ ] Ctrl/Cmd+S saves (downloads) and calls `preventDefault`, so the browser's save dialog
+      never appears
+- [ ] Both shortcuts are discoverable: show the binding in the Run and Save buttons' `title`
+- [ ] Bindings live with the editor instance, not on `window`
+
+### 10.6 Room names
+
+**How it works:** An optional name given at room creation, held on the in-memory room object
+and written to a new `dead_rooms.name` column at snapshot time. This is what makes `/profile`
+usable past a handful of rooms: today the listing's title is the raw `room_id`, which is
+meaningless three days later, and there is nothing else on the card to tell two rooms apart.
+
+The name is set once at creation and is **not** editable afterwards and **not** in the `Y.Doc` —
+a room-wide field that peers can rewrite is a second class of shared mutable state, and one
+that would then need the same sanitizing boundary `readPeers` provides. It travels with
+`POST /rooms`, the same request that already mints the ID.
+
+- [ ] Optional "Room name" field on the create-room flow
+- [ ] Sanitize and length-cap it server-side, through the same rules as a participant name
+      (`sanitizeName` in `server/roomState.js`) — it is user text that `/profile` will render
+- [ ] Hold it on the in-memory room state, alongside `created_at`
+- [ ] Third migration: add a nullable `name` column to `dead_rooms`
+- [ ] Add it to `server/db.js`'s hand-written INSERT **and** `prisma/schema.prisma` — nothing
+      in the build compares the two (see 7.2's acceptance-test note), so verify by writing a
+      row and reading it back
+- [ ] `/profile` shows the name as the card title, falling back to the `room_id` for every row
+      written before this shipped — the column is null on all of them and always will be,
+      snapshots are never updated
+- [ ] Show it in the room's chrome bar too, so the name is visible to the people in the room
+
+### 10.7 Delete a snapshot from `/profile`
+
+**How it works:** A signed-in user can remove a dead room from their own profile. This is the
+one gap in v2's data story: the app stores your code without asking at the moment a room dies,
+and currently offers no way to remove it.
+
+The subtlety is §6.1's shared ownership — a room can sit on several profiles, and there is no
+owner. Deleting must therefore remove **the viewer's `dead_room_members` row**, never the
+`dead_rooms` row directly, or one member erases another member's copy. The snapshot row is
+garbage once its last member is gone, so it is deleted only in that case, in the same
+transaction.
+
+- [ ] Delete control on the snapshot detail page, behind a confirmation — it is irreversible
+      and there is no second copy anywhere
+- [ ] It deletes the viewer's membership row, keyed on the composite primary key
+      `(user_id, dead_room_id)`, exactly like the read path — so a snapshot the viewer holds no
+      membership row for is *unfetchable and undeletable*, not merely hidden
+- [ ] Delete the `dead_rooms` row too, in the same transaction, **only** when that was its last
+      remaining member
+- [ ] A Server Function, not an API route — `/profile` is otherwise entirely server-rendered
+      and this must not become the page's second reason to ship client JavaScript beyond the
+      confirm dialog
+- [ ] Deleting the last snapshot returns the empty-profile state, which must stay visually
+      distinct from `error.tsx`'s "the database is unreachable" (see CLAUDE.md, "The profile
+      page")
+
+### 10.8 Last-person-leaving warning
+
+**How it works:** A `beforeunload` prompt shown only when you are the **last** connected peer,
+because closing that tab starts the 10s grace window and then destroys the room permanently.
+Everything a guest room contains is gone at that point, and even a signed-in room is only saved
+if that user cleared the 60s + did-edit threshold — so the moment of loss is invisible today.
+
+Awareness already knows the peer count, so this needs no new server state: register the handler
+only while `readPeers()` reports exactly one peer, and remove it the instant a second arrives —
+an always-on `beforeunload` is a prompt on every navigation, which is worse than the problem.
+
+- [ ] `beforeunload` handler registered only when the local user is the sole peer in the room
+- [ ] Removed again as soon as another peer joins, and on unmount
+- [ ] Pair it with the in-room persistence indicator: whether this room is on track to be saved
+      is exactly what makes the warning actionable
+- [ ] Verified with two tabs: the second tab open means no prompt in either; closing it puts
+      the prompt back on the remaining one
+
+---
+
+### Suggested order for section 10
+
+Independent of each other except where noted, so this is by payoff, not dependency:
+
+1. **10.4 stdin** — the largest functional gap, and the smallest change
+2. **10.5 keyboard shortcuts** — an afternoon; Ctrl+S is a live wrong behaviour, not a gap
+3. **10.2 chat** — designed already, no schema, no new connection
+4. **10.1 multi-file** — the biggest capability gain and by far the most invasive; it is also
+   what finally gives `dead_rooms.language` a value and `files` more than one entry
+5. **10.6 room names** — small, but it needs a migration, so it pairs naturally with 10.1's
+6. **10.7 delete** — small, and the right thing to own before the profile fills up
+7. **10.8 leaving warning** — small, best done after 10.6 so both halves of the "is this room
+   being kept?" story land together
+8. **10.3 room passwords** — real, but narrow while room URLs are unguessable and short-lived
