@@ -17,7 +17,15 @@ const CLOSE_SERVICE_RESTART = 1012;
 
 function handleYjsConnection(ws, req) {
   // INVARIANT: never log `req.url` — it carries a Clerk token. Log `docName`.
-  const docName = req.url.slice(1).split("?")[0];
+  const docName = typeof req.url === "string" ? req.url.slice(1).split("?")[0] : "";
+
+  // INVARIANT: registered first, and for every socket including the ones refused below. ws emits
+  // 'error' on the WebSocket for every protocol fault — a malformed frame, a frame over
+  // maxPayload, a reset mid-write — and setupWSConnection registers no handler of its own, so an
+  // unhandled 'error' event throws and takes every live room's unsaved snapshot with the process.
+  ws.on("error", (err) => {
+    console.warn(`Socket error in ${docName || "(no room)"}: ${err.message}`);
+  });
 
   if (isShuttingDown()) {
     ws.close(CLOSE_SERVICE_RESTART, "server-restart");

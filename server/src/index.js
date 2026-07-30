@@ -20,6 +20,11 @@ const PORT = process.env.PORT || 8080;
 // 10 rooms/minute/IP. Only POST /rooms is limited; the other routes allocate nothing.
 const createRoomLimiter = createRateLimiter({ limit: 10, windowMs: 60_000 });
 
+// INVARIANT: ws defaults to 100 MiB per message. Must stay well above the largest legitimate
+// single update (one big paste, or a late joiner's sync-step-2 diff) — a client whose frame
+// exceeds it is closed with 1009, reconnects, resends, and is closed again, forever.
+const MAX_WS_PAYLOAD_BYTES = 4 * 1024 * 1024;
+
 // The frontend is always a different origin, and there is nothing to protect: these routes
 // hand out random IDs and answer yes/no about one.
 function cors(res) {
@@ -29,13 +34,36 @@ function cors(res) {
 
 function json(res, status, body) {
   cors(res);
-  res.writeHead(status, { "Content-Type": "application/json" });
+  res.writeHead(status, { "Content-Type": "application/json", "X-Content-Type-Options": "nosniff" });
   res.end(JSON.stringify(body));
 }
 
-const server = http.createServer((req, res) => {
-  const url = new URL(req.url, `http://${req.headers.host ?? "localhost"}`);
-  const path = url.pathname;
+// INVARIANT: never build a URL from `req.headers.host` or from a whole request target. A
+// malformed Host ("a b") and an absolute-form target ("GET http://[") both throw TypeError
+// *inside* the request listener, which is an unauthenticated kill switch. The origin is unused
+// here — only the path and the query are, and URLSearchParams never throws on any input.
+function requestTarget(req) {
+  const raw = typeof req.url === "string" ? req.url : "/";
+  const q = raw.indexOf("?");
+  return {
+    path: q === -1 ? raw : raw.slice(0, q),
+    query: new URLSearchParams(q === -1 ? "" : raw.slice(q + 1)),
+  };
+}
+
+// INVARIANT: decodeURIComponent throws URIError on `%`, `%zz`, and on any escape decoding to a
+// lone surrogate (`%ED%A0%80`). This route is anonymous, so an uncaught throw here kills every
+// live room's unsaved snapshot with the process.
+function safeDecode(segment) {
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return null;
+  }
+}
+
+function handleRequest(req, res) {
+  const { path, query } = requestTarget(req);
 
   if (req.method === "OPTIONS") {
     cors(res);
@@ -75,7 +103,7 @@ const server = http.createServer((req, res) => {
       });
     }
 
-    const language = normalizeLanguage(url.searchParams.get("language"));
+    const language = normalizeLanguage(query.get("language"));
 
     const roomId = reserveRoom(caller, language);
     if (!roomId) {
@@ -88,18 +116,39 @@ const server = http.createServer((req, res) => {
   // Also hands back the room's language: that choice lives on the server, not in the shared
   // doc, so a peer arriving before the creator has synced still gets the right answer.
   if (req.method === "GET" && path.startsWith("/rooms/")) {
-    const roomId = decodeURIComponent(path.slice("/rooms/".length));
-    const exists = Boolean(roomId) && roomExists(roomId);
-    // INVARIANT: always 200 — existence is the `exists` field; non-ok means unreachable.
+    const roomId = safeDecode(path.slice("/rooms/".length));
+    // INVARIANT: always 200, and a malformed id is `exists:false` rather than a 400 — checkRoom
+    // reads any non-ok response as *unreachable*, i.e. the retry screen for a room that never was.
+    const exists = roomId !== null && roomId.length > 0 && roomExists(roomId);
     return json(res, 200, { exists, language: exists ? getRoomLanguage(roomId) : null });
   }
 
   return json(res, 404, { error: "Not found" });
+}
+
+const server = http.createServer((req, res) => {
+  // INVARIANT: "this handler never throws" is enforced here rather than asserted. Every route
+  // above is anonymous, so one uncaught throw is a remote kill switch.
+  try {
+    handleRequest(req, res);
+  } catch (err) {
+    // INVARIANT: never log req.url — it is attacker-controlled here and carries a Clerk token
+    // on the WebSocket path. The message only.
+    console.error("Request handler threw:", err.message);
+    if (res.headersSent) res.end();
+    else json(res, 500, { error: "Internal error" });
+  }
 });
 
-const wss = new WebSocketServer({ server });
+// INVARIANT: maxPayload only became safe once connection.js registered a per-socket 'error'
+// listener — a frame over the cap makes ws emit 'error' on the WebSocket, and an unhandled
+// 'error' event throws. Setting this without that listener is a one-frame remote kill switch.
+const wss = new WebSocketServer({ server, maxPayload: MAX_WS_PAYLOAD_BYTES });
 
 wss.on("connection", handleYjsConnection);
+
+server.on("error", (err) => console.error("HTTP server error:", err.message));
+wss.on("error", (err) => console.error("WebSocket server error:", err.message));
 
 server.listen(PORT, () => {
   console.log(`Yjs sync WebSocket server listening on port ${PORT}`);
@@ -133,3 +182,39 @@ async function shutdown(signal) {
 
 process.on("SIGTERM", () => shutdown("SIGTERM"));
 process.on("SIGINT", () => shutdown("SIGINT"));
+
+// INVARIANT: a crash is not SIGTERM. Without this, an uncaught fault never runs
+// flushAndDestroyAll(), so every live room's snapshot dies with the process — and the restart
+// comes up with an empty registry, so nothing can ever retry the write.
+let fatalHandled = false;
+
+function fatal(kind, err) {
+  if (fatalHandled) process.exit(1);
+  fatalHandled = true;
+  console.error(`${kind}; draining snapshots before exit:`, err?.stack ?? String(err));
+
+  // exitCode rather than process.exit(1): exit() truncates pending stdout on Railway, and Node
+  // still exits non-zero once the loop drains.
+  process.exitCode = 1;
+  if (shutdownStarted) return;
+  shutdownStarted = true;
+
+  // Unref'd: the pool sockets flushAndDestroyAll opens are what anchor the loop, so this only
+  // fires if the drain itself wedges.
+  const backstop = setTimeout(() => process.exit(1), FLUSH_DEADLINE_MS + 2_000);
+  if (typeof backstop.unref === "function") backstop.unref();
+
+  void flushAndDestroyAll()
+    .catch((e) => console.error("Flush failed during fatal shutdown:", e.message))
+    .then(() => db.close())
+    .catch(() => {})
+    .finally(() => {
+      server.close();
+      if (typeof server.closeIdleConnections === "function") server.closeIdleConnections();
+    });
+}
+
+process.on("uncaughtException", (err) => fatal("Uncaught exception", err));
+process.on("unhandledRejection", (reason) =>
+  fatal("Unhandled rejection", reason instanceof Error ? reason : new Error(String(reason)))
+);
