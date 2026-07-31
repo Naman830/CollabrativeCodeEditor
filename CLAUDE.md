@@ -277,6 +277,14 @@ are not repeated here):
   `Y.Doc` in a test makes every observer throw.
 - **`retries: 0` in Playwright is deliberate.** A retry that goes green hides the CRDT and presence
   races the suite exists to catch. Two flakes surfaced this way and both were real bugs.
+- **`npm run typecheck` is `next typegen && tsc --noEmit`, and the `next typegen` half is
+  load-bearing.** `PageProps<"/room/[roomId]">` — used by both dynamic routes — is a *global* Next
+  16 generates into `.next/types/routes.d.ts`, alongside `next-env.d.ts`. Both are gitignored and
+  both are written only by `next dev`, `next build` or `next typegen`. So a bare `tsc --noEmit`
+  passes on any machine that has ever run the dev server and fails on a fresh checkout with
+  `TS2304: Cannot find name 'PageProps'` — which is exactly what CI is, and exactly how this was
+  found: green locally, red on GitHub. Reproduce the CI state with
+  `rm -rf web/.next web/next-env.d.ts` before trusting a local typecheck.
 
 ## Running locally
 
