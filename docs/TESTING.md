@@ -470,6 +470,12 @@ The rest compare behaviour rather than text, since neither side exports what is 
 | `DRIFT-15` | One deterministic key/time sequence through **both** rate limiters; the verdict streams must be identical arrays |
 | `DRIFT-11b` | Executable proof of a *hazard*: overriding `MEMBER_MIN_CONNECTED_MS` moves the server's copy and leaves the frontend's hardcoded one untouched, with nothing detecting it at runtime |
 
+**In CI this tier is ordered, not just listed.** Because it `require()`s `server/src`, whose own
+`require`s resolve against `server/node_modules`, the `web` job installs the sibling workspace
+*before* the drift step — and runs `npm run test:unit` rather than `npm test` up to that point,
+since bare `vitest run` would drag drift in early. Locally, where both workspaces are installed,
+the single `npm test` above is equivalent.
+
 Where the two sides legitimately differ — the dots-only fallback extension, where the client knows
 the room language and returns `untitled.py` while the server returns `untitled.txt` — the divergence
 is **enumerated** in `DRIFT-13b`, so it stays a decision rather than becoming a surprise.

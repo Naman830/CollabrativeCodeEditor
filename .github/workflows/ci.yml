@@ -25,7 +25,10 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: web/package-lock.json
+          # Both lockfiles: this job installs server/ too, for the drift tier.
+          cache-dependency-path: |
+            web/package-lock.json
+            server/package-lock.json
 
       - run: npm ci
 
@@ -40,8 +43,13 @@ jobs:
 
       # Hermetic by construction: tests/setup/no-ambient-secrets.ts deletes every secret and stubs
       # fetch to throw, so a contributor with no credentials runs exactly what CI runs.
-      - name: Unit + drift tests
-        run: npm test
+      #
+      # INVARIANT: this is `test:unit`, NOT `npm test`. `npm test` is bare `vitest run`, which
+      # includes the drift project — and drift require()s server/src, whose own `require`s resolve
+      # against server/node_modules. Running it before the install step below fails every drift
+      # file with "Cannot find module 'y-websocket/bin/utils'".
+      - name: Unit + DOM tests
+        run: npm run test:unit
 
       # The drift tier reads ../server and ../docker-compose.yml, so it needs the sibling
       # workspace's node_modules for the server modules it requires.

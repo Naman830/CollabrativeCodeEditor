@@ -277,6 +277,15 @@ are not repeated here):
   `Y.Doc` in a test makes every observer throw.
 - **`retries: 0` in Playwright is deliberate.** A retry that goes green hides the CRDT and presence
   races the suite exists to catch. Two flakes surfaced this way and both were real bugs.
+- **The drift tier needs `server/node_modules`, and `npm test` runs the drift tier.** `web`'s
+  `npm test` is bare `vitest run`, so it includes all three projects — and `drift`'s
+  `require(server/src/...)` makes *those* modules resolve their own dependencies against
+  `server/node_modules`, never `web`'s. Locally both workspaces are installed and it passes; CI
+  installs `web` only, so a `npm test` step placed before the server install fails every drift file
+  with `Cannot find module 'y-websocket/bin/utils'` — 110 tests pass, `drift (0 test)`, job red.
+  **CI therefore runs `npm run test:unit` (unit-node + unit-dom), installs `server`, then
+  `npm run test:drift`.** Do not "simplify" those three steps back into one `npm test`; the split
+  *is* the ordering constraint. The union is identical either way.
 - **`npm run typecheck` is `next typegen && tsc --noEmit`, and the `next typegen` half is
   load-bearing.** `PageProps<"/room/[roomId]">` — used by both dynamic routes — is a *global* Next
   16 generates into `.next/types/routes.d.ts`, alongside `next-env.d.ts`. Both are gitignored and
