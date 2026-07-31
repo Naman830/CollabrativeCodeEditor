@@ -726,6 +726,7 @@ Two independent workspaces plus the sandbox container. **There is no root `packa
 ├── docs/TESTING.md                  the full audit and test report
 ├── docs/DEPLOYMENT.md               how to host it, if you want to
 ├── docs/learning.md                 learn the project from zero, and from its bugs
+├── docs/internals/                  per-subsystem design notes, for whoever edits the code
 │
 ├── web/                             Next.js 16 frontend
 │   ├── src/
